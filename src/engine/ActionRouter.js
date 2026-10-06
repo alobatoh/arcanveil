@@ -673,7 +673,9 @@ export class ActionRouter extends SystemBase {
    * @private
    */
   _atacarPersona(npc) {
-    const esGuardia = (n) => /^guard/.test(sinAcentos(String(n.rol ?? '').toLowerCase())) || /guardia/.test(String(n.faccion ?? ''));
+    // Guardia es quien lo es de oficio. La facción no vale: en un pueblo de la
+    // guardia del valle el vendedor y el carretero también son de ella.
+    const esGuardia = (n) => /^guard/.test(sinAcentos(String(n.rol ?? '').toLowerCase()));
     const plantillaDe = (n) => (obtenerEnemigo(n.refId) ? n.refId : esGuardia(n) ? AGRESION.plantillaGuardia : AGRESION.plantillaCivil);
     const civil = !npc.hostil;
     const otros = this._presentesConClave().filter((n) => n.clave !== npc.clave);
