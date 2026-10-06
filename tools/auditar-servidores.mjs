@@ -133,13 +133,41 @@ console.log('\n── servir.mjs: lo público y nada más ──');
 
   // Por defecto no escucha en la red: la dirección de la LAN no conecta.
   const lan = Object.values(networkInterfaces()).flat().find((i) => i?.family === 'IPv4' && !i.internal)?.address;
-  const hijo = spawn(process.execPath, [join(RAIZ, 'tools', 'servir.mjs'), '--puerto', '18765'], { stdio: 'ignore' });
-  await new Promise((r) => setTimeout(r, 700));
-  const local = await pedir(18765, '/app/index.html', { host: 'localhost:18765' });
-  const red = lan ? await pedir(18765, '/app/index.html', { ip: lan, host: `${lan}:18765` }) : { estado: 0, error: 'sin LAN' };
-  comprobar(local.estado === 200, `la línea de órdenes sirve en 127.0.0.1 (${local.estado})`);
-  comprobar(red.estado === 0, `y no en la red local por defecto (${lan ?? 'sin LAN'}: ${red.error ?? red.estado})`);
+  // Puerto efímero propio (`--puerto 0`) y listo cuando el hijo lo anuncia,
+  // no tras una espera fija. Con el puerto fijo 18765 y 700 ms a ciegas se
+  // vio una vez un HTTP 421 desde la dirección de la LAN; la causa no se ha
+  // demostrado. Aquí una respuesta HTTP desde la LAN NO vale como «no
+  // escucha»: solo un error de conexión.
+  const hijo = spawn(process.execPath, [join(RAIZ, 'tools', 'servir.mjs'), '--puerto', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const salio = new Promise((ok) => hijo.once('exit', (codigo, senal) => ok({ codigo, senal })));
+  const arranque = await new Promise((ok) => {
+    let salida = '';
+    const t = setTimeout(() => ok({ error: `sin anunciar puerto en 10 s: ${salida.slice(0, 200)}` }), 10_000);
+    hijo.stdout.on('data', (b) => {
+      salida += b;
+      const m = salida.match(/servido en http:\/\/localhost:(\d+)/);
+      if (m) { clearTimeout(t); ok({ puerto: Number(m[1]) }); }
+    });
+    hijo.stderr.on('data', (b) => { salida += b; });
+    salio.then(({ codigo }) => { clearTimeout(t); ok({ error: `el servidor salió al arrancar (código ${codigo}): ${salida.slice(0, 200)}` }); });
+  });
+  comprobar(Boolean(arranque.puerto), `la línea de órdenes arranca en un puerto efímero (PID ${hijo.pid}, puerto ${arranque.puerto ?? '—'})`, arranque.error);
+  if (arranque.puerto) {
+    const p = arranque.puerto;
+    const local = await pedir(p, '/app/index.html', { host: `localhost:${p}` });
+    const red = lan ? await pedir(p, '/app/index.html', { ip: lan, host: `${lan}:${p}` }) : { estado: 0, error: 'sin LAN' };
+    comprobar(local.estado === 200, `la línea de órdenes sirve en 127.0.0.1 (${local.estado})`);
+    comprobar(red.estado === 0 && Boolean(red.error), `y no en la red local por defecto: error de conexión, no una respuesta HTTP (${lan ?? 'sin LAN'}: ${red.error ?? `HTTP ${red.estado}`})`);
+  }
   hijo.kill();
+  const fin = await Promise.race([salio, new Promise((ok) => setTimeout(() => ok(null), 5000))]);
+  comprobar(Boolean(fin), `y se cierra: el proceso hijo ha terminado (${fin ? (fin.senal ?? `código ${fin.codigo}`) : 'no terminó en 5 s'})`);
+  if (!fin) hijo.kill('SIGKILL');
+
+  // Un puerto que no vale: falla al arrancar con un mensaje, no se cuelga.
+  const malo = spawn(process.execPath, [join(RAIZ, 'tools', 'servir.mjs'), '--puerto', '99999'], { stdio: 'ignore' });
+  const codigoMalo = await new Promise((ok) => { malo.once('exit', ok); setTimeout(() => { malo.kill(); ok('colgado'); }, 5000); });
+  comprobar(codigoMalo === 1, `--puerto 99999: termina con código 1 (${codigoMalo})`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

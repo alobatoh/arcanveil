@@ -176,11 +176,22 @@ export function crearServidorEstatico({ raiz = RAIZ, lan = false } = {}) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const argv = process.argv.slice(2);
   const i = argv.indexOf('--puerto');
-  const PUERTO = Number(i >= 0 ? argv[i + 1] : '') || 8080;
+  // `--puerto 0`: el sistema elige uno libre y se anuncia el que tocó (lo
+  // usan las pruebas para no chocar con nada). Antes `0 || 8080` daba 8080.
+  const pedido = i >= 0 ? Number(argv[i + 1]) : 8080;
+  if (!Number.isInteger(pedido) || pedido < 0 || pedido > 65535) {
+    console.error(`--puerto tiene que ser un entero entre 0 y 65535 (llegó «${argv[i + 1]}»).`);
+    process.exit(1);
+  }
   const lan = argv.includes('--lan');
   const servidor = crearServidorEstatico({ lan });
+  servidor.on('error', (e) => {
+    console.error(`No se pudo escuchar en el puerto ${pedido}: ${e.code ?? e.message}`);
+    process.exit(1);
+  });
 
-  servidor.listen(PUERTO, lan ? '0.0.0.0' : '127.0.0.1', () => {
+  servidor.listen(pedido, lan ? '0.0.0.0' : '127.0.0.1', () => {
+    const PUERTO = servidor.address().port;
     console.log(`ARCANVEIL servido en http://localhost:${PUERTO}`);
     console.log('  sin caché: recargar basta para ver los cambios');
     console.log('\n  app:    /app/index.html');
