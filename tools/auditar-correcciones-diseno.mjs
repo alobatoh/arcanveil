@@ -303,6 +303,17 @@ await caso(async () => { for (const [frase, que] of [['ataco a Zorvak', 'nombre 
   const r = await p.turno(frase);
   comprobar(r.despues.agresiones === 0 && r.despues.reputacion === r.antes.reputacion && !r.combate.length, `${que}: «${frase}» sin consecuencias de agresión`, r.texto);
 } });
+await caso(async () => {
+  // Leído en la partida 9505: todo el pueblo es de la guardia del valle, y el
+  // vendedor y el carretero salían como guardias corruptos de 30 de vida.
+  const p = await partida(9505, { clase: 'baluarte' });
+  await p.turno('hablo con Dalwen');
+  const r = await p.turno('ataco a Dalwen');
+  const plantillas = Object.fromEntries((r.combate[0]?.enemies ?? []).map((e) => [e.nombre, e.refId]));
+  comprobar(JSON.stringify(plantillas) === JSON.stringify({ Dalwen: 'civil', Berlo: 'guardia_corrupto' }),
+    'semilla 9505 (todos de la facción guardia_valle): Dalwen pelea como civil, el guardia Berlo se mete y el carretero Eltín no', JSON.stringify(plantillas));
+  comprobar(/Berlo se mete en medio/.test(r.texto) && !/Dalwen espera tu respuesta/.test(r.texto), '  y nadie «espera tu respuesta» con la pelea ya abierta', r.texto);
+});
 
 /* ═══════════════════════════════════════════════════════════════════════════
    E · EL RELOJ MANDA
