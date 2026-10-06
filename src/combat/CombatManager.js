@@ -573,7 +573,23 @@ export class CombatManager extends SystemBase {
       objetos: Object.values(objetos ?? {}),
       equipado: this.leer('inventory.equipado', {}) ?? {},
     });
-    return arma ? { motivo: arma.motivo, texto: arma.texto } : null;
+    if (arma) return { motivo: arma.motivo, texto: arma.texto };
+
+    // Un nombre que no está en esta pelea («ataco a Zorvak»): no se le pega
+    // al objetivo de siempre en su lugar. Por clase («al guardia») o sin
+    // nombre, manda la jugada de siempre.
+    const llano = String(texto).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const m = llano.match(/\b(?:ataco|golpeo|pego|apunalo|disparo|embisto|arremeto|hiero|me lanzo)\b[^,.;]*?\b(?:a|contra)\s+([a-zñ]{3,})/);
+    const LOCUCION = /^(?:traicion|ciegas|muerte|golpes|pedradas|mano|distancia|bocajarro|quemarropa|fondo|por|lo|la|las|los|el|un|una|unos|unas|ese|esa|este|esta|aquel|aquella|mi|tu|su|todos|todas|cualquiera|alguien|uno|otro|otra|quien)$/;
+    if (m && !LOCUCION.test(m[1])) {
+      const nombres = Object.values(this._combatientes ?? {}).flatMap((c) => [c.nombre, c.nombreBase].filter(Boolean))
+        .map((n) => n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
+      if (!nombres.some((n) => n.split(/\s+/).includes(m[1]))) {
+        const dicho = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+        return { motivo: 'blanco_ausente', texto: `${dicho} no está en esta pelea. Di a quién de los que tienes delante atacas; no se ha hecho el ataque.` };
+      }
+    }
+    return null;
   }
 
   /**
