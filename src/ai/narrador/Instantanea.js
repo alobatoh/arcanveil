@@ -176,7 +176,7 @@ export function construirInstantanea(e, extra = {}) {
       vida: j.vida ? `${j.vida.actual}/${j.vida.max}` : null,
       oro: extra.oro ?? null,
       lleva: (extra.inventario ?? []).slice(0, 10).map((o) => (o.cantidad > 1 ? `${o.nombre} ×${o.cantidad}` : o.nombre)),
-      estados: { hambre: j.hambre, sed: j.sed, fatiga: j.fatiga, moral: j.moral },
+      estados: { fatiga: j.fatiga, moral: j.moral },
     },
     presentes,
     ausentesConocidos: ausentes,

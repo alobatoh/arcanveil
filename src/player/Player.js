@@ -81,27 +81,17 @@ export class Player extends SystemBase {
   }
 
   /**
-   * Desgaste de cada turno: hambre, sed, fatiga y regeneración pasiva.
+   * Desgaste de cada turno: fatiga y regeneración pasiva. Hambre y sed ya no
+   * (6-oct-2026), ni con clima ni con viaje.
    * @param {Object} contexto
    */
   alTurno(contexto) {
     const jugador = this.leer('player');
     if (!jugador?.raza) return;   // Aún no hay personaje creado.
 
-    const raza = obtenerRaza(jugador.raza);
-    const inmuneHambre = Boolean(
-      Vocacion.buscarRasgos(jugador, 'inmunidad')
-        .some((r) => r.efecto?.recursos?.includes('hambre')),
-    );
-
-    const clima = this.leer('world.clima.actual', 'despejado');
-    const multiplicadorSed = { calorSofocante: 2.0, ventisca: 0.6, tormenta: 0.8 }[clima] ?? 1;
-
     const { parche, avisos, dano } = Vitals.desgasteTurno(jugador, {
       tipo: contexto.tipo,
       minutos: contexto.minutos,
-      multiplicadorSed,
-      inmuneHambre,
     });
 
     this.store.transaccion(() => {
@@ -229,7 +219,8 @@ export class Player extends SystemBase {
     const jugador = estado.player ?? {};
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     const salida = {};
-    for (const clave of ['hambre', 'sed', 'fatiga']) {
+    // Hambre y sed ya no se tocan (6-oct-2026): solo la fatiga.
+    for (const clave of ['fatiga']) {
       const v = num(p[clave]);
       if (v !== null) salida[clave] = Math.max(0, Math.min(VITALES_MAX, Math.round(v * 100) / 100));
     }

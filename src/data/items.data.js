@@ -457,9 +457,11 @@ export const OBJETOS_BASE = Object.freeze({
     refId: 'racion_viaje', nombre: 'Ración de viaje', genero: 'f',
     categoria: 'consumible', subtipo: 'comida', rareza: 'comun',
     peso: 0.5, valor: 2, icono: 'bolsa',
-    descripcion: 'Carne seca, pan duro y fruta pasa. Alimenta sin dar alegría.',
+    descripcion: 'Carne seca, pan duro y fruta pasa. En un campamento, comerla repone fuerzas.',
     apilable: true, pilaMax: 20,
-    efecto: { tipo: 'recurso', clave: 'hambre', valor: 45 },
+    // Comida: solo cura vida en un campamento (ver `player/Comida.js`). Ya no
+    // repone un hambre que no existe como presión.
+    efecto: { tipo: 'comida' },
   },
 
   odre_agua: {
@@ -468,7 +470,9 @@ export const OBJETOS_BASE = Object.freeze({
     peso: 2, valor: 1, icono: 'pocion',
     descripcion: 'Cuero curtido con capacidad para un día de marcha.',
     apilable: true, pilaMax: 5,
-    efecto: { tipo: 'recurso', clave: 'sed', valor: 60 },
+    // Beber ya no es una obligación ni cura: el odre se conserva (valor, usos
+    // creativos) y «usarlo» no lo gasta.
+    efecto: { tipo: 'bebida' },
     recargable: true,
   },
 

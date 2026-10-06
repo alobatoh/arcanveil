@@ -111,8 +111,8 @@ export class EffectApplier extends SystemBase {
       mana: { cota: COTAS_IA.deltaMax.mana },
       xp: { cota: COTAS_IA.deltaMax.xp },
       gold: { cota: COTAS_IA.deltaMax.gold },
-      hunger: { recurso: 'hambre', cota: COTAS_IA.deltaMax.hunger },
-      thirst: { recurso: 'sed', cota: COTAS_IA.deltaMax.thirst },
+      // hunger/thirst fuera (6-oct-2026): el narrador no puede volver a
+      // meter hambre ni sed como presión.
       fatigue: { recurso: 'fatiga', cota: COTAS_IA.deltaMax.fatigue },
       morale: { recurso: 'moral', cota: COTAS_IA.deltaMax.morale },
     };
@@ -221,8 +221,6 @@ export class EffectApplier extends SystemBase {
       mana: 'player.mana.actual',
       xp: 'player.xp',
       gold: 'player.oro',
-      hunger: 'player.hambre',
-      thirst: 'player.sed',
       fatigue: 'player.fatiga',
       morale: 'player.moral',
     };

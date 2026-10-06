@@ -535,6 +535,16 @@ export const ESPERA_RIESGO = congelar({
   factor: 1,
 });
 
+/**
+ * Comer (decisión del 6-oct-2026: el hambre y la sed no son presión de
+ * supervivencia; comer solo recupera VIDA en un campamento). PROPUESTA
+ * TÉCNICA ajustable: cuánta vida devuelve una comida.
+ */
+export const COMIDA = congelar({
+  /** Fracción de la vida máxima que devuelve una comida en campamento. */
+  curaVidaFraccion: 0.25,
+});
+
 export const AGRESION = congelar({
   /** Ficha de combate de un civil sin ficha propia (ver `enemies.data.js`, `civil`). */
   plantillaCivil: 'civil',

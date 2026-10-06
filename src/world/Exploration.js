@@ -618,8 +618,7 @@ export class Exploration extends SystemBase {
     }
 
     if (r.agua) {
-      // Rellenar odres: se restaura la sed sin gastar el inventario.
-      this.despachar('player/recurso', { clave: 'sed', delta: 60 });
+      // Rellenar odres: sin sed que reponer (6-oct-2026); se cuenta sin efecto.
     }
 
     if (r.descanso) {

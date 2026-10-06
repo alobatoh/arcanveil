@@ -388,25 +388,8 @@ export class MapPanel extends Component {
               text: plan.descripcion,
             }),
 
-            // ─── Provisiones ────────────────────────────────────────────
-            h('div.row.row--between', {},
-              h('span', { style: { fontSize: 'var(--f-2xs)' }, text: 'Provisiones' }),
-              h('span', {
-                style: {
-                  fontSize: 'var(--f-2xs)',
-                  fontFamily: 'var(--f-mono)',
-                  color: plan.sinProvisiones ? 'var(--c-peligro)' : 'var(--c-exito)',
-                },
-                text: `${plan.disponibles.raciones}/${plan.necesarias.raciones} raciones · ${plan.disponibles.agua}/${plan.necesarias.agua} agua`,
-              }),
-            ),
-
-            plan.sinProvisiones
-              ? h('p', {
-                  style: { fontSize: 'var(--f-2xs)', color: 'var(--c-aviso)' },
-                  text: 'No llevas bastante. El hambre y la sed te pasarán factura.',
-                })
-              : null,
+            // Sin provisiones obligatorias (6-oct-2026): viajar no gasta
+            // raciones ni agua, y no hace falta llevarlas.
 
             plan.llegaDeNoche
               ? h('p', {

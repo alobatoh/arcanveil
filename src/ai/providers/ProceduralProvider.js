@@ -870,8 +870,6 @@ export class ProceduralProvider extends IDMProvider {
 
       if (peor) {
         const causas = {
-          Hambre: 'El hambre te resta reflejos.',
-          Sed: 'La sed te nubla.',
           Agotamiento: 'Estás demasiado cansado para esto.',
           Carga: 'El peso que llevas encima te estorba.',
           Moral: 'No tienes el ánimo para esto.',

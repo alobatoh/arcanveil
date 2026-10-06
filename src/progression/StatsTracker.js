@@ -218,11 +218,8 @@ export class StatsTracker extends SystemBase {
   alTurno(contexto) {
     this.registrar('turnos');
 
-    // El estado de la comida se muestrea por turnos, no por eventos.
-    const hambre = this.leer('player.hambre', 100);
-
-    if (hambre >= 50) this.registrar('turnosBienAlimentado');
-    else if (hambre < 25) this.registrar('turnosHambriento');
+    // Sin hambre que muestrear (6-oct-2026): ya no se cuentan turnos bien
+    // alimentado ni hambriento.
 
     // Días de mundo transcurridos.
     const dias = this.leer('world.tiempo.diasTotales', 0);

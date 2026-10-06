@@ -461,8 +461,6 @@ export class ContextComposer {
         nivel: jugador.nivel,
         vida: jugador.vida,
         mana: jugador.mana,
-        hambre: jugador.hambre,
-        sed: jugador.sed,
         fatiga: jugador.fatiga,
         moral: jugador.moral,
         raza: jugador.raza,

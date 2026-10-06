@@ -2,7 +2,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * ARCANVEIL · ui/components/VitalsWidget.js
  * ---------------------------------------------------------------------------
- * Las seis barras de estado: vida, maná, hambre, sed, vigor y moral.
+ * Las barras de estado: vida, maná, vigor y moral (hambre y sed ya no, 6-oct-2026).
  *
  * Todas siguen la misma convención de lectura —máximo es bienestar, cero es
  * colapso— así que el jugador no tiene que recordar cuál va al revés.
@@ -67,7 +67,7 @@ export class VitalsWidget extends Component {
     nodos.push(h('div.filo'));
 
     // — Supervivencia, con su etiqueta cualitativa —
-    for (const clave of ['hambre', 'sed', 'fatiga', 'moral']) {
+    for (const clave of ['fatiga', 'moral']) {
       const datos = v[clave];
       nodos.push(h('div', { dataset: { vital: clave } },
         this._barra(clave, {
@@ -122,7 +122,7 @@ export class VitalsWidget extends Component {
     this._barras.get('vida')?.actualizar(v.vida.actual, v.vida.max);
     this._barras.get('mana')?.actualizar(v.mana.actual, v.mana.max);
 
-    for (const clave of ['hambre', 'sed', 'fatiga', 'moral']) {
+    for (const clave of ['fatiga', 'moral']) {
       this._barras.get(clave)?.actualizar(v[clave].valor, v[clave].max);
       fijarTexto(this.refs[`etiqueta_${clave}`], v[clave].etiqueta);
     }

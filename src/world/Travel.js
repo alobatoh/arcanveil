@@ -118,19 +118,8 @@ export class Travel extends SystemBase {
       return { viable: false, motivo: impedimento.motivo, ruta };
     }
 
-    // ─── Provisiones ────────────────────────────────────────────────────
-    const necesarias = Mapa.provisionesNecesarias(ruta, efectosEventos);
-    const inventario = this.sistema('inventory');
-
-    const disponibles = {
-      raciones: inventario?.cantidadDe('racion_viaje') ?? 0,
-      agua: inventario?.cantidadDe('odre_agua') ?? 0,
-    };
-
-    const faltan = {
-      raciones: Math.max(0, necesarias.raciones - disponibles.raciones),
-      agua: Math.max(0, necesarias.agua - disponibles.agua),
-    };
+    // Sin provisiones obligatorias (6-oct-2026): el hambre y la sed no son
+    // presión de supervivencia, así que el plan ya no cuenta raciones ni agua.
 
     // ─── Duración con el clima ──────────────────────────────────────────
     const factorClima = clima?.factorViaje() ?? 1;
@@ -145,10 +134,6 @@ export class Travel extends SystemBase {
       motivo: null,
       ruta,
       horas,
-      necesarias,
-      disponibles,
-      faltan,
-      sinProvisiones: faltan.raciones > 0 || faltan.agua > 0,
       llegaDeNoche: horas > horasLuz,
       peligro: ruta.peligroMaximo + (efectosEventos.peligroRutas ?? 0),
       descripcion: Mapa.describir(ruta),
@@ -196,21 +181,8 @@ export class Travel extends SystemBase {
       return { exito: false, motivo: plan.motivo };
     }
 
-    // ─── Provisiones insuficientes ──────────────────────────────────────
-    // No se impide salir: se avisa. Viajar sin comida es una decisión válida,
-    // solo que mala.
-    if (plan.sinProvisiones && !opciones.forzar) {
-      const faltan = [];
-      if (plan.faltan.raciones > 0) faltan.push(`${plan.faltan.raciones} raciones`);
-      if (plan.faltan.agua > 0) faltan.push(`${plan.faltan.agua} odres de agua`);
-
-      return {
-        exito: false,
-        motivo: `Te faltan ${faltan.join(' y ')} para el camino.`,
-        requiereConfirmacion: true,
-        plan,
-      };
-    }
+    // Sin provisiones obligatorias (6-oct-2026): no se pide confirmación por
+    // salir sin raciones ni agua.
 
     // ─── Se inicia ──────────────────────────────────────────────────────
     this._viaje = {
@@ -279,9 +251,6 @@ export class Travel extends SystemBase {
       this.sistema('clock')?.avanzarTiempo(Math.round(horas * 60), 'viaje');
       this._viaje.horasRecorridas += horas;
 
-      // ─── Provisiones ──────────────────────────────────────────────────
-      this._consumirProvisiones(horas);
-
       this.emitir(EVENTOS_VIAJE.TRAMO, {
         desde: tramo.desde,
         hasta: tramo.hasta,
@@ -316,77 +285,6 @@ export class Travel extends SystemBase {
 
     // ─── Llegada ────────────────────────────────────────────────────────
     return this._llegar();
-  }
-
-  /**
-   * Consume raciones y agua proporcionalmente al tramo.
-   *
-   * El consumo es real: sale del inventario. Si no hay, sube el hambre.
-   *
-   * @param {number} horas
-   * @private
-   */
-  _consumirProvisiones(horas) {
-    const inventario = this.sistema('inventory');
-    if (!inventario) return;
-
-    const efectos = this.sistema('events')?.efectos() ?? {};
-    const climaEfectos = this.sistema('weather')?.efectos() ?? {};
-
-    // Una ración por cada doce horas, ajustada por eventos y clima.
-    const factorRaciones = (efectos.consumoRaciones ?? 1) * (climaEfectos.consumoRaciones ?? 1);
-    const factorAgua = (efectos.consumoAgua ?? 1) * (climaEfectos.consumoAgua ?? 1);
-
-    const raciones = Math.floor((horas / 12) * factorRaciones);
-    const agua = Math.floor((horas / 12) * factorAgua);
-
-    // ─── Raciones ───────────────────────────────────────────────────────
-    if (raciones > 0) {
-      const pila = inventario.buscar('racion_viaje');
-
-      if (pila) {
-        const consume = Math.min(raciones, pila.cantidad);
-        this.despachar('inventory/retirar', {
-          idObjeto: pila.id,
-          cantidad: consume,
-          silencioso: true,
-        });
-        this._viaje.provisionesConsumidas.raciones += consume;
-
-        // Comer restaura el hambre.
-        this.despachar('player/recurso', { clave: 'hambre', delta: consume * 25 });
-      } else {
-        // Sin comida, el hambre sube y se avisa.
-        this.despachar('player/recurso', { clave: 'hambre', delta: -raciones * 15 });
-
-        this.emitir('narrative:direct', {
-          texto: 'No te queda comida. El camino se hace más largo con el estómago vacío.',
-          voz: 'system',
-        });
-      }
-    }
-
-    // ─── Agua ───────────────────────────────────────────────────────────
-    if (agua > 0) {
-      const pila = inventario.buscar('odre_agua');
-
-      if (pila) {
-        const consume = Math.min(agua, pila.cantidad);
-        this.despachar('inventory/retirar', {
-          idObjeto: pila.id,
-          cantidad: consume,
-          silencioso: true,
-        });
-        this._viaje.provisionesConsumidas.agua += consume;
-
-        this.despachar('player/recurso', { clave: 'sed', delta: consume * 30 });
-      } else {
-        this.despachar('player/recurso', { clave: 'sed', delta: -agua * 20 });
-      }
-    }
-
-    // La fatiga sube siempre: caminar cansa.
-    this.despachar('player/recurso', { clave: 'fatiga', delta: -Math.round(horas * 1.5) });
   }
 
   /**

@@ -121,9 +121,9 @@ export function penalizacionSupervivencia(jugador) {
   const desglose = [];
   let total = 0;
 
+  // Solo el agotamiento: el hambre y la sed ya no restan a ninguna tirada
+  // (6-oct-2026), aunque un guardado viejo las traiga a cero.
   const fuentes = [
-    { clave: 'hambre', nombre: 'Hambre' },
-    { clave: 'sed', nombre: 'Sed' },
     { clave: 'fatiga', nombre: 'Agotamiento' },
   ];
 
@@ -255,7 +255,7 @@ export function modificarRecurso(jugador, clave, delta) {
  * @returns {{parche: Object, avisos: string[], dano: number}}
  */
 export function desgasteTurno(jugador, opciones = {}) {
-  const { tipo = 'exploracion', multiplicadorSed = 1, inmuneHambre = false, minutos } = opciones;
+  const { tipo = 'exploracion', minutos } = opciones;
   const s = VITALES.supervivencia;
 
   const parche = { player: {} };
@@ -263,17 +263,15 @@ export function desgasteTurno(jugador, opciones = {}) {
   let dano = 0;
 
   // — Consumo según el tipo de turno —
-  let hambre = s.hambrePorTurno;
-  let sed = s.sedPorTurno * multiplicadorSed;
+  // Solo fatiga. Decisión del 6-oct-2026: el hambre y la sed dejan de ser
+  // presión de supervivencia (no bajan con el tiempo, el clima, el viaje ni
+  // el combate, y no hacen daño). Los campos siguen en la ficha, inertes, por
+  // compatibilidad con guardados viejos.
   let fatiga = s.fatigaPorTurno;
 
   if (tipo === 'combate') {
     fatiga = s.fatigaPorRondaCombate;
-    hambre *= 0.3;
-    sed *= 0.5;
   } else if (tipo === 'viaje') {
-    hambre = s.hambrePorViaje;
-    sed = s.sedPorViaje * multiplicadorSed;
     fatiga = s.fatigaPorViaje;
   } else if (tipo === 'descanso') {
     // Descansar no consume fatiga: la recupera. Eso lo gestiona descansar().
@@ -281,11 +279,9 @@ export function desgasteTurno(jugador, opciones = {}) {
   } else if (tipo === 'espera') {
     // Esperar desgasta como explorar, en proporción a los minutos del pulso.
     // Un pulso parcial de 5 minutos es medio turno: ni castiga ni cuenta como
-    // uno entero. El daño por privación sigue siendo por pulso (no se reparte).
+    // uno entero. El daño por agotamiento sigue siendo por pulso.
     const turno = MUNDO.tiempo.minutosPorTurno;
     const escala = Math.max(0, Math.min(1, (Number(minutos) || turno) / turno));
-    hambre *= escala;
-    sed *= escala;
     fatiga *= escala;
   }
 
@@ -296,17 +292,10 @@ export function desgasteTurno(jugador, opciones = {}) {
     if (r.cruzoUmbral && r.cruzoUmbral !== 'bien') {
       avisos.push(`${META_VITALES[clave].nombre}: ${r.cruzoUmbral}`);
     }
-    // A cero, el recurso empieza a costar vida.
-    if (r.nuevo <= 0) {
-      const castigos = { hambre: s.danoPorInanicion, sed: s.danoPorDeshidratacion, fatiga: s.danoPorAgotamiento };
-      dano += castigos[clave] ?? 0;
-    }
+    // A cero, el agotamiento empieza a costar vida.
+    if (r.nuevo <= 0 && clave === 'fatiga') dano += s.danoPorAgotamiento;
   };
 
-  if (!inmuneHambre) {
-    aplicar('hambre', hambre);
-    aplicar('sed', sed);
-  }
   aplicar('fatiga', fatiga);
 
   // — Regeneración pasiva fuera de combate —
@@ -377,13 +366,9 @@ export function descansar(jugador, tipo = 'corto', opciones = {}) {
   const fatigaGanada = tipo === 'largo' ? VITALES.supervivencia.max : 35;
   parche.player.fatiga = saturar((jugador?.fatiga ?? 0) + fatigaGanada, 0, VITALES.supervivencia.max);
 
-  // Hambre y sed solo se recuperan si hay con qué.
-  if (conProvisiones) {
-    parche.player.hambre = VITALES.supervivencia.max;
-    parche.player.sed = VITALES.supervivencia.max;
-  } else if (tipo === 'largo') {
-    avisos.push('Has descansado, pero sin provisiones el hambre sigue ahí');
-  }
+  // Sin hambre ni sed que reponer (6-oct-2026): descansar no gasta
+  // provisiones ni avisa de que faltan. `conProvisiones` ya no cuenta.
+  void conProvisiones;
 
   // Una cama de verdad levanta el ánimo.
   if (enPosada) {
@@ -427,7 +412,7 @@ export function resumenVitales(jugador) {
     fraccion: fraccion(jugador?.mana?.actual ?? 0, jugador?.mana?.max ?? 1),
   };
 
-  for (const clave of ['hambre', 'sed', 'fatiga']) {
+  for (const clave of ['fatiga']) {
     const valor = jugador?.[clave] ?? VITALES.supervivencia.max;
     salida[clave] = { valor, max: VITALES.supervivencia.max, ...estadoRecurso(valor) };
   }
@@ -454,7 +439,7 @@ export function describirEstado(jugador) {
   else if (f < 1) partes.push('con algún rasguño');
   else partes.push('ileso');
 
-  for (const [clave, adjetivo] of [['hambre', 'hambriento'], ['sed', 'sediento'], ['fatiga', 'agotado']]) {
+  for (const [clave, adjetivo] of [['fatiga', 'agotado']]) {
     const estado = estadoRecurso(jugador?.[clave] ?? 100);
     if (estado.etiqueta === 'grave') partes.push(adjetivo);
     else if (estado.etiqueta === 'critico') partes.push(`${adjetivo} hasta el límite`);

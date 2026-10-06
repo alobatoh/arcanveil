@@ -2076,8 +2076,7 @@ function pintarPersonaje() {
   const barras = [
     ['Vida', j.vida?.actual ?? 0, j.vida?.max ?? 1, 'vida'],
     j.mana?.max ? ['Ánima', j.mana.actual, j.mana.max, 'mana'] : null,
-    ['Hambre', j.hambre ?? 100, 100, 'hambre'],
-    ['Sed', j.sed ?? 100, 100, 'sed'],
+    // Sin hambre ni sed (6-oct-2026): ya no son presión de supervivencia.
     ['Vigor', j.fatiga ?? 100, 100, 'fatiga'],
   ].filter(Boolean);
 

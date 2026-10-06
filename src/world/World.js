@@ -148,6 +148,10 @@ export class World extends SystemBase {
       estado: visita.estado,
     });
 
+    // Un campamento se queda donde se montó: al irse, deja de existir (no
+    // vuelve a valer al regresar). Ver `player/Comida.js`.
+    if (this.leer('world.campamento', null) && refId !== anterior) this.store.fijar('world.campamento', null);
+
     // ─── Cambio de región ───────────────────────────────────────────────
     if (lugar.region !== regionAnterior) {
       this.emitir(EVENTOS_MUNDO.REGION, {

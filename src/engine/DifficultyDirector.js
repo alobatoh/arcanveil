@@ -288,31 +288,25 @@ export class DifficultyDirector extends SystemBase {
     const jugador = this.leer('player');
 
     const vida = (jugador.vida?.actual ?? 1) / Math.max(1, jugador.vida?.max ?? 1);
-    const hambre = jugador.hambre ?? 100;
-    const sed = jugador.sed ?? 100;
     const oro = jugador.oro ?? 0;
 
     const inventario = this.sistema('inventory');
     const tieneCuracion = (inventario?.cantidadDe('pocion_curacion') ?? 0) > 0;
-    const tieneProvisiones = inventario?.tieneProvisiones() ?? false;
 
+    // Sin hambre, sed ni provisiones (6-oct-2026): ya no son carencias. Quedan
+    // tres; el umbral de «callejón» pasa de 4 de 6 a las 3 (propuesta: misma
+    // idea, todas las carencias a la vez y poca vida).
     const carencias = [
       vida < 0.25,
-      hambre < 20,
-      sed < 20,
       oro < 5,
       !tieneCuracion,
-      !tieneProvisiones,
     ].filter(Boolean).length;
 
     return {
       vida,
-      hambre,
-      sed,
       oro,
       carencias,
-      // Tres carencias simultáneas es un callejón, no un desafío.
-      critico: carencias >= 4 && vida < 0.4,
+      critico: carencias >= 3 && vida < 0.4,
     };
   }
 

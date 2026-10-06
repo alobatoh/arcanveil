@@ -29,6 +29,7 @@ import * as Equipo from './Equipment.js';
 import * as Carga from './Encumbrance.js';
 import * as Durabilidad from './Durability.js';
 import { saturar } from '../utils/math.js';
+import * as Comida from '../player/Comida.js';
 
 /** Eventos publicados por el inventario. */
 export const EVENTOS_INVENTARIO = Object.freeze({
@@ -368,6 +369,30 @@ export class Inventory extends SystemBase {
     const efecto = Item.efectoConsumo(objeto);
     if (!efecto) {
       queueMicrotask(() => this.emitir('inventory:denied', { motivo: 'Eso no se consume' }));
+      return null;
+    }
+
+    // Comida: la misma regla que por texto (`player/Comida.js`): solo en un
+    // campamento válido y con vida que recuperar; si no, no se gasta nada.
+    if (efecto.tipo === 'comida') {
+      const regla = Comida.puedeComer({
+        objeto: { ...objeto, efecto },
+        vida: estado.player?.vida,
+        enCampamento: Comida.campamentoValido({ campamento: estado.world?.campamento, ubicacion: estado.world?.ubicacion, sublugar: estado.world?.sublugar }),
+      });
+      if (!regla.ok) {
+        queueMicrotask(() => this.emitir('inventory:denied', { motivo: regla.texto, codigo: regla.motivo }));
+        return null;
+      }
+      queueMicrotask(() => {
+        this.despachar('player/curar', { cantidad: regla.cura, origen: objeto.nombre });
+        this.emitir(EVENTOS_INVENTARIO.CONSUMIDO, { objeto, efecto, cura: regla.cura });
+      });
+      return this._reducirRetirar(estado, { payload: { idObjeto, cantidad: 1, silencioso: true } });
+    }
+    // Beber ya no es una obligación: el odre no se gasta.
+    if (efecto.tipo === 'bebida') {
+      queueMicrotask(() => this.emitir('inventory:denied', { motivo: 'Beber ya no hace falta para seguir: el odre se queda como está.', codigo: 'bebida' }));
       return null;
     }
 

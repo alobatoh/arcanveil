@@ -51,6 +51,7 @@ import { separarVocativo } from './Segmentos.js';
 import { leerRecuento } from './Recuento.js';
 import { infinitivoAPrimera, intento } from './Infinitivo.js';
 import { aclararArma, desenvaina, ataca } from './ArmaPedida.js';
+import { leerComer } from '../player/Comida.js';
 import { leerEspera, minutosHasta, duracionValida, decirDuracion, decirReloj, ESPERA_MAXIMA_MIN, PULSO_MIN } from './Espera.js';
 
 /** Las franjas del reloj, como las dice la cabecera (`FRANJAS_TEXTO` en app.js). */
@@ -608,6 +609,16 @@ export class TurnResolver extends SystemBase {
       this._anadirEntrada(VOCES.JUGADOR, escrito);
       this._anadirEntrada(VOCES.SISTEMA, espera.aclaracion);
       return { aclaracion: 'espera', motivo: espera.motivo };
+    }
+
+    // Comer dentro de una orden compuesta («estoy en un campamento y como una
+    // ración»): el narrador contaba que comía sin efecto mecánico. Comer va
+    // solo, para que la regla del campamento se aplique (o se diga por qué no).
+    const hechosAccion = (plan.hechos ?? []).filter((s) => s.tipo === 'accion');
+    if (hechosAccion.length > 1 && hechosAccion.some((s) => leerComer(s.texto, []))) {
+      this._anadirEntrada(VOCES.JUGADOR, escrito);
+      this._anadirEntrada(VOCES.SISTEMA, 'Comer va solo: escríbelo en su propio turno («como una ración»). No has gastado nada.');
+      return { aclaracion: 'comer_compuesto' };
     }
     if (espera?.minutos) return this._esperar(escrito, limpio, espera);
 

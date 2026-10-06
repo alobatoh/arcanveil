@@ -31,6 +31,7 @@ import * as Tablas from '../world/EncounterTables.js';
 import { obtenerEnemigo } from '../data/enemies.data.js';
 import { DIRECCION, SOCIAL, AGRESION } from '../config/balance.config.js';
 import { ACCIONES_SOCIALES } from '../npc/RelationshipSystem.js';
+import { leerCampamento, leerComer, campamentoValido, puedeComer } from '../player/Comida.js';
 import { DOMINIO as DOMINIO_RNG } from '../core/RNG.js';
 import { obtenerPlantilla } from '../data/items.data.js';
 import { ARMAS, leerGesto } from './IntentParser.js';
@@ -145,6 +146,14 @@ export class ActionRouter extends SystemBase {
     // Gente, oro u objetos: el dato está en el estado. Sin dados, sin
     // director y sin nadie que escuche.
     if (intencion.recuento) return this._recontar(intencion);
+
+    // ─── Campamento y comer ─────────────────────────────────────────────
+    // Comer solo cura vida en un campamento (decisión del 6-oct-2026); el
+    // campamento se monta con una acción explícita. Ver `player/Comida.js`.
+    const campamento = leerCampamento(intencion.texto);
+    if (campamento) return this._campamento(campamento, contexto);
+    const comer = leerComer(intencion.texto, Object.values(this.leer('inventory.objetos.porId', {}) ?? {}));
+    if (comer) return this._comer(comer);
 
     // ─── El grupo ───────────────────────────────────────────────────────
     if (intencion.tipo === 'recruit') return this._reclutar(intencion);
@@ -544,6 +553,55 @@ export class ActionRouter extends SystemBase {
     const lista = otras.map(conArticulo);
     const cuales = lista.length === 1 ? lista[0] : `${lista.slice(0, -1).join(', ')} o ${lista.at(-1)}`;
     return this._rechazar(`No llevas ${dicha}. ¿Quieres ${infinitivo} ${cuales}?`);
+  }
+
+  /**
+   * Montar o desmontar el campamento. Es estado (`world.campamento`), no una
+   * frase: decir «estoy en un campamento» no lo monta. No hace seguro el
+   * sitio. Dentro de un interior no se acampa.
+   * @private
+   */
+  _campamento(accion, contexto = {}) {
+    const ubicacion = this.leer('world.ubicacion');
+    const actual = this.leer('world.campamento', null);
+    const valido = campamentoValido({ campamento: actual, ubicacion, sublugar: this.leer('world.sublugar') });
+    if (accion === 'desmonta') {
+      if (!valido) return this._rechazar('No tienes un campamento montado aquí. No ha pasado nada.');
+      this.store.fijar('world.campamento', null);
+      return { ruta: RUTA.LOCAL, motivo: null, narracion: 'Recoges el campamento y apagas el fuego.', voz: VOCES.DM, pistaDirector: null, resultado: { tipo: 'campamento', accion } };
+    }
+    if (contexto.enCombate || this.leer('combat.activo', false)) return this._rechazar('En mitad de una pelea no se monta un campamento.');
+    if (this.leer('world.sublugar')) return this._rechazar('Bajo techo no se acampa: sal fuera primero. No ha pasado nada.');
+    if (valido) return this._rechazar('Ya tienes el campamento montado aquí.');
+    const t = this.leer('world.tiempo', {}) ?? {};
+    this.store.fijar('world.campamento', { lugar: ubicacion, dia: t.dia ?? 1, hora: t.hora ?? 0, minuto: t.minuto ?? 0 });
+    return {
+      ruta: RUTA.LOCAL, motivo: null, voz: VOCES.DM, pistaDirector: null,
+      narracion: 'Montas el campamento: un fuego pequeño y un sitio donde sentarte. Aquí puedes comer para reponerte.',
+      resultado: { tipo: 'campamento', accion },
+    };
+  }
+
+  /**
+   * Comer: cura vida solo en un campamento válido, gasta una unidad una vez,
+   * y no repone maná. Fuera, con la vida llena o sin comida, se dice y no se
+   * gasta nada. El mismo `puedeComer` que el botón «Usar» del inventario.
+   * @private
+   */
+  _comer({ objeto }) {
+    const regla = puedeComer({
+      objeto,
+      vida: this.leer('player.vida'),
+      enCampamento: campamentoValido({ campamento: this.leer('world.campamento', null), ubicacion: this.leer('world.ubicacion'), sublugar: this.leer('world.sublugar') }),
+    });
+    if (!regla.ok) return this._rechazar(regla.texto);
+    this.despachar('inventory/consumir', { idObjeto: objeto.id });
+    const nombre = objeto.nombre.charAt(0).toLowerCase() + objeto.nombre.slice(1);
+    return {
+      ruta: RUTA.LOCAL, motivo: null, voz: VOCES.DM, pistaDirector: null,
+      narracion: `Comes ${articuloIndet(nombre, obtenerPlantilla(objeto.refId)?.genero ?? 'f')} ${nombre} junto al fuego del campamento: recuperas ${regla.cura} de vida.`,
+      resultado: { tipo: 'comer', cura: regla.cura, objeto: objeto.id },
+    };
   }
 
   /** Los presentes vivos con su clave de estado (`npcs.conocidos.porId`). @private */
@@ -1010,8 +1068,8 @@ export class ActionRouter extends SystemBase {
    * @private
    */
   _descansar(intencion, contexto) {
-    const inventario = this.sistema('inventory');
-    const tieneProvisiones = inventario?.tieneProvisiones() ?? false;
+    // Sin provisiones que gastar ni hambre que quitar (6-oct-2026): descansar
+    // recupera vida, maná y fatiga según el sitio, como siempre.
 
     // ─── Seguridad del sitio ────────────────────────────────────────────
     const lugar = this.leer('world.ubicacion');
@@ -1022,7 +1080,6 @@ export class ActionRouter extends SystemBase {
 
     this.despachar('player/descansar', {
       tipo: seguro ? 'largo' : 'corto',
-      conProvisiones: tieneProvisiones,
     });
 
     this.sistema('clock')?.avanzarTiempo(seguro ? 480 : 120, 'descanso');
@@ -1037,16 +1094,12 @@ export class ActionRouter extends SystemBase {
       ? 'El personaje descansa a cubierto y sin sobresaltos.'
       : 'El personaje descansa a la intemperie, en un sitio poco seguro. Puede pasar algo.');
 
-    if (!tieneProvisiones) {
-      pistas.push('No tiene provisiones: el descanso no le ha quitado el hambre.');
-    }
-
     return {
       ruta: RUTA.DIRECTOR,
       motivo: null,
       narracion: null,
       pistaDirector: pistas.join(' '),
-      resultado: { tipo: 'descanso', seguro, conProvisiones: tieneProvisiones },
+      resultado: { tipo: 'descanso', seguro },
     };
   }
 
