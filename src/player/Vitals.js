@@ -19,7 +19,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-import { VITALES, PROGRESION } from '../config/balance.config.js';
+import { VITALES, PROGRESION, MUNDO } from '../config/balance.config.js';
 import { modificadorEfectivo } from './Attributes.js';
 import { saturar, aplicarDelta, escalon, fraccion } from '../utils/math.js';
 
@@ -249,10 +249,13 @@ export function modificarRecurso(jugador, clave, delta) {
  * @param {string} [opciones.tipo='exploracion'] Tipo de turno.
  * @param {number} [opciones.multiplicadorSed=1] Efecto del clima.
  * @param {boolean} [opciones.inmuneHambre=false] Rasgo del linaje Crisol.
+ * @param {number} [opciones.minutos] Minutos del pulso. Solo cuenta en
+ *   `tipo: 'espera'`: el desgaste va en proporción a los minutos de un turno
+ *   (el último pulso de una espera puede ser de 5 minutos y no vale como 10).
  * @returns {{parche: Object, avisos: string[], dano: number}}
  */
 export function desgasteTurno(jugador, opciones = {}) {
-  const { tipo = 'exploracion', multiplicadorSed = 1, inmuneHambre = false } = opciones;
+  const { tipo = 'exploracion', multiplicadorSed = 1, inmuneHambre = false, minutos } = opciones;
   const s = VITALES.supervivencia;
 
   const parche = { player: {} };
@@ -275,6 +278,15 @@ export function desgasteTurno(jugador, opciones = {}) {
   } else if (tipo === 'descanso') {
     // Descansar no consume fatiga: la recupera. Eso lo gestiona descansar().
     fatiga = 0;
+  } else if (tipo === 'espera') {
+    // Esperar desgasta como explorar, en proporción a los minutos del pulso.
+    // Un pulso parcial de 5 minutos es medio turno: ni castiga ni cuenta como
+    // uno entero. El daño por privación sigue siendo por pulso (no se reparte).
+    const turno = MUNDO.tiempo.minutosPorTurno;
+    const escala = Math.max(0, Math.min(1, (Number(minutos) || turno) / turno));
+    hambre *= escala;
+    sed *= escala;
+    fatiga *= escala;
   }
 
   const aplicar = (clave, consumo) => {
@@ -298,7 +310,8 @@ export function desgasteTurno(jugador, opciones = {}) {
   aplicar('fatiga', fatiga);
 
   // — Regeneración pasiva fuera de combate —
-  if (tipo !== 'combate') {
+  // Esperar no es descansar: ni cura ni devuelve maná (eso es `descansar`).
+  if (tipo !== 'combate' && tipo !== 'espera') {
     const vidaMax = jugador?.vida?.max ?? 1;
     const manaMax = jugador?.mana?.max ?? 0;
 

@@ -50,6 +50,20 @@ import { interpretarTurno, escenaDesde } from './Interpretacion.js';
 import { separarVocativo } from './Segmentos.js';
 import { leerRecuento } from './Recuento.js';
 import { infinitivoAPrimera, intento } from './Infinitivo.js';
+import { aclararArma, desenvaina, ataca } from './ArmaPedida.js';
+import { leerEspera, minutosHasta, duracionValida, decirDuracion, decirReloj, ESPERA_MAXIMA_MIN, PULSO_MIN } from './Espera.js';
+
+/** Las franjas del reloj, dichas. */
+const NOMBRE_FRANJA = Object.freeze({
+  madrugada: 'de madrugada', alba: 'el alba', manana: 'por la mañana', mediodia: 'mediodía',
+  tarde: 'por la tarde', ocaso: 'el ocaso', noche: 'de noche',
+});
+
+/** Lo que se ve al acabar una espera si ha cambiado la franja. */
+const FRASE_FRANJA = Object.freeze({
+  madrugada: 'Pasa la medianoche.', alba: 'Clarea: amanece.', manana: 'Ya es de mañana.',
+  mediodia: 'Es mediodía.', tarde: 'Entra la tarde.', ocaso: 'El sol se pone.', noche: 'Cae la noche.',
+});
 
 /** Una huella corta y estable de un texto (FNV-1a), para identificar peticiones. */
 function huellaCorta(texto) {
@@ -572,6 +586,35 @@ export class TurnResolver extends SystemBase {
         ? `¿Con quién? Aquí están ${aqui.map((n) => (n.rol ? `${n.nombre} (${n.rol})` : n.nombre)).join(', ')}, y nadie te ha provocado. Di con quién te encaras y cómo: con palabras o a golpes.`
         : 'Aquí no hay nadie con quien encararse.');
       return { aclaracion: 'enfrentar_sin_destino' };
+    }
+
+    // ─── Esperar un rato concreto ─────────────────────────────────────
+    // «Espero dos horas» decía «Esperas dos horas» y el reloj avanzaba diez
+    // minutos. Una espera con duración u hora pasa de verdad, pulso a pulso
+    // (ver `_esperar`); si no se puede medir o no toca, se aclara aquí, sin
+    // gastar turno ni tiempo.
+    const espera = this._esperaPedida(plan);
+    if (espera?.aclaracion) {
+      this._anadirEntrada(VOCES.JUGADOR, escrito);
+      this._anadirEntrada(VOCES.SISTEMA, espera.aclaracion);
+      return { aclaracion: 'espera', motivo: espera.motivo };
+    }
+    if (espera?.minutos) return this._esperar(escrito, limpio, espera);
+
+    // ─── Atacar con algo que no se tiene ──────────────────────────────
+    // Antes de tirar, de intervenir en la situación o de abrir combate: si
+    // la orden ataca (o desenvaina) con un arma que no está, no sirve o no
+    // está en la mano, se dice y no se hace nada. Lo mismo comprueba
+    // `CombatManager.jugadaLibre` (ver `engine/ArmaPedida.js`).
+    const armaMal = aclararArma({
+      segmentos: (plan.hechos ?? []).filter((s) => s.tipo === 'accion').map((s) => s.texto),
+      objetos: Object.values(this.leer('inventory.objetos.porId', {}) ?? {}),
+      equipado: this.leer('inventory.equipado', {}) ?? {},
+    });
+    if (armaMal) {
+      this._anadirEntrada(VOCES.JUGADOR, escrito);
+      this._anadirEntrada(VOCES.SISTEMA, armaMal.texto);
+      return { aclaracion: 'arma', motivo: armaMal.motivo, arma: armaMal.arma };
     }
 
     // Los comandos no consumen turno.
@@ -1554,6 +1597,234 @@ export class TurnResolver extends SystemBase {
     this.store.fijar('ai.memoria', this.memoria.serializar());
     this._anadirEntrada(VOCES.SISTEMA, mensajeDeEdicion(r));
     return { canon: r.edicion.texto, revisada: r.revisados.length > 0, resultado: r.edicion.resultado };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     ESPERAR UN RATO CONCRETO
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * ¿Lo que hace el jugador es esperar un tiempo concreto? Si sí, cuánto; si
+   * no se puede o no se sabe, el porqué para aclararlo.
+   *
+   * Solo cuentan los trozos que de verdad hace: lo citado, lo negado y lo
+   * condicional no están en `plan.hechos` (ver `Segmentos.ordenar`).
+   *
+   * @param {Object} plan
+   * @returns {null|{minutos: number, objetivo: Object|null, dicho: string}|{aclaracion: string, motivo: string}}
+   * @private
+   */
+  _esperaPedida(plan) {
+    const hechos = (plan?.hechos ?? []).filter((s) => s.tipo === 'accion' || s.tipo === 'espera');
+    const leida = hechos.map((s) => leerEspera(s.texto)).find((e) => e && e.clase !== 'simple');
+    if (!leida) return null;
+
+    const COMO = 'Di cuánto («espero una hora», «espero 30 minutos») o hasta cuándo («hasta que anochezca», «hasta las nueve»).';
+    const aclarar = (motivo, texto) => ({ motivo, aclaracion: `${texto} No ha pasado el tiempo.` });
+
+    if ((plan.hechos ?? []).length > 1) {
+      return aclarar('compuesta', 'Una espera larga va sola: haz primero lo demás y escribe la espera en el turno siguiente.');
+    }
+    if (leida.clase === 'aclarar') {
+      const porque = {
+        condicion: `No se puede saber cuánto tardará eso. ${COMO}`,
+        vaga: `¿Cuánto es eso? ${COMO}`,
+        ambigua: `«Hasta mañana» puede ser hasta el amanecer o un día entero. ${COMO}`,
+        hora_invalida: `Esa hora no existe en el reloj. ${COMO}`,
+        invalida: `Esa duración no vale. ${COMO}`,
+      };
+      return aclarar(leida.motivo, porque[leida.motivo] ?? COMO);
+    }
+
+    // Lo que no se puede dejar atrás esperando.
+    if (this.leer('combat.activo', false)) {
+      return aclarar('combate', 'Estás en mitad de un combate: no se puede dejar pasar el tiempo. Sigue siendo tu turno.');
+    }
+    const encuentro = this.sistema('exploration')?.encuentroPendiente?.();
+    if (encuentro) {
+      return aclarar('peligro', `Tienes delante ${encuentro.nombre ?? 'algo que pide una decisión'}: decide qué haces antes de esperar.`);
+    }
+    const hostil = (this.leer('npcs.presentes', []) ?? []).map((id) => this.leer(`npcs.conocidos.porId.${id}`)).find((n) => n?.hostil);
+    if (hostil) {
+      return aclarar('peligro', `${hostil.nombre} está aquí y viene a por ti: decide qué haces antes de esperar.`);
+    }
+
+    let minutos = leida.minutos;
+    let objetivo = null;
+    if (leida.clase === 'hasta') {
+      const ahora = this.leer('world.tiempo');
+      const r = minutosHasta(leida, ahora);
+      if (r.ya) return aclarar('ya', `Ya es ${NOMBRE_FRANJA[r.ya] ?? r.ya} (${decirReloj(ahora)}): no hay que esperar a que llegue.`);
+      if (r.invalida) return aclarar('hora_invalida', `Esa hora no existe en el reloj. ${COMO}`);
+      minutos = r.minutos;
+      objetivo = leida;
+    }
+    if (!duracionValida(minutos)) {
+      return aclarar('invalida', Number.isFinite(minutos) && minutos > ESPERA_MAXIMA_MIN
+        ? `Como mucho se espera un día seguido (24 horas). ${COMO}`
+        : `Esa duración no vale. ${COMO}`);
+    }
+    return { minutos, objetivo, dicho: leida.dicho };
+  }
+
+  /**
+   * Espera de verdad: un pulso del motor cada diez minutos (el último,
+   * parcial), con todo lo que pasa en cada turno (desgaste, situaciones,
+   * plazos, clima), y una sola narración al final con lo que ha pasado.
+   *
+   * Se corta en cuanto pasa algo que pide al jugador: empieza una pelea,
+   * aparece un encuentro, cambia la escena (alguien llega o se va, una
+   * situación avanza), cambia el sitio, el cuerpo empieza a fallar o vence
+   * un encargo. Se narra lo que ha pasado de verdad: «Esperas 20 minutos. La
+   * espera se interrumpe: …», no las dos horas pedidas.
+   *
+   * Los pulsos cuentan como turnos del MOTOR (`meta.turno` sube uno por
+   * pulso), no como respuestas del narrador: no se le llama ninguna vez.
+   * Esperar no es descansar: ni raciones, ni curación, ni maná (ver
+   * `Vitals.desgasteTurno`, tipo 'espera').
+   *
+   * @private
+   */
+  async _esperar(escrito, limpio, espera) {
+    if (this._ocupado) {
+      this.emitir(EVENTOS_TURNO.BLOQUEADO, { motivo: 'turno en curso' });
+      return null;
+    }
+    this._ocupado = true;
+    const turnoInicio = this.leer('meta.turno', 0) + 1;
+    this.emitir(EVENTOS_TURNO.INICIO, { turno: turnoInicio, accion: limpio, intencion: { tipo: 'wait', espera } });
+    this._bloquearEntrada(true);
+    this.store.instantanea('turno');
+
+    const bajas = [];
+    try {
+      this._anadirEntrada(VOCES.JUGADOR, escrito, { turno: turnoInicio });
+
+      const clock = this.sistema('clock');
+      const avisos = { combate: false, mision: null };
+      bajas.push(this.bus.on('combat:request', () => { avisos.combate = true; }));
+      bajas.push(this.bus.on('quests:failed', (d) => { avisos.mision = avisos.mision ?? `has fallado «${d?.titulo ?? 'un encargo'}».`; }));
+      bajas.push(this.bus.on('quests:expiring', (d) => { avisos.mision = avisos.mision ?? `«${d?.titulo ?? 'un encargo'}» vence en ${d?.diasRestantes ?? 'pocos'} días.`; }));
+
+      const desde = { ...this.leer('world.tiempo') };
+      let transcurrido = 0;
+      let pulsos = 0;
+      let causa = null;
+      while (transcurrido < espera.minutos) {
+        const antes = this._fotoEspera();
+        const contexto0 = new Set(this.memoria.contextoEscena);
+        const paso = Math.min(PULSO_MIN, espera.minutos - transcurrido);
+        await clock.turno({ tipo: 'espera', minutos: paso });
+        transcurrido += paso;
+        pulsos += 1;
+        const nuevos = this.memoria.contextoEscena.filter((c) => !contexto0.has(c));
+        causa = this._porQueSeCorta(antes, this._fotoEspera(), avisos, nuevos);
+        if (causa) break;
+      }
+
+      // Lo narrado aquí no se vuelve a contar en el turno siguiente.
+      if (causa?.contexto) this.memoria.contextoEscena = this.memoria.contextoEscena.filter((c) => c !== causa.contexto);
+
+      const ahora = this.leer('world.tiempo');
+      const reloj = `${decirReloj(ahora)}, ${NOMBRE_FRANJA[ahora.franja] ?? ahora.franja}`;
+      const cambio = !causa && ahora.franja !== desde.franja ? ` ${FRASE_FRANJA[ahora.franja] ?? ''}` : '';
+      let texto;
+      if (causa) {
+        texto = `Esperas ${decirDuracion(transcurrido)}. La espera se interrumpe: ${causa.texto} ${reloj}.`;
+      } else if (espera.objetivo?.franja) {
+        texto = `Esperas hasta ${espera.objetivo.dicho}: ${decirDuracion(transcurrido)}.${cambio} ${reloj}.`;
+      } else {
+        texto = `Esperas ${decirDuracion(transcurrido)}.${cambio} ${reloj}.`;
+      }
+      texto = texto.replace(/\s+/g, ' ').replace(/\.\./g, '.');
+
+      const turnoFinal = this.leer('meta.turno', turnoInicio);
+      this._anadirEntrada(VOCES.DM, this._cerrarTurno(texto), { turno: turnoFinal });
+
+      this.memoria.registrarTurno({ numero: turnoFinal, accion: limpio, narracion: texto, mood: 'neutro', tirada: null });
+      this.store.descartarInstantanea('turno');
+      this.store.fijar('ai.memoria', this.memoria.serializar());
+
+      const resumen = {
+        turno: turnoFinal,
+        accion: limpio,
+        intencion: { tipo: 'wait' },
+        espera: { pedidos: espera.minutos, transcurridos: transcurrido, pulsos, interrumpida: causa?.tipo ?? null, causa: causa?.texto ?? null },
+      };
+      this.emitir(EVENTOS_TURNO.RESUELTO, resumen);
+      return resumen;
+    } catch (e) {
+      this.store.restaurar('turno');
+      this.log.error('fallo al esperar', e);
+      this._anadirEntrada(VOCES.SISTEMA, 'Algo se ha torcido. El momento pasa sin consecuencias.', { turno: turnoInicio });
+      this.emitir(EVENTOS_TURNO.ERROR, { turno: turnoInicio, error: e?.message });
+      return null;
+    } finally {
+      for (const baja of bajas) baja();
+      this._ocupado = false;
+      this._bloquearEntrada(false);
+      this.emitir(EVENTOS_TURNO.FIN, { turno: this.leer('meta.turno', turnoInicio) });
+    }
+  }
+
+  /** Lo que se mira antes y después de cada pulso de una espera. @private */
+  _fotoEspera() {
+    const p = this.leer('player') ?? {};
+    return {
+      ubicacion: this.leer('world.ubicacion'),
+      presentes: [...(this.leer('npcs.presentes', []) ?? [])],
+      vida: p.vida?.actual ?? 0,
+      hambre: p.hambre, sed: p.sed, fatiga: p.fatiga,
+      combate: Boolean(this.leer('combat.activo', false)),
+      encuentro: Boolean(this.sistema('exploration')?.encuentroActivo),
+    };
+  }
+
+  /**
+   * ¿Ha pasado algo que corta la espera? Solo cambios que piden al jugador
+   * una decisión o le cambian la escena; que el estado se haya guardado de
+   * otra forma no cuenta.
+   *
+   * @returns {{tipo: string, texto: string, contexto?: Object}|null}
+   * @private
+   */
+  _porQueSeCorta(a, d, avisos, nuevos) {
+    const nombre = (id) => this.leer(`npcs.conocidos.porId.${id}.nombre`) ?? 'alguien';
+    const punto = (t) => (/[.!?…»]$/.test(t) ? t : `${t}.`);
+
+    if (avisos.combate || (!a.combate && d.combate)) {
+      const enemigos = Object.values(this.leer('combat.combatientes', {}) ?? {}).filter((c) => c.bando === 'enemigo').map((c) => c.nombre);
+      return { tipo: 'combate', texto: enemigos.length ? `te atacan (${[...new Set(enemigos)].join(', ')}).` : 'empieza una pelea.' };
+    }
+    if (!a.encuentro && d.encuentro) {
+      const e = this.sistema('exploration')?.encuentroPendiente?.();
+      return { tipo: 'encuentro', texto: `${e?.nombre ?? 'algo'} se presenta y pide una decisión.` };
+    }
+    if (d.ubicacion !== a.ubicacion) return { tipo: 'lugar', texto: 'ya no estás donde empezaste a esperar.' };
+
+    const escena = nuevos.find((c) => /^EN ESCENA:/i.test(c.texto));
+    if (escena) return { tipo: 'situacion', texto: punto(escena.texto.replace(/^EN ESCENA:\s*/i, '')), contexto: escena };
+
+    const idos = a.presentes.filter((id) => !d.presentes.includes(id));
+    const llegan = d.presentes.filter((id) => !a.presentes.includes(id));
+    if (idos.length || llegan.length) {
+      const partes = [
+        ...idos.map((id) => `${nombre(id)} se va`),
+        ...llegan.map((id) => `llega ${nombre(id)}`),
+      ];
+      return { tipo: 'presentes', texto: `${partes.join(' y ')}.` };
+    }
+
+    if (d.vida < a.vida) {
+      const falta = ['hambre', 'sed', 'fatiga'].filter((k) => (d[k] ?? 1) <= 0);
+      const por = { hambre: 'el hambre', sed: 'la sed', fatiga: 'el agotamiento' };
+      return { tipo: 'recursos', texto: `${falta.length ? falta.map((k) => por[k]).join(' y ') : 'el cuerpo'} te pasa factura: pierdes ${a.vida - d.vida} de vida.` };
+    }
+    const agotado = ['hambre', 'sed', 'fatiga'].find((k) => (a[k] ?? 1) > 0 && (d[k] ?? 1) <= 0);
+    if (agotado) return { tipo: 'recursos', texto: `${{ hambre: 'el hambre', sed: 'la sed', fatiga: 'el cansancio' }[agotado]} ya no se aguanta.` };
+
+    if (avisos.mision) return { tipo: 'mision', texto: avisos.mision };
+    return null;
   }
 
   /**
