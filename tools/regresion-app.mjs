@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { sujetoRetrato as encargoRetrato } from '../src/art/rasgos.js';
 import { crearProxyImagen } from './imagen-local-proxy.mjs';
+import { decirDuracion } from '../src/engine/Espera.js';
 
 const ROOT = process.cwd();
 const PORT = 8765;
@@ -165,9 +166,33 @@ async function until(expression, timeout = 12000) {
   }
   throw new Error(`Tiempo agotado esperando: ${expression}`);
 }
+/**
+ * Espera a que la pantalla esté quieta: sin texto a medio escribir ni
+ * animaciones finitas en curso. Las capturas de la partida salían con
+ * «Guar█» a medio teclear y las últimas líneas a medio aparecer: no sirven
+ * para juzgar lectura ni contraste. Hace lo que haría un jugador con prisa
+ * (un clic en la bitácora termina de escribir) y espera a que el texto lleve
+ * 300 ms sin cambiar. Tope de 8 s: si no se asienta, se dice.
+ */
+async function asentar() {
+  return evaluate(`(async () => {
+    document.querySelector('#bitacora')?.click();
+    const quietas = () => document.getAnimations().filter((a) => a.playState === 'running' && Number.isFinite(a.effect?.getTiming?.().iterations ?? 1) && (a.effect?.getTiming?.().iterations ?? 1) !== Infinity).length === 0;
+    let antes = null; let estable = 0;
+    for (let i = 0; i < 80; i++) {
+      const texto = document.querySelector('#bitacora')?.textContent ?? '';
+      if (texto === antes && quietas()) { estable += 100; if (estable >= 300) return true; } else estable = 0;
+      antes = texto;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  })()`);
+}
 async function shot(name) {
   if (!out) return;
   await import('node:fs/promises').then(m => m.mkdir(out, { recursive: true }));
+  const quieta = await asentar();
+  if (!quieta) console.warn(`captura ${name}: la pantalla no se asentó en 8 s; se toma igual`);
   const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   await writeFile(join(out, name), Buffer.from(r.data, 'base64'));
 }
@@ -406,6 +431,34 @@ try {
   if (!/guardas|no llevas/i.test(gesto.texto)) throw new Error(`guardar la espada narró otra cosa: «${gesto.texto}»`);
   if (/[A-Z]{4,}\.?$/.test(gesto.texto.trim())) throw new Error(`guardar la espada acabó en sonido: «${gesto.texto}»`);
   if (turns.at(-1).lines < 20) throw new Error(`la bitácora no avanzó: ${turns.at(-1).lines}`);
+
+  // Esperar pasa de verdad en la app: lo narrado coincide con el reloj
+  // guardado y con la cabecera. Si la escena pide decisión, se aclara sin
+  // mover el reloj; si algo la corta, dice cuánto pasó de verdad.
+  const espera = await evaluate(`(async () => {
+    const t0 = ARCANVEIL.ver('world.tiempo');
+    const antes = ARCANVEIL.ver('narrative.entradas', []).length;
+    await ARCANVEIL.jugar('espero 30 minutos');
+    const t1 = ARCANVEIL.ver('world.tiempo');
+    const nuevas = ARCANVEIL.ver('narrative.entradas', []).slice(antes);
+    await new Promise((r) => setTimeout(r, 400));
+    return {
+      min: ((t1.dia - t0.dia) * 24 + t1.hora - t0.hora) * 60 + t1.minuto - t0.minuto,
+      dm: nuevas.filter((e) => e.voz === 'dm').map((e) => e.texto).join(' '),
+      sistema: nuevas.filter((e) => e.voz === 'system').map((e) => e.texto).join(' '),
+      dia: t1.dia, hora: t1.hora, minuto: t1.minuto,
+      cabecera: [...document.querySelectorAll('.escena__dato')].map((x) => x.textContent).join('|'),
+    };
+  })()`);
+  if (espera.min === 0) {
+    if (!/No ha pasado el tiempo/.test(espera.sistema)) throw new Error(`«espero 30 minutos» no movió el reloj y no lo aclaró: «${espera.dm || espera.sistema}»`);
+  } else {
+    const reloj = `Día ${espera.dia}, ${String(espera.hora).padStart(2, '0')}:${String(espera.minuto).padStart(2, '0')}`;
+    if (espera.min > 30) throw new Error(`«espero 30 minutos» pasó ${espera.min} minutos`);
+    if (!espera.dm.startsWith(`Esperas ${decirDuracion(espera.min)}`) || !espera.dm.includes(reloj)) throw new Error(`la espera no narra lo que pasó (${espera.min} min, ${reloj}): «${espera.dm}»`);
+    if (!espera.cabecera.includes(`día ${espera.dia}`)) throw new Error(`la cabecera no muestra el día guardado: ${espera.cabecera}`);
+  }
+
   await shot(`03-partida-20-turnos-${viewport.label}.png`);
 
   // Texto hostil por todas las puertas que acaban en pantalla: el nombre y el
