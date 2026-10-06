@@ -53,8 +53,14 @@ import { infinitivoAPrimera, intento } from './Infinitivo.js';
 import { aclararArma, desenvaina, ataca } from './ArmaPedida.js';
 import { leerEspera, minutosHasta, duracionValida, decirDuracion, decirReloj, ESPERA_MAXIMA_MIN, PULSO_MIN } from './Espera.js';
 
-/** Las franjas del reloj, dichas. */
+/** Las franjas del reloj, como las dice la cabecera (`FRANJAS_TEXTO` en app.js). */
 const NOMBRE_FRANJA = Object.freeze({
+  madrugada: 'de madrugada', alba: 'al alba', manana: 'por la mañana', mediodia: 'a mediodía',
+  tarde: 'por la tarde', ocaso: 'al ocaso', noche: 'de noche',
+});
+
+/** «Ya es …»: la franja como estado. */
+const YA_ES = Object.freeze({
   madrugada: 'de madrugada', alba: 'el alba', manana: 'por la mañana', mediodia: 'mediodía',
   tarde: 'por la tarde', ocaso: 'el ocaso', noche: 'de noche',
 });
@@ -1658,7 +1664,7 @@ export class TurnResolver extends SystemBase {
     if (leida.clase === 'hasta') {
       const ahora = this.leer('world.tiempo');
       const r = minutosHasta(leida, ahora);
-      if (r.ya) return aclarar('ya', `Ya es ${NOMBRE_FRANJA[r.ya] ?? r.ya} (${decirReloj(ahora)}): no hay que esperar a que llegue.`);
+      if (r.ya) return aclarar('ya', `Ya es ${YA_ES[r.ya] ?? r.ya} (${decirReloj(ahora)}): no hay que esperar a que llegue.`);
       if (r.invalida) return aclarar('hora_invalida', `Esa hora no existe en el reloj. ${COMO}`);
       minutos = r.minutos;
       objetivo = leida;
