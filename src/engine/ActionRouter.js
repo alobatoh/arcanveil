@@ -29,7 +29,8 @@ import { obtenerSublugar, obtenerLugar } from '../data/locations.data.js';
 import { evaluarAmbicion } from './Ambicion.js';
 import * as Tablas from '../world/EncounterTables.js';
 import { obtenerEnemigo } from '../data/enemies.data.js';
-import { DIRECCION } from '../config/balance.config.js';
+import { DIRECCION, SOCIAL, AGRESION } from '../config/balance.config.js';
+import { ACCIONES_SOCIALES } from '../npc/RelationshipSystem.js';
 import { DOMINIO as DOMINIO_RNG } from '../core/RNG.js';
 import { obtenerPlantilla } from '../data/items.data.js';
 import { ARMAS, leerGesto } from './IntentParser.js';
@@ -545,6 +546,143 @@ export class ActionRouter extends SystemBase {
     return this._rechazar(`No llevas ${dicha}. ¿Quieres ${infinitivo} ${cuales}?`);
   }
 
+  /** Los presentes vivos con su clave de estado (`npcs.conocidos.porId`). @private */
+  _presentesConClave() {
+    return (this.leer('npcs.presentes', []) ?? [])
+      .map((id) => ({ ...(this.leer(`npcs.conocidos.porId.${id}`) ?? {}), clave: id }))
+      .filter((n) => n.nombre && n.situacion !== 'muerto');
+  }
+
+  /**
+   * A quién apunta el ataque, según lo dicho. Sin efectos.
+   *
+   * @param {string} texto
+   * @returns {null
+   *   | {estado: 'presente', npc: Object}
+   *   | {estado: 'ausente', nombre: string}
+   *   | {estado: 'oficio_ausente', oficio: string}
+   *   | {estado: 'ambiguo', opciones: Object[]}}
+   *   null: no se ha nombrado a nadie (eso NO es un nombre ausente).
+   * @private
+   */
+  _blancoDelAtaque(texto) {
+    const original = String(texto ?? '');
+    const llano = sinAcentos(original.toLowerCase());
+    const presentes = this._presentesConClave();
+    const escapar = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. Un nombre de los que están (sin mirar mayúsculas ni tildes; nombres
+    //    de varias palabras enteros). Si nombra a dos, el primero tras el verbo.
+    const nombrados = presentes
+      .map((n) => ({ n, i: llano.search(new RegExp(`\\b${escapar(sinAcentos(n.nombre.toLowerCase()))}\\b`)) }))
+      .filter((x) => x.i >= 0)
+      .sort((a, b) => a.i - b.i);
+    if (nombrados.length) return { estado: 'presente', npc: nombrados[0].n };
+
+    // 2. Un nombre que no está: tras «a» o «contra» y sin artículo («ataco a
+    //    Zorvak», «ataco a zorvak»). Las locuciones («a traición», «a por»,
+    //    «a golpes») no son nombres.
+    const LOCUCION = /^(?:traicion|ciegas|muerte|golpes|pedradas|punetazos|patadas|mano|distancia|escondidas|bocajarro|quemarropa|fondo|saco|por|degüello|deguello|lo|la|las|los|el|un|una|unos|unas|ese|esa|este|esta|aquel|aquella|mi|tu|su|todos|todas|cualquiera|alguien|nadie|uno|otro|otra|quien|quienes|matar|sangre|cuchillo|espada|pelear|luchar)$/;
+    const m = llano.match(/\b(?:ataco|atacamos|golpeo|pego|apunalo|acuchillo|disparo|embisto|arremeto|hiero|me lanzo|cargo)\b[^,.;]*?\b(?:a|contra)\s+([a-zñ]{3,})/);
+    if (m && !LOCUCION.test(m[1])) {
+      const dichoOriginal = original.match(new RegExp(`\\b(${m[1].split('').map((c) => (/[a-z]/.test(c) ? `[${c}${c.toUpperCase()}${({ a: 'áÁ', e: 'éÉ', i: 'íÍ', o: 'óÓ', u: 'úÚü' })[c] ?? ''}]` : escapar(c))).join('')})`, 'i'))?.[1] ?? m[1];
+      return { estado: 'ausente', nombre: dichoOriginal.charAt(0).toUpperCase() + dichoOriginal.slice(1) };
+    }
+
+    // 3. Por oficio: «al guardia», «a la herrera», «contra el vendedor».
+    const o = llano.match(/\b(?:al|a la|a los|a las|contra el|contra la|contra los|contra las)\s+([a-zñ]{4,})/);
+    if (o && !ATAQUE_INDEFINIDO.test(llano)) {
+      const raiz = o[1].replace(/(?:es|s)$/, '').slice(0, Math.max(4, o[1].length - 2));
+      const porOficio = presentes.filter((n) => n.rol && sinAcentos(n.rol.toLowerCase()).split(/\s+/)[0].startsWith(raiz));
+      if (porOficio.length === 1) return { estado: 'presente', npc: porOficio[0] };
+      if (porOficio.length > 1) return { estado: 'ambiguo', opciones: porOficio };
+      // Si nadie de los que hay tiene ese oficio y hay gente, se dice. Sin
+      // nadie delante, «al bandido» puede ser buscar pelea (tablas, abajo).
+      if (presentes.length) return { estado: 'oficio_ausente', oficio: o[1] };
+    }
+    return null;
+  }
+
+  /**
+   * Atacar a una persona concreta de la escena. Abre el combate contra ELLA
+   * (su nombre y su referencia en la ficha del combatiente), con la iniciativa
+   * del que da el primer golpe. Si es un civil, los guardias que estén
+   * delante se meten (con su nombre), y las consecuencias se aplican aquí,
+   * en el motor, una sola vez (ver `_consecuenciasAgresion`). El narrador
+   * recibe el hecho resuelto; no inventa efectos.
+   *
+   * @param {Object} npc De `_presentesConClave`.
+   * @private
+   */
+  _atacarPersona(npc) {
+    const esGuardia = (n) => /^guard/.test(sinAcentos(String(n.rol ?? '').toLowerCase())) || /guardia/.test(String(n.faccion ?? ''));
+    const plantillaDe = (n) => (obtenerEnemigo(n.refId) ? n.refId : esGuardia(n) ? AGRESION.plantillaGuardia : AGRESION.plantillaCivil);
+    const civil = !npc.hostil;
+    const otros = this._presentesConClave().filter((n) => n.clave !== npc.clave);
+    const guardias = civil ? otros.filter(esGuardia) : [];
+
+    const enemigos = [npc, ...guardias].map((n) => ({ refId: plantillaDe(n), count: 1, nombre: n.nombre, npc: n.clave }));
+    let narracion = null;
+    if (civil) {
+      const hecho = this._consecuenciasAgresion(npc, otros, guardias);
+      const lista = (l) => (l.length > 1 ? `${l.slice(0, -1).join(', ')} y ${l.at(-1)}` : l[0]);
+      narracion = `Atacas a ${npc.nombre}.${hecho.testigos.length ? ` Lo han visto ${lista(otros.map((n) => n.nombre))}.` : ' Nadie más lo ha visto.'}`
+        + (guardias.length ? ` ${lista(guardias.map((n) => n.nombre))} ${guardias.length > 1 ? 'se meten' : 'se mete'} en medio.` : '');
+    }
+
+    // Quien ataca, pega primero (`playerAmbush`, +100 de iniciativa). La
+    // pelea la pide el turno después de narrar (`ruta.combate`).
+    return {
+      ruta: RUTA.LOCAL, motivo: null, narracion, voz: VOCES.DM, pistaDirector: null,
+      combate: { enemies: enemigos, playerAmbush: true, teVen: true, contra: npc.nombre },
+      resultado: { tipo: 'combate', origen: civil ? 'agresion_civil' : 'npc_presente', objetivo: npc.clave },
+    };
+  }
+
+  /**
+   * Lo que pasa por atacar a un civil, aplicado una vez por hecho.
+   *
+   * Con testigos: la acción social «atacar» (la de siempre, que se propaga a
+   * quien está y le conoce) y la reputación de «crimen presenciado» con la
+   * facción de la víctima, de los guardias delante o del lugar. Sin testigos:
+   * solo la víctima lo sabe (sin propagar ni reputación: no se inventan
+   * testigos). Todo queda en `world.agresiones`: ni una recarga ni una
+   * reparación del narrador lo vuelven a aplicar.
+   *
+   * @private
+   */
+  _consecuenciasAgresion(npc, otros, guardias) {
+    const turno = this.leer('meta.turno', 0);
+    const id = `agr_${turno}_${npc.clave}`;
+    const registro = this.leer('world.agresiones', {}) ?? {};
+    if (registro[id]) return registro[id];
+
+    const quien = this.leer('player.nombre', 'el forastero');
+    const relaciones = this.sistema('relationships');
+    const npcs = this.sistema('npcs');
+    const testigos = otros.map((n) => n.clave);
+
+    if (testigos.length) relaciones?.aplicarAccion?.(npc.clave, 'atacar', { detalle: 'delante de testigos' });
+    else relaciones?.ajustar?.(npc.clave, ACCIONES_SOCIALES.atacar.delta, `${ACCIONES_SOCIALES.atacar.registro} (sin testigos)`);
+    npcs?.recordar?.(npc.clave, `${quien} le atacó.`, { tipo: 'agresion', peso: 4 });
+    for (const t of otros) npcs?.recordar?.(t.clave, `Vio a ${quien} atacar a ${npc.nombre}.`, { tipo: 'testimonio', peso: 3 });
+
+    const facciones = [];
+    if (testigos.length) {
+      for (const f of [npc.faccion, ...guardias.map((g) => g.faccion)].filter(Boolean)) if (!facciones.includes(f)) facciones.push(f);
+      if (!facciones.length) {
+        const delLugar = obtenerLugar(this.leer('world.ubicacion'))?.facciones?.[0];
+        if (delLugar) facciones.push(delLugar);
+      }
+      for (const f of facciones) this.sistema('reputation')?.ajustar?.(f, SOCIAL.reputacion.porCrimenPresenciado, { motivo: `atacó a ${npc.nombre}` });
+    }
+
+    const hecho = { id, turno, victima: npc.clave, nombre: npc.nombre, testigos, guardias: guardias.map((g) => g.clave), facciones, lugar: this.leer('world.ubicacion') };
+    this.store.fijar('world.agresiones', { ...registro, [id]: hecho });
+    this.emitir('memory:remember', { texto: `${quien} atacó a ${npc.nombre}${testigos.length ? ' delante de testigos' : ''}.`, peso: 4, categoria: 'suceso' });
+    return hecho;
+  }
+
   /**
    * Cuánto aprieta el mundo, según la intensidad elegida.
    *
@@ -633,6 +771,16 @@ export class ActionRouter extends SystemBase {
     // Con un combate en curso, el panel manda.
     if (contexto.enCombate) return { ruta: RUTA.DIRECTOR, motivo: null, narracion: null, pistaDirector: null, resultado: null };
 
+    // «No ataco a Korsa» no es un ataque: el analizador puntúa «ataco» y no
+    // ve el «no». Ni combate, ni consecuencias, ni testigos.
+    if (/^(?:y |pero |luego )?(?:no|nunca|jamas|ni)\b/.test(sinAcentos(String(intencion.texto ?? '').toLowerCase()).trim())) {
+      return {
+        ruta: RUTA.DIRECTOR, motivo: null, narracion: null,
+        pistaDirector: 'El personaje dice que NO ataca: se contiene. No hay golpe, ni combate, ni nadie herido. Narra solo eso.',
+        resultado: { tipo: 'no_ataca' },
+      };
+    }
+
     // Empezar una pelea exige que el jugador lo haya dicho claro.
     //
     // Abrir combate es de lo poco que este juego hace de forma irreversible, y
@@ -656,83 +804,41 @@ export class ActionRouter extends SystemBase {
     const peligro = lugar?.plantilla?.peligroBase ?? 0;
     const terreno = this.leer('world.terreno', 'camino');
 
-    // Quien esté delante y sea hostil es el objetivo, sin necesidad de tablas.
+    // ─── ¿A quién? Lo dicho manda, antes que cualquier hostil ────────────
     //
-    // Pero si el jugador nombra a alguien, es ese. Se cogía el primer hostil
-    // de la lista aunque se hubiera nombrado a otro: con dos hostiles, «ataco
-    // a <el segundo>» abría contra el primero. Nombrado y no hostil: no se
-    // cambia por un hostil, se sigue con la agresión de más abajo. Sin
-    // nombrar y con varios hostiles, se pregunta en vez de sortear.
-    const presentes = (this.leer('npcs.presentes', []) ?? [])
-      .map((id) => this.leer(`npcs.conocidos.porId.${id}`))
-      .filter((n) => n?.nombre);
-    const dichoAtaque = sinAcentos(String(intencion.texto ?? '').toLowerCase());
-    const nombrado = presentes.find((n) => new RegExp(`\\b${sinAcentos(n.nombre.toLowerCase())}\\b`).test(dichoAtaque));
-    const hostiles = presentes.filter((n) => n.hostil);
-    // Por su oficio, con la primera palabra: «ataco al vendedor» es el
-    // «vendedor ambulante».
-    const porOficio = (n) => n.rol && new RegExp(`\\b${sinAcentos(n.rol.toLowerCase()).split(/\s+/)[0]}`).test(dichoAtaque);
-    const porRol = hostiles.filter(porOficio);
-    if (!nombrado && hostiles.length > 1 && porRol.length !== 1) {
-      return this._rechazar(`¿A cuál? Vienen a por ti ${hostiles.map((n) => (n.rol ? `${n.nombre} (${n.rol})` : n.nombre)).join(' y ')}. Di a quién atacas.`);
-    }
-    const hostil = nombrado
-      ? (nombrado.hostil ? nombrado : null)
-      : (hostiles.length === 1 ? hostiles[0] : porRol[0] ?? null);
-
-    if (hostil?.refId) {
-      // Quien ataca, pega primero.
-      //
-      // El parte mostraba «Guardia corrupto B te ataca…» ANTES de «Atacas a
-      // Guardia corrupto B…» aunque el combate lo había abierto el jugador
-      // declarando el ataque. La iniciativa se sorteaba a ciegas y podía
-      // perderla quien había dado el primer paso.
-      //
-      // `playerAmbush` ya existía en el motor y da +100 de iniciativa a los
-      // aliados: es exactamente esto y no lo usaba nadie por esta vía.
-      this.emitir('combat:request', { enemies: [{ refId: hostil.refId, count: 1 }], playerAmbush: true, teVen: true, contra: hostil.nombre });
-
-      return {
-        ruta: RUTA.LOCAL,
-        motivo: null,
-        narracion: null,
-        pistaDirector: null,
-        resultado: { tipo: 'combate', origen: 'npc_presente' },
-      };
-    }
-
-    // Con gente delante, no se saca a nadie de las tablas.
-    //
-    // «Ataco al que tenga más cerca» justo después de hablar con la patrulla
-    // abría pelea contra un guardia corrupto sacado de la tabla del camino,
-    // «que no te ha visto»: alguien que no estaba en la escena. El motor no
-    // tiene posiciones, así que no sabe quién está más cerca, y ninguno de los
-    // que hay ha buscado pelea: se dice quién hay y dónde, y se pregunta. Si
-    // nombra a uno que no es enemigo, se narra la agresión sin abrir combate
-    // contra otro.
+    // «Ataco a Zorvak» (que no está) abría combate contra Xivio, el único
+    // hostil presente: se elegía al hostil antes de mirar el nombre. Ahora:
+    // nombre presente → esa persona; nombre ausente → se dice, aunque haya
+    // hostiles; oficio presente → esa persona (si son varios, se pregunta);
+    // oficio ausente → se dice. Solo sin blanco nombrado entran los hostiles
+    // de la escena. La tabla de enemigos no prueba que alguien esté aquí.
     const gente = this._gentePresente();
     const dicho = sinAcentos(String(intencion.texto ?? '').toLowerCase());
-    if (gente.length && ATAQUE_INDEFINIDO.test(dicho)) {
-      return this._rechazar(`Nadie de los que hay te ha buscado pelea, y no está claro contra quién vas. ${describirGente(gente)} Si vas a por alguien, di a por quién.`);
+    const blanco = this._blancoDelAtaque(intencion.texto);
+    const deLosQueHay = gente.length ? ` ${describirGente(gente)}` : '';
+    if (blanco?.estado === 'ausente') {
+      return this._rechazar(`No ves a ${blanco.nombre} por aquí.${deLosQueHay} Si vas a por alguien, di a por quién de los que hay.`);
     }
-    const agredido = gente.find((g) => new RegExp(`\\b${sinAcentos(g.nombre.toLowerCase())}\\b`).test(dicho));
-    if (agredido) {
-      return {
-        ruta: RUTA.DIRECTOR,
-        motivo: null,
-        narracion: null,
-        pistaDirector: `El personaje ataca a ${agredido.nombre}, que no es un enemigo ni había buscado pelea. `
-          + `Narra el golpe o el amago y cómo reaccionan ${agredido.nombre} y quien lo vea. No abras un combate ni saques a nadie que no esté en la escena.`,
-        resultado: { tipo: 'agresion', objetivo: agredido.nombre },
-      };
+    if (blanco?.estado === 'oficio_ausente') {
+      return this._rechazar(`Aquí no hay ningún ${blanco.oficio}.${deLosQueHay} Si vas a por alguien, di a por quién de los que hay.`);
     }
+    if (blanco?.estado === 'ambiguo') {
+      return this._rechazar(`¿A cuál? ${blanco.opciones.map((n) => (n.rol ? `${n.nombre} (${n.rol})` : n.nombre)).join(' o ')}. Di a quién atacas.`);
+    }
+    if (blanco?.estado === 'presente') return this._atacarPersona(blanco.npc);
 
-    // Nombra a alguien que no está: no se sortea un enemigo en su lugar.
-    // «ataco a Torket» sin Torket delante abría combate contra un guardia
-    // corrupto sacado de la tabla del camino.
-    const nombrePropio = String(intencion.texto ?? '').match(/\b(?:a|al|contra)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñü]+)/)?.[1];
-    if (nombrePropio && !this._loQueNombro(Tablas.candidatos({ terreno, peligro: Math.max(peligro, 1), familia: 'hostil' }), nombrePropio)?.length) {
-      return this._rechazar(`No ves a ${nombrePropio} por aquí.${gente.length ? ` ${describirGente(gente)}` : ''} Si vas a por alguien, di a por quién de los que hay.`);
+    // Sin blanco nombrado: el hostil que haya delante; con varios, se pregunta.
+    const hostiles = this._presentesConClave().filter((n) => n.hostil);
+    if (hostiles.length > 1) {
+      return this._rechazar(`¿A cuál? Vienen a por ti ${hostiles.map((n) => (n.rol ? `${n.nombre} (${n.rol})` : n.nombre)).join(' y ')}. Di a quién atacas.`);
+    }
+    if (hostiles.length === 1) return this._atacarPersona(hostiles[0]);
+
+    // Con gente delante y nadie hostil, no se saca a nadie de las tablas ni
+    // se elige a uno: se dice quién hay y se pregunta.
+    if (gente.length) {
+      const porque = ATAQUE_INDEFINIDO.test(dicho) ? 'no está claro contra quién vas.' : 'no has dicho contra quién vas.';
+      return this._rechazar(`Nadie de los que hay te ha buscado pelea, y ${porque}${deLosQueHay} Si vas a por alguien, di a por quién.`);
     }
 
     if (peligro > 0 || terreno === 'camino') {

@@ -503,6 +503,23 @@ export const ECONOMIA = congelar({
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   7b. ATACAR A CIVILES
+   ---------------------------------------------------------------------------
+   Decidido (6-oct-2026): a un civil se le puede atacar, con consecuencias.
+   Las cifras de actitud y reputación son las que ya había (acción social
+   «atacar» en RelationshipSystem y `SOCIAL.reputacion.porCrimenPresenciado`).
+   Lo de aquí es PROPUESTA TÉCNICA ajustable, no una cifra dictada: con qué
+   ficha pelea quien no tiene una de enemigo.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export const AGRESION = congelar({
+  /** Ficha de combate de un civil sin ficha propia (ver `enemies.data.js`, `civil`). */
+  plantillaCivil: 'civil',
+  /** Ficha de un guardia de la escena que se mete (la única de guardia que hay). */
+  plantillaGuardia: 'guardia_corrupto',
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
    8. REPUTACIÓN Y RELACIONES
    ═══════════════════════════════════════════════════════════════════════════ */
 

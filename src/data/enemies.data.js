@@ -48,6 +48,25 @@ export const ENEMIGOS = Object.freeze({
      INSIGNIFICANTES Y MENORES
      ═══════════════════════════════════════════════════════════════════════ */
 
+  // Ficha mínima para pelear con un civil de la escena (Korsa, Cormir…), que
+  // no tiene ficha de enemigo. No sale en ninguna tabla (sin terrenos): solo
+  // la usa `ActionRouter._atacarPersona`, que le pone el nombre de la persona.
+  // Cifras: PROPUESTA TÉCNICA ajustable (ver `AGRESION` en balance.config.js).
+  civil: {
+    refId: 'civil', nombre: 'Civil', genero: 'm', plural: 'civiles',
+    tipo: 'humanoide', tamano: 'mediano', amenaza: 'insignificante', nivel: 1,
+    vida: 10, defensa: 10, reduccionDano: 0,
+    atributos: { vigor: 10, destreza: 10, temple: 10, intelecto: 10, astucia: 10, carisma: 10 },
+    ataques: [
+      { nombre: 'Puñetazo', dano: '1d3', tipo: 'contundente', bonoAtaque: 1, alcance: 'cuerpo' },
+    ],
+    tactica: 'cobarde',
+    terrenos: [],
+    descripcion: 'Alguien que no esperaba tener que pelear.',
+    promptLore: 'Una persona corriente atacada sin motivo: se defiende como puede y quiere escapar.',
+    huye: true, umbralHuida: 0.5, negociable: true,
+  },
+
   rata_gigante: {
     refId: 'rata_gigante', nombre: 'Rata gigante', genero: 'f', plural: 'ratas gigantes',
     tipo: 'bestia', tamano: 'pequeno', amenaza: 'insignificante', nivel: 1,

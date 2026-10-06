@@ -654,7 +654,10 @@ export class TurnResolver extends SystemBase {
       // examinar un eje sin carro no se tira ni se adorna con el río. Buscar
       // o ir hacia algo sí se puede aunque no esté: por eso se busca.
       const buscaOva = ['travel', 'search', 'explore'].includes(intencion.tipo);
-      if (ir.bloqueo && (ir.bloqueo.motivo === 'destinatario' || !buscaOva)) {
+      // Un ataque a quien no está lo aclara el router sin gastar turno (ver
+      // `ActionRouter._blancoDelAtaque`); aquí se gastaba un turno entero.
+      const esAtaque = intencion.tipo === 'attack' && ataca(textoFoco);
+      if (ir.bloqueo && !esAtaque && (ir.bloqueo.motivo === 'destinatario' || !buscaOva)) {
         return this._turnoLocal(numeroTurno, ir.bloqueo.texto, { voz: VOCES.DM });
       }
 
@@ -738,6 +741,9 @@ export class TurnResolver extends SystemBase {
             : ruta.narracion;
           this._anadirEntrada(voz, texto, { turno: numeroTurno });
         }
+        // La pelea se pide después de contar por qué empieza: si no, «Te
+        // lanzas tú primero contra Korsa» salía antes que «Atacas a Korsa».
+        if (ruta.combate) this.emitir('combat:request', ruta.combate);
         await this.sistema('clock').turno({ tipo: 'exploracion' });
         this.store.descartarInstantanea('turno');
         return { turno: numeroTurno, local: true };
@@ -754,7 +760,9 @@ export class TurnResolver extends SystemBase {
       // «No consigues situarlo» debajo de «Compras pan».
       const compraLlana = intencion.tipo === 'trade' && !intencion.requiereTirada
         && !/regate|rebaj|descuent|mejor precio|precio justo/.test(sinAcentos(textoFoco.toLowerCase()));
-      const tirada = intervino ? resuelto.tirada : compraLlana ? null : rules?.resolverIntencion(intencionTirada, {
+      // «No ataco a Korsa»: no hay ataque que tirar.
+      const noAtaca = ruta?.resultado?.tipo === 'no_ataca';
+      const tirada = intervino ? resuelto.tirada : compraLlana || noAtaca ? null : rules?.resolverIntencion(intencionTirada, {
         situacion: this._situacionActual(),
         ...(ambicion.grado === 'desmedida' ? { umbral: 35 } : {}),
         ...(ambicion.grado === 'detallada' ? { bono: 2, fuenteBono: 'Acción bien pensada' } : {}),

@@ -230,11 +230,17 @@ export function desdeEnemigo(refId, opciones = {}) {
   const modDestreza = Math.floor(((plantilla.atributos?.destreza ?? 10) - 10) / 2);
   const esquiva = saturar(modDestreza * COMBATE.esquivaPorDestreza, 0, COMBATE.esquivaMax);
 
+  // Una persona concreta de la escena (Korsa, Xivio) pelea con las cifras de
+  // una plantilla pero sigue siendo ella: su nombre en el texto y en la
+  // ficha, y su referencia de PNJ para las consecuencias. Antes salía
+  // «Guardia corrupto» aunque se hubiera atacado a Xivio.
+  const nombrePropio = opciones.nombre ? String(opciones.nombre) : null;
   return {
     id: idEntidad(TIPO.COMBATIENTE),
     refId,
-    nombre: opciones.sufijo ? `${plantilla.nombre} ${opciones.sufijo}` : plantilla.nombre,
-    nombreBase: plantilla.nombre,
+    npc: opciones.npc ?? null,
+    nombre: nombrePropio ?? (opciones.sufijo ? `${plantilla.nombre} ${opciones.sufijo}` : plantilla.nombre),
+    nombreBase: nombrePropio ?? plantilla.nombre,
     genero: plantilla.genero ?? 'm',
     plural: plantilla.plural,
     bando: BANDO.ENEMIGO,
@@ -305,6 +311,9 @@ export function crearGrupo(declaracion, opciones = {}) {
         nivel: entrada.level,
         sufijo,
         flujo: opciones.flujo,
+        // Con nombre propio, una sola persona.
+        nombre: cantidad === 1 ? entrada.nombre : null,
+        npc: cantidad === 1 ? entrada.npc : null,
       });
 
       if (combatiente) salida.push(combatiente);

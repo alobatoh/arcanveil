@@ -431,6 +431,19 @@ export function apertura(flujo, enemigos, opciones = {}) {
   if (opciones.emboscadaEnemiga) {
     return `Te caen encima sin aviso: ${descripcion}.`;
   }
+  // Personas de la escena con su nombre (Korsa, Xivio): se dice quién, no
+  // «2 Korsa y Xivio» ni «contra Xivio: Xivio». Los que no son nadie de la
+  // escena (el del pretil) van por su clase: «un guardia corrupto».
+  if (enemigos.some((e) => e.npc) && opciones.emboscadaJugador && opciones.teVen && opciones.contra) {
+    const sinNombre = new Map();
+    for (const e of enemigos.filter((x) => !x.npc)) sinNombre.set(e.nombreBase ?? e.nombre, [...(sinNombre.get(e.nombreBase ?? e.nombre) ?? []), e]);
+    const otros = [
+      ...enemigos.filter((e) => e.npc && e.nombre !== opciones.contra).map((e) => e.nombre),
+      ...[...sinNombre.entries()].map(([base, l]) => (l.length === 1 ? `${l[0].genero === 'f' ? 'una' : 'un'} ${base.toLowerCase()}` : `${l.length} ${l[0].plural ?? base}`)),
+    ];
+    const lista = otros.length > 1 ? `${otros.slice(0, -1).join(', ')} y ${otros.at(-1)}` : otros[0];
+    return `Te lanzas tú primero contra ${opciones.contra}${otros.length ? `, y ${lista} ${otros.length > 1 ? 'se meten' : 'se mete'} en la pelea` : ''}.`;
+  }
   // Quien ya estaba hablando contigo te ha visto. «No te han visto» justo
   // después de hablar con la patrulla dejaba sin saber contra quién iba el
   // golpe ni de dónde salía.

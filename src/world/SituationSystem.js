@@ -295,7 +295,7 @@ export class SituationSystem extends SystemBase {
       // qué empieza. Pedida desde aquí, «Todo se decide ahora» salía antes
       // que lo que había hecho el jugador.
       // Están cara a cara con él: golpea primero, pero le han visto venir.
-      return { situacion: sit, via: via.clave, tirada: null, narracion, resuelta: true, combate: { ...via.combate, playerAmbush: true, teVen: true } };
+      return { situacion: sit, via: via.clave, tirada: null, narracion, resuelta: true, combate: this._combateConIdentidad({ ...via.combate, playerAmbush: true, teVen: true }, sit) };
     }
 
     // Pagar no es una prueba: se tiene o no se tiene.
@@ -330,7 +330,7 @@ export class SituationSystem extends SystemBase {
     this._guardar(resuelta ? this._conSecuela(siguiente, 'resuelta') : siguiente);
 
     if (exito) this._consecuencias(sit, via);
-    return { situacion: sit, via: via.clave, tirada, narracion, resuelta, combate: estalla ? { ...plantilla.escala.combate } : null };
+    return { situacion: sit, via: via.clave, tirada, narracion, resuelta, combate: estalla ? this._combateConIdentidad({ ...plantilla.escala.combate }, sit) : null };
   }
 
   /**
@@ -495,6 +495,37 @@ export class SituationSystem extends SystemBase {
   /* ═══════════════════════════════════════════════════════════════════════
      ESTADO
      ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * La pelea de una situación, con las personas de la escena por su nombre.
+   *
+   * «Ataco a Xivio» en el peaje abría contra «Guardia corrupto A y B»: Xivio
+   * no aparecía en la ficha del combate. Ahora cada actor guardia presente
+   * ocupa un puesto de guardia con su nombre y su referencia; lo que no es
+   * nadie de la escena (el del pretil) sigue siendo un guardia sin nombre.
+   *
+   * @private
+   */
+  _combateConIdentidad(combate, sit) {
+    if (!combate?.enemies?.length) return combate;
+    const presentes = new Set(this.leer('npcs.presentes', []) ?? []);
+    const libres = Object.values(sit?.actores ?? {})
+      .filter((a) => a?.refId && presentes.has(a.refId) && /^guard/.test(sinAcentos(String(a.rol ?? '').toLowerCase())));
+    const enemies = [];
+    for (const e of combate.enemies) {
+      let resto = e.count ?? 1;
+      if (e.refId === 'guardia_corrupto') {
+        while (resto > 0 && libres.length) {
+          const a = libres.shift();
+          enemies.push({ refId: e.refId, count: 1, nombre: a.nombre, npc: a.refId });
+          resto -= 1;
+        }
+      }
+      if (resto > 0) enemies.push({ ...e, count: resto });
+    }
+    const contra = enemies.find((e) => e.npc)?.nombre;
+    return { ...combate, enemies, ...(contra && !combate.contra ? { contra } : {}) };
+  }
 
   /** @private */
   _guardar(situacion) {

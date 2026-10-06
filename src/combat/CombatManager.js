@@ -219,7 +219,9 @@ export class CombatManager extends SystemBase {
 
     for (const entrada of declaracion ?? []) {
       // El director puede dar el refId exacto o un nombre aproximado.
-      const enemigo = buscarPorNombre(entrada.refId ?? entrada.name ?? entrada.nombre);
+      // `nombre` con `npc` es una persona de la escena: su ficha sale de la
+      // plantilla (refId) y conserva su nombre y su referencia.
+      const enemigo = buscarPorNombre(entrada.refId ?? entrada.name ?? (entrada.npc ? null : entrada.nombre));
 
       if (!enemigo) {
         this.log.aviso(`enemigo no reconocido: ${entrada.refId ?? entrada.name}`);
@@ -228,8 +230,9 @@ export class CombatManager extends SystemBase {
 
       salida.push({
         refId: enemigo.refId,
-        count: Math.min(entrada.count ?? 1, COMBATE.enemigosMax),
+        count: entrada.npc ? 1 : Math.min(entrada.count ?? 1, COMBATE.enemigosMax),
         level: entrada.level,
+        ...(entrada.npc ? { nombre: entrada.nombre, npc: entrada.npc } : {}),
       });
     }
 
@@ -1131,6 +1134,19 @@ export class CombatManager extends SystemBase {
     // ─── Recompensas ────────────────────────────────────────────────────
     if (resultado === 'victoria') {
       await this._repartirRecompensas(enemigos, flujo);
+    }
+
+    // ─── Personas de la escena ──────────────────────────────────────────
+    // Quien peleó con su nombre (Korsa, Xivio) sale del combate con lo que
+    // le pasó de verdad: muerto, o herido y acordándose.
+    const npcs = this.sistema('npcs');
+    const quien = this.leer('player.nombre', 'el forastero');
+    for (const e of enemigos.filter((c) => c.npc)) {
+      if (!e.vivo || (e.vida?.actual ?? 1) <= 0) {
+        npcs?.cambiarSituacion?.(e.npc, 'muerto', `en una pelea con ${quien}`);
+      } else if ((e.vida?.actual ?? 0) < (e.vida?.max ?? 0)) {
+        npcs?.recordar?.(e.npc, `${quien} le hirió en una pelea (${e.vida.max - e.vida.actual} de daño).`, { tipo: 'agresion', peso: 3 });
+      }
     }
 
     // ─── El grupo ───────────────────────────────────────────────────────
