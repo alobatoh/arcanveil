@@ -554,7 +554,7 @@ export class TurnResolver extends SystemBase {
     // analizador lee como ataque sin blanco, y el router sacaba un guardia
     // corrupto de la tabla del camino en vez de ir a por Korsa. El ataque se
     // reconoce por su verbo (`ataca`), no por nombrar un arma.
-    if (plan.foco && (leerGesto(plan.foco.texto) || desenvaina(plan.foco.texto)) && !ataca(plan.foco.texto)) {
+    if (plan.foco && (leerGesto(plan.foco.texto) || desenvaina(plan.foco.texto, Object.values(this.leer('inventory.objetos.porId', {}) ?? {}))) && !ataca(plan.foco.texto)) {
       const ataque = plan.hechos.find((s) => s !== plan.foco && s.tipo === plan.foco.tipo && ataca(s.texto));
       if (ataque) plan.foco = ataque;
     }

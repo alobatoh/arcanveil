@@ -43,25 +43,35 @@ function conArticulo(objeto) {
   return `${articulo(nombre, genero)} ${nombre}`;
 }
 
-/** Nombres de arma con tilde, tal y como se escriben. */
-const CON_TILDE = Object.freeze({ punal: 'puñal', baston: 'bastón' });
-const dicha = (w) => CON_TILDE[w] ?? w;
-
-const DET = '(?:el |la |los |las |mi |mis |tu |su |sus |un |una |este |esta |ese |esa |aquel |aquella )?';
-
 /** Verbos que atacan en primera persona. */
 const ATACA = /\b(?:ataco|atacamos|golpeo|pego|apunalo|acuchillo|disparo|ensarto|embisto|arremeto|hiero|rajo|corto el cuello|le corto|le clavo|le doy|le pego|le disparo|le lanzo|lanzo un tajo|tiro un tajo|asesto|descargo|cargo contra|me lanzo contra|me echo encima)\b/;
 
-/** Sacar o empuñar un arma: prepara un ataque. */
-const DESENVAINA = new RegExp(`\\b(?:desenvaino|desenfundo|saco|empuno|blando|enarbolo|tenso|alzo|levanto|preparo|cargo)\\s+${DET}([a-zñ]+)`, 'g');
+/** Sacar o empuñar algo: prepara un ataque. Se lee el sintagma entero. */
+const DESENVAINA = /\b(?:desenvaino|desenfundo|saco|empuno|blando|enarbolo|tenso|alzo|levanto|preparo|cargo)\s+(.+)$/;
 
-/** Lo que va tras «con». */
-const INSTRUMENTO = new RegExp(`\\bcon\\s+${DET}([a-zñ]+)`, 'g');
+/** Lo que va tras «con», hasta donde empieza otra cosa (el blanco, una coma…). */
+const INSTRUMENTO = /\bcon\s+(.+)$/;
 
 /** Hacerse con algo antes («primero cojo el hacha y luego ataco»). */
-const ADQUIERE = new RegExp(`\\b(?:cojo|tomo|agarro|compro|recojo|consigo|pillo|robo|le quito)\\s+${DET}([a-zñ]+)`, 'g');
+const ADQUIERE = /\b(?:cojo|tomo|agarro|compro|recojo|consigo|pillo|robo|le quito)\s+(.+)$/;
+
+/** Donde acaba un sintagma de objeto. La coma no: enumera («el cuchillo, el arco y…»). */
+const CORTE = /\s*(?:;|\.|[,\s]+(?:a|al|contra|para|porque|mientras|hasta|sin|que|cuando|antes|despues|y luego|y despues|y entonces)\s).*$/;
+
+/** Verbos que solo pueden ser desenvainar/empuñar (cualquier cosa nombrada). */
+const DESENVAINA_SIEMPRE = /\b(?:desenvaino|desenfundo|empuno|blando|enarbolo)\b/;
 
 const NEGADO = /^(?:y |pero |luego )?(?:no|nunca|jamas|ni)\b/;
+
+/** Determinantes: delante de un nombre lo convierten en «una cosa concreta». */
+const DETERMINANTE = /^(?:el|la|los|las|lo|mi|mis|tu|tus|su|sus|un|una|unos|unas|este|esta|estos|estas|ese|esa|esos|esas|aquel|aquella)$/;
+/** «Con toda mi fuerza», «con todas mis ganas»: intensifica un modo, no nombra un objeto. */
+const INTENSIFICA = /^(?:todo|toda|todos|todas)$/;
+/** El cuerpo: atacar sin arma, con la mecánica que ya hay. */
+const CUERPO = new Set(['mano', 'manos', 'puno', 'punos', 'pie', 'pies', 'rodilla', 'rodillas', 'codo', 'codos', 'cabeza', 'frente', 'dientes', 'unas', 'cuerpo', 'hombro', 'patada', 'patadas', 'punetazo', 'punetazos', 'cabezazo']);
+/** Lo que es magia la resuelve su propia regla (`Jugada.js`: se dice y no se concede). */
+const MAGIA = new Set(['magia', 'hechizo', 'hechizos', 'conjuro', 'conjuros', 'poder', 'poderes', 'runa', 'runas', 'sortilegio']);
+const VACIA = new Set(['de', 'del', 'y', 'e']);
 
 /** ¿Este trozo ataca? */
 export function ataca(texto) {
@@ -69,33 +79,82 @@ export function ataca(texto) {
   return !NEGADO.test(t) && ATACA.test(t);
 }
 
-/** ¿Este trozo saca o empuña un arma conocida? */
-export function desenvaina(texto) {
-  const t = llano(texto);
-  if (NEGADO.test(t)) return false;
-  return [...t.matchAll(DESENVAINA)].some((m) => ARMAS[m[1]]);
+/**
+ * Los objetos nombrados en un sintagma, separados por la coordinación:
+ * «el cuchillo y el hacha», «el cuchillo, el arco», «el cuchillo y hacha».
+ * Cada uno con lo que se escribió (con sus tildes) y sus palabras llanas.
+ *
+ * @param {string} trozo Texto tal y como se escribió, desde el sintagma.
+ * @returns {Array<{dicho: string, palabras: string[], determinado: boolean, intensifica: boolean}>}
+ */
+function sintagmas(trozo) {
+  const base = String(trozo).toLowerCase().replace(CORTE, '').trim();
+  return base.split(/\s*(?:,|\by\b|\be\b)\s*/).map((s) => s.trim()).filter(Boolean).map((s) => {
+    const todas = s.split(/\s+/);
+    let i = 0;
+    let intensifica = false;
+    let determinado = false;
+    while (i < todas.length && (DETERMINANTE.test(llano(todas[i])) || INTENSIFICA.test(llano(todas[i])))) {
+      if (INTENSIFICA.test(llano(todas[i]))) intensifica = true;
+      else determinado = true;
+      i += 1;
+    }
+    const resto = todas.slice(i);
+    return { dicho: resto.join(' '), palabras: resto.map(llano).filter((p) => p && !VACIA.has(p)), determinado, intensifica };
+  }).filter((s) => s.palabras.length);
 }
 
 /**
- * Las palabras de herramienta de un trozo, sin decidir aún si existen.
+ * ¿Este trozo saca o empuña un arma? «Desenvaino la katana» sí aunque la
+ * katana no sea un arma del catálogo; «saco el mapa» no («sacar» solo cuenta
+ * con un arma conocida o un arma que se lleva).
+ */
+export function desenvaina(texto, objetos = []) {
+  const t = String(texto).toLowerCase();
+  if (NEGADO.test(llano(t))) return false;
+  const m = t.match(DESENVAINA);
+  if (!m) return false;
+  if (DESENVAINA_SIEMPRE.test(llano(t))) return sintagmas(m[1]).length > 0;
+  return sintagmas(m[1]).some((s) => ARMAS[s.palabras[0]] || candidatos(s.palabras, objetos).some((o) => o.categoria === 'arma'));
+}
+
+/**
+ * Lo que el trozo pide usar: tras «con» si ataca, y lo que desenvaina o
+ * empuña. El blanco no cuenta («ataco a Korsa, el de la capa»).
  * @param {string} texto
- * @returns {string[]}
  */
 function herramientas(texto) {
-  const t = llano(texto);
-  if (NEGADO.test(t)) return [];
+  const t = String(texto).toLowerCase();
+  if (NEGADO.test(llano(t))) return [];
   const salen = [];
-  if (ATACA.test(t)) for (const m of t.matchAll(INSTRUMENTO)) salen.push(m[1]);
-  for (const m of t.matchAll(DESENVAINA)) salen.push(m[1]);
+  if (ATACA.test(llano(t))) {
+    const m = t.match(INSTRUMENTO);
+    if (m) salen.push(...sintagmas(m[1]));
+  }
+  const d = t.match(DESENVAINA);
+  if (d) salen.push(...sintagmas(d[1]));
   return salen;
 }
 
-/** El objeto del inventario que se llama así, por la primera palabra o el arma que es. */
-function buscar(palabra, objetos) {
-  return objetos.find((o) => {
-    const n = llano(o.nombre).split(/\s+/);
-    return n[0] === palabra || n.includes(palabra) || (palabra.length >= 5 && n[0].startsWith(palabra.slice(0, -1)));
-  }) ?? null;
+/**
+ * Los objetos del inventario que encajan con TODO lo dicho, no con una
+ * palabra suelta: «cuchillo» encaja con «Cuchillo de caza» (alias), «cuchillo
+ * de caza» también, «cuchillo mágico» no (sobra «mágico»).
+ */
+function candidatos(palabras, objetos) {
+  return objetos.filter((o) => {
+    const nombre = llano(o.nombre).split(/[^a-zñ0-9]+/).filter((p) => p && !VACIA.has(p));
+    return palabras.every((p) => nombre.some((n) => n === p || (p.length >= 5 && n.startsWith(p.slice(0, -1))) || (n.length >= 5 && p.startsWith(n.slice(0, -1)))));
+  });
+}
+
+/** ¿Es un modo («con calma», «con toda mi fuerza»), el cuerpo o magia, y no un objeto? */
+function noEsObjeto(s, objetos) {
+  if (CUERPO.has(s.palabras[0]) || MAGIA.has(s.palabras[0])) return true;
+  if (s.intensifica) return true;
+  // Sin determinante y sin ser un arma ni algo que lleve: un modo.
+  if (!s.determinado && !ARMAS[s.palabras[0]] && !candidatos(s.palabras, objetos).length) return true;
+  return false;
 }
 
 /**
@@ -111,36 +170,48 @@ function buscar(palabra, objetos) {
 export function aclararArma({ segmentos = [], objetos = [], equipado = {} } = {}) {
   const trozos = segmentos.map(String).filter(Boolean);
   const hayAtaque = trozos.some(ataca);
-  const hostiles = trozos.filter((s) => ataca(s) || desenvaina(s));
+  const hostiles = trozos.filter((s) => ataca(s) || desenvaina(s, objetos));
   if (!hostiles.length) return null;
 
   const enMano = new Set([equipado?.armaPrincipal, equipado?.armaSecundaria].filter(Boolean));
   const empunada = objetos.find((o) => enMano.has(o.id));
+  const final = hayAtaque ? 'No se ha hecho el ataque.' : 'No se ha hecho nada.';
   const cierre = hayAtaque ? 'Di con qué quieres atacar; no se ha hecho el ataque.' : 'No se ha hecho nada.';
+  const lista = (l) => (l.length > 1 ? `${l.slice(0, -1).join(', ')} ni ${l.at(-1)}` : l[0]);
 
   // Lo que se coge antes, en el mismo orden: no se puede validar aquí
   // después de tenerlo, así que se pide en dos turnos.
-  const adquiridas = new Set(trozos.flatMap((s) => [...llano(s).matchAll(ADQUIERE)].map((m) => m[1])));
+  const adquiridas = trozos.flatMap((s) => {
+    const m = String(s).toLowerCase().match(ADQUIERE);
+    return m ? sintagmas(m[1]) : [];
+  });
+  const seAdquiere = (s) => adquiridas.some((a) => a.palabras.join(' ') === s.palabras.join(' '));
 
   // «Primero cojo el hacha y luego ataco»: el arma va en el trozo de coger.
-  // Si no la lleva aún, el ataque dependería de algo que no ha pasado.
   if (hayAtaque) {
-    for (const palabra of adquiridas) {
-      if (ARMAS[palabra] && !buscar(palabra, objetos)) {
-        return { motivo: 'adquisicion', arma: palabra, texto: `Todavía no llevas ${dicha(palabra)}: hazte con ella en un turno y ataca en el siguiente. No se ha hecho el ataque.` };
-      }
+    const falta = adquiridas.filter((s) => (ARMAS[s.palabras[0]] || s.determinado) && !candidatos(s.palabras, objetos).length);
+    if (falta.length) {
+      return { motivo: 'adquisicion', arma: falta[0].palabras.join(' '), texto: `Todavía no llevas ${lista(falta.map((s) => s.dicho))}: hazte con ello en un turno y ataca en el siguiente. ${final}` };
     }
   }
 
-  for (const palabra of hostiles.flatMap(herramientas)) {
-    const objeto = buscar(palabra, objetos);
-    if (!objeto) {
-      if (!ARMAS[palabra]) continue; // «con calma»: no es un arma ni algo que lleve.
-      if (adquiridas.has(palabra)) {
-        return { motivo: 'adquisicion', arma: palabra, texto: `Todavía no llevas ${dicha(palabra)}: hazte con ella en un turno y ataca en el siguiente. ${hayAtaque ? 'No se ha hecho el ataque.' : 'No se ha hecho nada.'}` };
-      }
-      return { motivo: 'ausente', arma: palabra, texto: `No llevas ${dicha(palabra)}. ${cierre}` };
+  // Todos los instrumentos se miran antes de decir nada: «con el cuchillo y
+  // el hacha» no puede atacar con el cuchillo y olvidar el hacha.
+  const ausentes = [];
+  const problemas = [];
+  for (const s of hostiles.flatMap(herramientas)) {
+    if (noEsObjeto(s, objetos)) continue;
+    const encajan = candidatos(s.palabras, objetos);
+    if (!encajan.length) {
+      if (seAdquiere(s)) continue; // ya se ha pedido arriba
+      ausentes.push(s.dicho);
+      continue;
     }
+    if (encajan.length > 1) {
+      problemas.push({ motivo: 'ambigua', arma: s.dicho, texto: `¿Con cuál: ${encajan.map(conArticulo).join(' o ')}? ${final}` });
+      continue;
+    }
+    const objeto = encajan[0];
     // Un objeto que no es arma: la regla de siempre (`Jugada.js`).
     if (objeto.categoria !== 'arma') continue;
 
@@ -148,14 +219,19 @@ export function aclararArma({ segmentos = [], objetos = [], equipado = {} } = {}
     const cantidad = Number.isFinite(objeto.cantidad) ? objeto.cantidad : 1;
     const durabilidad = typeof objeto.durabilidad === 'number' ? objeto.durabilidad : objeto.durabilidad?.actual;
     if (cantidad <= 0 || durabilidad === 0) {
-      return { motivo: 'inservible', arma: palabra, texto: `${capitalizar(nombre)} no sirve: está roto o no te queda. ${cierre}` };
+      problemas.push({ motivo: 'inservible', arma: s.dicho, texto: `${capitalizar(nombre)} no sirve: está roto o no te queda. ${cierre}` });
+      continue;
     }
     if (!enMano.has(objeto.id)) {
       const otra = empunada ? ` (en la mano llevas ${conArticulo(empunada)})` : '';
-      return { motivo: 'sin_equipar', arma: palabra, texto: `Llevas ${nombre}, pero no en la mano${otra}. Equípalo desde el inventario o ataca con lo que empuñas. ${hayAtaque ? 'No se ha hecho el ataque.' : 'No se ha hecho nada.'}` };
+      problemas.push({ motivo: 'sin_equipar', arma: s.dicho, texto: `Llevas ${nombre}, pero no en la mano${otra}. Equípalo desde el inventario o ataca con lo que empuñas. ${final}` });
     }
   }
-  return null;
+  if (ausentes.length) {
+    const otros = problemas.map((p) => p.texto.replace(/ No se ha hecho (?:el ataque|nada)\.$/, '').replace(/ Di con qué quieres atacar; no se ha hecho el ataque\.$/, ''));
+    return { motivo: 'ausente', arma: ausentes[0], ausentes, texto: `No llevas ${lista(ausentes)}.${otros.length ? ` ${otros.join(' ')}` : ''} ${cierre}` };
+  }
+  return problemas[0] ?? null;
 }
 
 export default { aclararArma, ataca, desenvaina };
