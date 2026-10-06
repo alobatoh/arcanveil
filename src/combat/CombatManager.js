@@ -26,6 +26,7 @@
  */
 
 import { SystemBase } from '../core/SystemBase.js';
+import { BORRAR } from '../core/Store.js';
 import * as Comb from './Combatant.js';
 import * as Estados from './StatusEffects.js';
 import * as Ataques from './AttackResolver.js';
@@ -1419,7 +1420,14 @@ export class CombatManager extends SystemBase {
     const parche = { combat: {} };
     const { combatientes, orden, turnoActual } = accion.payload ?? {};
 
-    if (combatientes) parche.combat.combatientes = { ...combatientes };
+    if (combatientes) {
+      // El almacén funde: quien ya no está (huye) se quita con BORRAR. Sin
+      // eso, Dalwen huía y seguía en la ficha del combate de la pantalla.
+      parche.combat.combatientes = { ...combatientes };
+      for (const id of Object.keys(estado.combat?.combatientes ?? {})) {
+        if (!(id in combatientes)) parche.combat.combatientes[id] = BORRAR;
+      }
+    }
     if (orden) parche.combat.iniciativa = orden;
     if (turnoActual !== undefined) parche.combat.turnoActual = turnoActual;
 
