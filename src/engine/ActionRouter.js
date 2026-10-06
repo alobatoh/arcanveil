@@ -657,9 +657,28 @@ export class ActionRouter extends SystemBase {
     const terreno = this.leer('world.terreno', 'camino');
 
     // Quien esté delante y sea hostil es el objetivo, sin necesidad de tablas.
-    const hostil = (this.leer('npcs.presentes', []) ?? [])
+    //
+    // Pero si el jugador nombra a alguien, es ese. Se cogía el primer hostil
+    // de la lista aunque se hubiera nombrado a otro: con dos hostiles, «ataco
+    // a <el segundo>» abría contra el primero. Nombrado y no hostil: no se
+    // cambia por un hostil, se sigue con la agresión de más abajo. Sin
+    // nombrar y con varios hostiles, se pregunta en vez de sortear.
+    const presentes = (this.leer('npcs.presentes', []) ?? [])
       .map((id) => this.leer(`npcs.conocidos.porId.${id}`))
-      .find((n) => n?.hostil);
+      .filter((n) => n?.nombre);
+    const dichoAtaque = sinAcentos(String(intencion.texto ?? '').toLowerCase());
+    const nombrado = presentes.find((n) => new RegExp(`\\b${sinAcentos(n.nombre.toLowerCase())}\\b`).test(dichoAtaque));
+    const hostiles = presentes.filter((n) => n.hostil);
+    // Por su oficio, con la primera palabra: «ataco al vendedor» es el
+    // «vendedor ambulante».
+    const porOficio = (n) => n.rol && new RegExp(`\\b${sinAcentos(n.rol.toLowerCase()).split(/\s+/)[0]}`).test(dichoAtaque);
+    const porRol = hostiles.filter(porOficio);
+    if (!nombrado && hostiles.length > 1 && porRol.length !== 1) {
+      return this._rechazar(`¿A cuál? Vienen a por ti ${hostiles.map((n) => (n.rol ? `${n.nombre} (${n.rol})` : n.nombre)).join(' y ')}. Di a quién atacas.`);
+    }
+    const hostil = nombrado
+      ? (nombrado.hostil ? nombrado : null)
+      : (hostiles.length === 1 ? hostiles[0] : porRol[0] ?? null);
 
     if (hostil?.refId) {
       // Quien ataca, pega primero.
@@ -706,6 +725,14 @@ export class ActionRouter extends SystemBase {
           + `Narra el golpe o el amago y cómo reaccionan ${agredido.nombre} y quien lo vea. No abras un combate ni saques a nadie que no esté en la escena.`,
         resultado: { tipo: 'agresion', objetivo: agredido.nombre },
       };
+    }
+
+    // Nombra a alguien que no está: no se sortea un enemigo en su lugar.
+    // «ataco a Torket» sin Torket delante abría combate contra un guardia
+    // corrupto sacado de la tabla del camino.
+    const nombrePropio = String(intencion.texto ?? '').match(/\b(?:a|al|contra)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñü]+)/)?.[1];
+    if (nombrePropio && !this._loQueNombro(Tablas.candidatos({ terreno, peligro: Math.max(peligro, 1), familia: 'hostil' }), nombrePropio)?.length) {
+      return this._rechazar(`No ves a ${nombrePropio} por aquí.${gente.length ? ` ${describirGente(gente)}` : ''} Si vas a por alguien, di a por quién de los que hay.`);
     }
 
     if (peligro > 0 || terreno === 'camino') {

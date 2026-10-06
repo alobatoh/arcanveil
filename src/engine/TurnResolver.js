@@ -543,9 +543,13 @@ export class TurnResolver extends SystemBase {
     const plan = ir.plan;
     // «Afilo el cuchillo y ataco a Korsa»: el gesto prepara, el turno lo
     // decide el ataque. Antes el foco era lo primero y el ataque se perdía
-    // sin decirlo.
-    if (plan.foco && leerGesto(plan.foco.texto)) {
-      const ataque = plan.hechos.find((s) => s !== plan.foco && s.tipo === plan.foco.tipo && interpretar(s.texto, contextoIntencion).tipo === 'attack');
+    // sin decirlo. Desenvainar o empuñar también prepara: «desenvaino el
+    // cuchillo y ataco a Korsa» se quedaba con el foco en desenvainar, que el
+    // analizador lee como ataque sin blanco, y el router sacaba un guardia
+    // corrupto de la tabla del camino en vez de ir a por Korsa. El ataque se
+    // reconoce por su verbo (`ataca`), no por nombrar un arma.
+    if (plan.foco && (leerGesto(plan.foco.texto) || desenvaina(plan.foco.texto)) && !ataca(plan.foco.texto)) {
+      const ataque = plan.hechos.find((s) => s !== plan.foco && s.tipo === plan.foco.tipo && ataca(s.texto));
       if (ataque) plan.foco = ataque;
     }
     const textoFoco = plan.foco?.texto ?? ir.texto;
