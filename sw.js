@@ -1,6 +1,6 @@
 // Generado por tools/generar-sw.mjs. No editar a mano.
 // La lista se recorre del disco: un archivo nuevo entra solo al regenerar.
-const CACHE = 'arcanveil-kwjcpg';
+const CACHE = 'arcanveil-kg3w1e';
 const SHELL = [
   './manifest.webmanifest',
   './app/app.js',
@@ -130,6 +130,7 @@ const SHELL = [
   './src/player/CharacterFactory.js',
   './src/player/CharacterRandom.js',
   './src/player/ClassSystem.js',
+  './src/player/Comida.js',
   './src/player/Correccion.js',
   './src/player/creation/CharacterInterview.js',
   './src/player/Curacion.js',

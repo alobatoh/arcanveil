@@ -122,7 +122,8 @@ const carga = () => m.ver('inventory.carga');
   };
   const r = migrar(guardado);
   const e = r.guardado.estado;
-  comprobar(r.guardado.version === 8, 'el guardado sube al formato 8', JSON.stringify(r).slice(0, 300));
+  // Pasa por la 7→8 (lo que se comprueba aquí) y sigue hasta la actual.
+  comprobar(r.guardado.version >= 8 && r.aplicadas?.some((a) => /gastados/.test(a)), 'el guardado pasa por la migración 7→8 (y sigue hasta la actual)', JSON.stringify(r).slice(0, 300));
   comprobar(Object.keys(e.inventory.objetos.porId).sort().join() === 'a,b,espada', 'la migración quita lo gastado y conserva lo equipado', JSON.stringify(e.inventory.objetos.porId));
   comprobar(Object.keys(e.quests.activas.porId).join() === 'viva', 'y las misiones cerradas', JSON.stringify(e.quests.activas.porId));
   comprobar(Object.keys(guardado.estado.inventory.objetos.porId).length === 4, 'sin tocar el guardado original');

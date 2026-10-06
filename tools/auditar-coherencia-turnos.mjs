@@ -258,15 +258,17 @@ console.log('\n── Esperar no es descansar ──');
   const r = await p.turno('espero dos horas');
   comprobar(r.despues.vida === r.antes.vida && r.despues.mana === r.antes.mana, `2 h de espera: ni vida (${r.antes.vida}) ni maná (${r.antes.mana}) suben`, `${r.despues.vida} · ${r.despues.mana}`);
   comprobar(raciones() === r0, '  provisiones intactas', `${r0} → ${raciones()}`);
-  comprobar(cerca(r.antes.hambre - r.despues.hambre, 12 * S.hambrePorTurno) && cerca(r.antes.fatiga - r.despues.fatiga, 12 * S.fatigaPorTurno),
-    `  desgaste de 12 pulsos: hambre −${(12 * S.hambrePorTurno).toFixed(2)}, fatiga −${(12 * S.fatigaPorTurno).toFixed(2)}`,
-    `hambre ${r.antes.hambre}→${r.despues.hambre}, fatiga ${r.antes.fatiga}→${r.despues.fatiga}, sed ${r.antes.sed}→${r.despues.sed}`);
-  comprobar(r.despues.sed < r.antes.sed, '  y la sed baja');
+  // Desde el 6-oct-2026 el hambre y la sed no bajan: el desgaste es solo
+  // fatiga (sigue con sus reglas).
+  comprobar(cerca(r.antes.fatiga - r.despues.fatiga, 12 * S.fatigaPorTurno),
+    `  desgaste de 12 pulsos: fatiga −${(12 * S.fatigaPorTurno).toFixed(2)}`,
+    `fatiga ${r.antes.fatiga}→${r.despues.fatiga}`);
+  comprobar(r.despues.hambre === r.antes.hambre && r.despues.sed === r.antes.sed, '  y el hambre y la sed no se mueven');
 
   const q = await partida(9303, { fixture: true });
   const s = await q.turno('espero 25 minutos');
-  comprobar(cerca(s.antes.hambre - s.despues.hambre, 2.5 * S.hambrePorTurno), `pulso parcial: 25 minutos desgastan 2,5 turnos de hambre (−${(2.5 * S.hambrePorTurno).toFixed(3)}), no 3`,
-    `${s.antes.hambre}→${s.despues.hambre}`);
+  comprobar(cerca(s.antes.fatiga - s.despues.fatiga, 2.5 * S.fatigaPorTurno), `pulso parcial: 25 minutos desgastan 2,5 turnos de fatiga (−${(2.5 * S.fatigaPorTurno).toFixed(3)}), no 3`,
+    `${s.antes.fatiga}→${s.despues.fatiga}`);
 }
 
 console.log('\n── Guardar y cargar tras medianoche ──');
@@ -290,7 +292,7 @@ console.log('\n── Una espera que falla a mitad se deshace entera ──');
   clock.turno = async (o) => { n += 1; if (n === 3) throw new Error('fallo de prueba'); return original(o); };
   const r = await p.turno('espero dos horas');
   clock.turno = original;
-  comprobar(r.despues.reloj === r.antes.reloj && r.despues.turno === r.antes.turno && r.despues.hambre === r.antes.hambre && /Algo se ha torcido/.test(r.texto),
+  comprobar(r.despues.reloj === r.antes.reloj && r.despues.turno === r.antes.turno && r.despues.fatiga === r.antes.fatiga && /Algo se ha torcido/.test(r.texto),
     'fallo en el tercer pulso: reloj, turno y desgaste vuelven a como estaban', r.texto);
   const s = await p.turno('espero');
   comprobar(minutos(s) === 10, '  y la entrada no se queda bloqueada: el siguiente turno se juega');
@@ -302,32 +304,40 @@ console.log('\n── Una espera que falla a mitad se deshace entera ──');
 
 console.log('\n── Desgaste aplicado ──');
 {
+  // Contrato cambiado el 6-oct-2026: el hambre y la sed ya no se desgastan
+  // ni hacen daño; la fatiga sí, con sus reglas. Se mantiene la cobertura
+  // (un desgaste por turno, umbral una vez, daño, caída) sobre la fatiga.
   const p = await partida(9303, { fixture: true });
   let r = await p.turno('miro alrededor');
-  comprobar(cerca(r.antes.hambre - r.despues.hambre, S.hambrePorTurno, 0.001) && cerca(r.antes.fatiga - r.despues.fatiga, S.fatigaPorTurno, 0.001),
-    `un turno normal aplica exactamente un desgaste (hambre −${S.hambrePorTurno}, fatiga −${S.fatigaPorTurno})`, `${r.antes.hambre}→${r.despues.hambre}`);
+  comprobar(cerca(r.antes.fatiga - r.despues.fatiga, S.fatigaPorTurno, 0.001) && r.despues.hambre === r.antes.hambre && r.despues.sed === r.antes.sed,
+    `un turno normal aplica exactamente un desgaste (fatiga −${S.fatigaPorTurno}); hambre y sed quietas`, `${r.antes.fatiga}→${r.despues.fatiga}`);
 
-  p.m.store.fijar('player.hambre', 60.3);
+  p.m.store.fijar('player.fatiga', 60.2);
   const u0 = p.registro.umbrales;
   await p.turno('miro alrededor');
   const u1 = p.registro.umbrales;
   await p.turno('miro alrededor');
-  comprobar(u1 - u0 >= 1 && p.registro.umbrales === u1, 'cruzar de «bien» a «incómodo» avisa una vez, y no en el turno siguiente', `${u0}→${u1}→${p.registro.umbrales}`);
+  comprobar(u1 - u0 >= 1 && p.registro.umbrales === u1, 'cruzar de «bien» a «incómodo» (fatiga) avisa una vez, y no en el turno siguiente', `${u0}→${u1}→${p.registro.umbrales}`);
 
-  p.m.store.fijar('player.hambre', 0.2);
+  p.m.store.fijar('player.hambre', 0);
+  p.m.store.fijar('player.sed', 0);
   r = await p.turno('miro alrededor');
-  comprobar(r.despues.hambre === 0 && r.antes.vida - r.despues.vida === S.danoPorInanicion, `hambre a 0: −${S.danoPorInanicion} de vida por inanición`, `vida ${r.antes.vida}→${r.despues.vida}`);
+  comprobar(r.antes.vida === r.despues.vida, 'hambre y sed a 0 (guardado viejo): ningún daño', `vida ${r.antes.vida}→${r.despues.vida}`);
+
+  p.m.store.fijar('player.fatiga', 0.2);
+  r = await p.turno('miro alrededor');
+  comprobar(r.despues.fatiga === 0 && r.antes.vida - r.despues.vida === S.danoPorAgotamiento, `fatiga a 0: −${S.danoPorAgotamiento} de vida por agotamiento`, `vida ${r.antes.vida}→${r.despues.vida}`);
 
   p.m.store.fijar('player.vida.actual', 1);
   const c0 = p.registro.caidas;
   await p.turno('miro alrededor');
-  comprobar(p.registro.caidas === c0 + 1 && p.m.ver('player.vida.actual') === 0, 'con 1 de vida y hambre a 0, el personaje cae (una vez)');
+  comprobar(p.registro.caidas === c0 + 1 && p.m.ver('player.vida.actual') === 0, 'con 1 de vida y fatiga a 0, el personaje cae (una vez)');
 }
 {
   const p = await partida(9303, { fixture: true });
   p.m.store.fijar('world.clima.actual', 'calorSofocante');
   const r = await p.turno('miro alrededor');
-  comprobar(cerca(r.antes.sed - r.despues.sed, S.sedPorTurno * 2, 0.001), `calor sofocante: la sed baja el doble (−${S.sedPorTurno * 2})`, `${r.antes.sed}→${r.despues.sed}`);
+  comprobar(r.despues.sed === r.antes.sed && cerca(r.antes.fatiga - r.despues.fatiga, S.fatigaPorTurno, 0.001), 'calor sofocante: la sed no se mueve; la fatiga, lo de siempre', `${r.antes.sed}→${r.despues.sed}`);
 }
 {
   const p = await partida(9303, { raza: 'crisol', fixture: true });
@@ -336,14 +346,12 @@ console.log('\n── Desgaste aplicado ──');
 }
 {
   const p = await partida(9303, { fixture: true });
-  // El viaje tiene su propia regla (Travel._consumirProvisiones): una ración
-  // y un odre por cada 12 h de camino, y después el turno normal. Cuatro
-  // horas a Saucedo no llegan a una ración: queda un solo desgaste de turno.
-  // Se comprueba la regla vigente, sin cambiarla (ver informe: pendiente).
+  // Desde el 6-oct-2026 el viaje no gasta raciones ni agua ni toca el hambre;
+  // queda el desgaste de fatiga del turno.
   const r = await p.turno('voy a Saucedo');
-  const caida = r.antes.hambre - r.despues.hambre;
-  comprobar(r.despues.ubicacion === 'saucedo' && cerca(caida, S.hambrePorTurno, 0.001) && r.despues.inventario === r.antes.inventario,
-    `viaje de 4 h: un desgaste de turno (−${S.hambrePorTurno}) y 0 raciones, la regla vigente de Travel, sin aplicarlo dos veces`, `${r.antes.hambre}→${r.despues.hambre}`);
+  comprobar(r.despues.ubicacion === 'saucedo' && r.despues.hambre === r.antes.hambre && r.despues.sed === r.antes.sed && r.despues.inventario === r.antes.inventario
+    && cerca(r.antes.fatiga - r.despues.fatiga, S.fatigaPorTurno, 0.001),
+  `viaje de 4 h: sin raciones, agua ni hambre; fatiga −${S.fatigaPorTurno} (un turno), sin aplicarlo dos veces`, `${r.antes.fatiga}→${r.despues.fatiga}`);
 }
 {
   const p = await partida(9303, { fixture: true });
