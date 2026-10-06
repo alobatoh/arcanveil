@@ -1801,6 +1801,9 @@ export class TurnResolver extends SystemBase {
   _porQueSeCorta(a, d, avisos, nuevos) {
     const nombre = (id) => this.leer(`npcs.conocidos.porId.${id}.nombre`) ?? 'alguien';
     const punto = (t) => (/[.!?…»]$/.test(t) ? t : `${t}.`);
+    // Tras los dos puntos, minúscula si empieza por una palabra común («en
+    // el puente, Berger…»); un nombre propio («Cormir se te acerca») se queda.
+    const tras = (t) => (/^(?:El|La|Los|Las|Un|Una|Unos|Unas|En|Al|Del|De|Con|Por|Para|Se|Ya|Alguien|Algo|Desde|Hay|Otro|Otra)\b/.test(t) ? t.charAt(0).toLowerCase() + t.slice(1) : t);
 
     if (avisos.combate || (!a.combate && d.combate)) {
       const enemigos = Object.values(this.leer('combat.combatientes', {}) ?? {}).filter((c) => c.bando === 'enemigo').map((c) => c.nombre);
@@ -1813,7 +1816,7 @@ export class TurnResolver extends SystemBase {
     if (d.ubicacion !== a.ubicacion) return { tipo: 'lugar', texto: 'ya no estás donde empezaste a esperar.' };
 
     const escena = nuevos.find((c) => /^EN ESCENA:/i.test(c.texto));
-    if (escena) return { tipo: 'situacion', texto: punto(escena.texto.replace(/^EN ESCENA:\s*/i, '')), contexto: escena };
+    if (escena) return { tipo: 'situacion', texto: punto(tras(escena.texto.replace(/^EN ESCENA:\s*/i, ''))), contexto: escena };
 
     const idos = a.presentes.filter((id) => !d.presentes.includes(id));
     const llegan = d.presentes.filter((id) => !a.presentes.includes(id));
