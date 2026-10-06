@@ -29,6 +29,7 @@
 import { PERSISTENCIA } from '../config/app.config.js';
 import { crearCanal } from '../core/Logger.js';
 import { clonar } from '../utils/clone.js';
+import * as Calendario from '../world/Calendario.js';
 
 const log = crearCanal('persistencia');
 
@@ -299,6 +300,46 @@ export const MIGRACIONES = Object.freeze([
       }
 
       return { guardado: { ...g, estado, version: 8 }, avisos };
+    },
+  },
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     8 → 9 · Una sola regla de tiempo; ofertas por horas; hambre y sed inertes
+     ---------------------------------------------------------------------
+     Decisiones del 6-oct-2026.
+       · Tiempo: el instante NO se toca (día, hora, minuto, diasTotales); se
+         recalcula lo derivado con la regla del reloj (`world/Calendario.js`):
+         estación cada 28 días y franja. Un guardado podía traer «verano» (la
+         regla vieja de TimeSystem, 90 días) o una estación que no casaba con
+         sus días.
+       · Ofertas: la última oferta se guardaba en turnos y solo en memoria;
+         no hay instante que recuperar. Se toma el de ahora (el del guardado):
+         la primera oferta tras cargar espera la cadencia entera, sin ráfaga.
+       · Hambre y sed: se quedan como estén (inertes). No se borran ni se
+         rellenan; ya no cuentan para nada.
+     Idempotente: aplicarla dos veces da lo mismo.
+     ───────────────────────────────────────────────────────────────────────── */
+  {
+    desde: 8,
+    descripcion: 'deriva estación y franja con la regla del reloj y guarda el instante de la última oferta',
+    aplicar: (g) => {
+      const avisos = [];
+      const estado = clonar(g.estado);
+
+      const t = estado.world?.tiempo;
+      if (t && Number.isFinite(t.hora)) {
+        const d = Calendario.derivado({ hora: t.hora, diasTotales: t.diasTotales ?? 0 });
+        if (t.estacion !== d.estacion) avisos.push(`la estación pasa de «${t.estacion}» a «${d.estacion}» (regla del reloj)`);
+        t.estacion = d.estacion;
+        t.franja = d.franja;
+      }
+
+      if (estado.quests && !Number.isFinite(estado.quests.oferta?.ultimaMinuto)) {
+        const ahora = Calendario.minutoAbsoluto(t ?? {});
+        estado.quests.oferta = { ultimaMinuto: ahora, revisadoMinuto: ahora };
+      }
+
+      return { guardado: { ...g, estado, version: 9 }, avisos };
     },
   },
 ]);
