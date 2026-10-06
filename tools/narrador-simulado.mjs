@@ -99,7 +99,9 @@ export function modeloAdversario() {
     return ok({ choices: [{ message: { content: contenido } }], usage: { total_tokens: 0 } });
   }
 
-  return { fetch: fetchFalso, stats };
+  // `responder` va suelto para quien ponga su propio transporte
+  // (`medir-costes-campana.mjs`), que cuenta las peticiones por su cuenta.
+  return { fetch: fetchFalso, stats, responder };
 }
 
 /**
