@@ -20,6 +20,9 @@ import { SystemBase } from '../core/SystemBase.js';
 import { obtenerClase } from '../data/classes.data.js';
 import { obtenerRaza } from '../data/races.data.js';
 import { FASE } from '../core/GameState.js';
+import { VITALES } from '../config/balance.config.js';
+
+const VITALES_MAX = VITALES.supervivencia.max;
 
 import * as Atributos from './Attributes.js';
 import * as Vitals from './Vitals.js';
@@ -67,6 +70,7 @@ export class Player extends SystemBase {
       'player/avanzada': this._reducirClaseAvanzada,
       'player/flag': this._reducirBandera,
       'player/revivir': this._reducirRevivir,
+      'player/desgaste': this._reducirDesgaste,
     });
 
     // La caída del personaje se detecta observando la vida, no dentro de cada
@@ -95,12 +99,16 @@ export class Player extends SystemBase {
 
     const { parche, avisos, dano } = Vitals.desgasteTurno(jugador, {
       tipo: contexto.tipo,
+      minutos: contexto.minutos,
       multiplicadorSed,
       inmuneHambre,
     });
 
     this.store.transaccion(() => {
-      this.despachar('player/aplicarParche', parche);
+      // Antes se despachaba 'player/aplicarParche', que no tenía reductor: el
+      // desgaste se calculaba (hambre 99,45, sed 99,15, fatiga 99,6 tras un
+      // turno) y se tiraba. Hambre, sed y fatiga no bajaban nunca.
+      this.despachar('player/desgaste', parche);
       for (const aviso of avisos) {
         this.emitir(EVENTOS_JUGADOR.UMBRAL_RECURSO, { mensaje: aviso });
       }
@@ -204,6 +212,32 @@ export class Player extends SystemBase {
       return null;
     }
     return r.parche;
+  }
+
+  /**
+   * El desgaste del turno que calcula `Vitals.desgasteTurno`.
+   *
+   * Acción interna del motor, no una puerta para escribir en la ficha: solo
+   * pasan hambre, sed y fatiga (0-100) y la vida y el maná actuales dentro de
+   * sus máximos. Lo demás se ignora.
+   *
+   * @private
+   */
+  _reducirDesgaste(estado, accion) {
+    const p = accion.payload?.player;
+    if (!p || typeof p !== 'object') return null;
+    const jugador = estado.player ?? {};
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const salida = {};
+    for (const clave of ['hambre', 'sed', 'fatiga']) {
+      const v = num(p[clave]);
+      if (v !== null) salida[clave] = Math.max(0, Math.min(VITALES_MAX, Math.round(v * 100) / 100));
+    }
+    const vida = num(p.vida?.actual);
+    if (vida !== null) salida.vida = { actual: Math.max(0, Math.min(jugador.vida?.max ?? vida, Math.round(vida))) };
+    const mana = num(p.mana?.actual);
+    if (mana !== null && jugador.mana) salida.mana = { actual: Math.max(0, Math.min(jugador.mana.max ?? mana, Math.round(mana))) };
+    return Object.keys(salida).length ? { player: salida } : null;
   }
 
   /** @private */
