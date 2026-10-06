@@ -744,11 +744,13 @@ export class TurnResolver extends SystemBase {
 
       if (ruta?.ruta === 'local') {
         // La ruta puede pedir voz: un gesto se narra, no es un aviso del sistema.
-        // Y si lo narra el máster, lo cierra devolviendo la palabra.
+        // Y si lo narra el máster, lo cierra devolviendo la palabra. Si abre
+        // una pelea, nadie «espera tu respuesta»: «Atacas a Dalwen… Dalwen
+        // espera tu respuesta» salía con el puño ya en el aire.
         if (ruta.narracion) {
           const voz = ruta.voz ?? VOCES.SISTEMA;
           const texto = voz === VOCES.DM
-            ? this._cerrarTurno(ruta.narracion, null, this._aQuienSeHablo(limpio, { soloNombrado: true }))
+            ? this._cerrarTurno(ruta.narracion, null, ruta.combate ? null : this._aQuienSeHablo(limpio, { soloNombrado: true }))
             : ruta.narracion;
           this._anadirEntrada(voz, texto, { turno: numeroTurno });
         }
