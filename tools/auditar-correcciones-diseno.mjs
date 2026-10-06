@@ -313,6 +313,34 @@ await caso(async () => {
   comprobar(JSON.stringify(plantillas) === JSON.stringify({ Dalwen: 'civil', Berlo: 'guardia_corrupto' }),
     'semilla 9505 (todos de la facción guardia_valle): Dalwen pelea como civil, el guardia Berlo se mete y el carretero Eltín no', JSON.stringify(plantillas));
   comprobar(/Berlo se mete en medio/.test(r.texto) && !/Dalwen espera tu respuesta/.test(r.texto), '  y nadie «espera tu respuesta» con la pelea ya abierta', r.texto);
+  // Y si huye, deja de estar también en la ficha de la pantalla (el almacén
+  // funde: sin BORRAR seguía ahí). FIXTURE: la huida se fuerza.
+  const c = p.m.sistema('combat');
+  for (let i = 0; i < 300 && !c.esperandoJugador; i++) await espera(10);
+  const dalwen = Object.values(c._combatientes).find((x) => x.nombre === 'Dalwen');
+  await c._huir(dalwen);
+  const enPantalla = Object.values(p.m.ver('combat.combatientes', {}) ?? {}).filter((x) => x?.bando === 'enemigo').map((x) => x.nombre);
+  comprobar(dalwen && !enPantalla.includes('Dalwen') && enPantalla.includes('Berlo'), 'FIXTURE Dalwen huye: sale de la ficha del combate del almacén; Berlo sigue', JSON.stringify(enPantalla));
+});
+
+console.log('\n── Lo apuntado en escena no se narra fuera de sitio (leído en las partidas 9303 y 9505) ──');
+await caso(async () => {
+  // FIXTURE: una nota de escena del Vado, y luego se viaja.
+  const p = await partida(9303, { fixture: true });
+  p.m.bus.emit('memory:context', { texto: 'EN ESCENA: Berger ha empezado a desatar la manta de la mula para ofrecerla.', temporal: true });
+  await p.turno('voy al Camino del Norte');
+  const r = await p.turno('miro alrededor');
+  comprobar(r.despues.ubicacion === 'camino_norte' && !/Berger/.test(r.texto), 'una escena del Vado no se cuenta en el Camino del Norte', r.texto);
+});
+await caso(async () => {
+  // FIXTURE: Valcio ofrece un encargo y se va antes del siguiente turno narrado.
+  const p = await partida(9303, { fixture: true });
+  p.m.bus.emit('memory:context', { texto: 'EN ESCENA: Valcio se te acerca con algo entre manos: «Hay una carreta abandonada. Si quieres encargarte, dímelo.»', temporal: true });
+  let r = await p.turno('miro alrededor');
+  comprobar(!/Valcio se te acerca/.test(r.texto), 'quien no está (Valcio) no «se te acerca» con un encargo', r.texto);
+  p.m.bus.emit('memory:context', { texto: 'EN ESCENA: Korsa se te acerca con algo entre manos: «Necesito a alguien para el peaje. Si quieres encargarte, dímelo.»', temporal: true });
+  r = await p.turno('miro alrededor');
+  comprobar(/Korsa se te acerca/.test(r.texto), '  y quien sí está (Korsa) sí', r.texto);
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
