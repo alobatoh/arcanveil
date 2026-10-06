@@ -96,6 +96,22 @@ function cantidad(palabra) {
  * @returns {number|null} Puede ser NaN, negativo o enorme: lo valida quien llama.
  */
 export function leerDuracion(t) {
+  return leerDuracionCompleta(t).minutos;
+}
+
+/** Palabras que acompañan a una duración sin cambiarla. */
+const RELLENO = /\b(?:aqui|ahi|alli|en silencio|sentad[oa]s?|quiet[oa]s?|de pie|tranquil[oa]s?|tranquilamente|pacientemente|durante|unos|unas|al menos|como mucho|como|mas o menos|aproximadamente|exactamente|justo|por|y|e|a cubierto|escondid[oa]s?|agazapad[oa]s?|esperando|largos?|largas?|enteras?|enteros?|mas)\b/g;
+
+/** Lo que huele a tiempo: si queda algo así sin entender, no se ejecuta nada. */
+const HUELE_A_TIEMPO = /\d|\b(?:segundos?|seg|minutos?|min|horas?|h|dias?|jornadas?|semanas?|mes(?:es)?|anos?|siglos?|lunas?|infinit\w*|eternidad)\b/;
+
+/**
+ * La duración y lo que queda sin entender. «una hora y 90 segundos» no es
+ * una hora: queda «90 segundos», y eso hay que aclararlo.
+ * @param {string} t Texto llano.
+ * @returns {{minutos: number|null, residuo: string}}
+ */
+export function leerDuracionCompleta(t) {
   let total = 0;
   let algo = false;
   let resto = ` ${t} `;
@@ -113,7 +129,8 @@ export function leerDuracion(t) {
   // «treinta minutos», «30 min»
   resto = resto.replace(new RegExp(`\\b${CANT} (?:minutos?|min)\\b`, 'g'), (_m, n) => { total += cantidad(n); algo = true; return ' '; });
   // «una hora» sin cifra delante ya está cubierto por CANT (una = 1).
-  return algo ? total : null;
+  const residuo = resto.replace(RELLENO, ' ').replace(/\s+/g, ' ').trim();
+  return { minutos: algo ? total : null, residuo };
 }
 
 /**
@@ -124,14 +141,15 @@ function leerHora(t) {
   const m = t.match(new RegExp(`\\bhasta (?:las?|eso de las?) ${CANT}(?:[:.h](\\d{2})| y (media|cuarto)| menos cuarto)?(?: de la (manana|tarde|noche|madrugada))?\\b`));
   if (!m) return null;
   let hora = cantidad(m[1]);
-  if (!Number.isInteger(hora) || hora < 0 || hora > 24) return { invalida: true };
+  // 0-23 en el reloj: «24:30» no se convierte en «00:30» por sorpresa.
+  if (!Number.isInteger(hora) || hora < 0 || hora > 23) return { invalida: true };
   let minuto = m[2] ? Number(m[2]) : m[3] === 'media' ? 30 : m[3] === 'cuarto' ? 15 : 0;
   if (/menos cuarto/.test(m[0])) { hora -= 1; minuto = 45; }
-  if (minuto > 59) return { invalida: true };
-  if (m[4] === 'tarde' || m[4] === 'noche') { if (hora < 12) hora += 12; }
+  if (minuto > 59 || hora < 0) return { invalida: true };
+  if (m[4] === 'noche' && hora === 12) hora = 0;
+  else if (m[4] === 'tarde' || m[4] === 'noche') { if (hora < 12) hora += 12; }
   if (m[4] === 'madrugada' || m[4] === 'manana') { if (hora === 12) hora = 0; }
-  if (hora === 24) hora = 0;
-  return { hora: ((hora % 24) + 24) % 24, minuto, ambigua: !m[4] && !m[2] && hora >= 1 && hora <= 12 };
+  return { hora, minuto, ambigua: !m[4] && !m[2] && hora >= 1 && hora <= 12 };
 }
 
 /**
@@ -166,9 +184,16 @@ export function leerEspera(texto) {
 
   // Una cifra negativa no es una duración: no se le quita el signo.
   if (/(?:^|\s)-\s?\d/.test(resto)) return { clase: 'aclarar', motivo: 'invalida' };
-  const minutos = leerDuracion(resto);
-  if (minutos !== null) return { clase: 'duracion', minutos, dicho: resto.trim() };
+  // «1.500»: ¿mil quinientos o uno y medio? Sin una convención clara, se pregunta.
+  if (/\d[.,]\d{3}(?!\d)/.test(resto)) return { clase: 'aclarar', motivo: 'formato' };
   if (VAGO.test(resto)) return { clase: 'aclarar', motivo: 'vaga' };
+  const { minutos, residuo } = leerDuracionCompleta(resto);
+  // Lo que suena a tiempo y no se ha entendido entero no se ejecuta a medias:
+  // «90 segundos», «1e9 horas», «una hora y 90 segundos», «tres lunas».
+  if (HUELE_A_TIEMPO.test(residuo)) {
+    return { clase: 'aclarar', motivo: /\bseg(?:undos?)?\b/.test(residuo) ? 'segundos' : 'no_soportada' };
+  }
+  if (minutos !== null) return { clase: 'duracion', minutos, dicho: resto.trim() };
   return { clase: 'simple' };
 }
 

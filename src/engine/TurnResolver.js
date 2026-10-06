@@ -1642,6 +1642,9 @@ export class TurnResolver extends SystemBase {
         ambigua: `«Hasta mañana» puede ser hasta el amanecer o un día entero. ${COMO}`,
         hora_invalida: `Esa hora no existe en el reloj. ${COMO}`,
         invalida: `Esa duración no vale. ${COMO}`,
+        segundos: `Las esperas se cuentan en minutos, no en segundos: di cuántos minutos (por ejemplo, «espero 2 minutos»).`,
+        no_soportada: `No entiendo toda esa duración. ${COMO} Como mucho, 24 horas.`,
+        formato: `¿Esa cifra son decimales o miles? Escríbela sin punto ni coma de miles (por ejemplo, «espero 90 minutos» o «espero 1,5 horas»).`,
       };
       return aclarar(leida.motivo, porque[leida.motivo] ?? COMO);
     }
