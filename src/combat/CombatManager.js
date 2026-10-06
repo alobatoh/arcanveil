@@ -37,6 +37,9 @@ import { narrarBotin } from './CombatLog.js';
 import { buscarPorNombre } from '../data/enemies.data.js';
 import { deEnemigo as botinDeEnemigo } from '../inventory/LootGenerator.js';
 import { leerJugada } from './Jugada.js';
+import { aclararArma } from '../engine/ArmaPedida.js';
+import { leerEspera } from '../engine/Espera.js';
+import { segmentar } from '../engine/Segmentos.js';
 import { curarConTexto } from '../player/Curacion.js';
 import { obtenerEstado } from '../data/statuses.data.js';
 import { concordar } from '../utils/text.js';
@@ -553,6 +556,24 @@ export class CombatManager extends SystemBase {
   }
 
   /**
+   * ¿Hay que aclarar la jugada antes de hacer nada? Sin efectos.
+   * @returns {{motivo: string, texto: string}|null}
+   * @private
+   */
+  _aclararAntes(texto, objetos) {
+    const espera = leerEspera(texto);
+    if (espera && espera.clase !== 'simple') {
+      return { motivo: 'espera_en_combate', texto: 'En mitad de un combate no se puede dejar pasar el tiempo. Sigue siendo tu turno: ataca, defiéndete o huye.' };
+    }
+    const arma = aclararArma({
+      segmentos: segmentar(texto).filter((s) => s.tipo === 'accion').map((s) => s.texto),
+      objetos: Object.values(objetos ?? {}),
+      equipado: this.leer('inventory.equipado', {}) ?? {},
+    });
+    return arma ? { motivo: arma.motivo, texto: arma.texto } : null;
+  }
+
+  /**
    * Una orden a un compañero dentro de la jugada escrita.
    *
    * «Grom, cúbreme», «Grom, ataca al herido». Dar una orden no gasta el turno
@@ -803,6 +824,18 @@ export class CombatManager extends SystemBase {
       return { tipo: 'orden', orden: orden.orden };
     }
     if (orden.orden) texto = orden.resto;
+
+    // Lo que hay que aclarar antes de gastar nada: atacar con un arma que no
+    // está (o no en la mano), o dejar pasar horas en mitad de la pelea. Se
+    // dice y el turno sigue siendo suyo: ni ronda, ni acciones, ni el enemigo
+    // aprovecha (como con la magia). Es la misma comprobación que hace
+    // `TurnResolver` fuera del combate (`engine/ArmaPedida.js`).
+    const aclaracion = this._aclararAntes(texto, objetos);
+    if (aclaracion) {
+      this.emitir('narrative:direct', { texto: aclaracion.texto, voz: 'system' });
+      this.emitir(EVENTOS_COMBATE.ESPERANDO, { ronda: this.leer('combat.ronda', 1), acciones: Iniciativa.accionesDisponibles(jugador) });
+      return { tipo: 'aclaracion', motivo: aclaracion.motivo, texto: aclaracion.texto };
+    }
 
     const jugada = leerJugada(texto, {
       enemigos: Object.values(this._combatientes).filter((c) => c.vivo && c.bando === Comb.BANDO.ENEMIGO),
