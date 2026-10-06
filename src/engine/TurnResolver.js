@@ -1738,6 +1738,10 @@ export class TurnResolver extends SystemBase {
         await clock.turno({ tipo: 'espera', minutos: paso });
         transcurrido += paso;
         pulsos += 1;
+        // En un sitio peligroso, esperar expone: riesgo por los minutos de
+        // ESTE pulso (ver `Exploration.riesgoAlEsperar`). Si sale algo, el
+        // corte de abajo lo ve y la espera no sigue.
+        this.sistema('exploration')?.riesgoAlEsperar?.(paso);
         const nuevos = this.memoria.contextoEscena.filter((c) => !contexto0.has(c));
         causa = this._porQueSeCorta(antes, this._fotoEspera(), avisos, nuevos);
         if (causa) break;
@@ -1822,7 +1826,7 @@ export class TurnResolver extends SystemBase {
     }
     if (!a.encuentro && d.encuentro) {
       const e = this.sistema('exploration')?.encuentroPendiente?.();
-      return { tipo: 'encuentro', texto: `${e?.nombre ?? 'algo'} se presenta y pide una decisión.` };
+      return { tipo: 'encuentro', texto: tras(`${e?.nombre ?? 'algo'} se presenta y pide una decisión.`) };
     }
     if (d.ubicacion !== a.ubicacion) return { tipo: 'lugar', texto: 'ya no estás donde empezaste a esperar.' };
 

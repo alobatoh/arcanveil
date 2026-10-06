@@ -26,7 +26,7 @@ import { SystemBase } from '../core/SystemBase.js';
 import * as Tablas from './EncounterTables.js';
 import * as Mapa from './MapGraph.js';
 import { obtenerLugar } from '../data/locations.data.js';
-import { MUNDO } from '../config/balance.config.js';
+import { MUNDO, ESPERA_RIESGO } from '../config/balance.config.js';
 
 /** Eventos publicados. */
 export const EVENTOS_EXPLORACION = Object.freeze({
@@ -367,6 +367,40 @@ export class Exploration extends SystemBase {
   generarEncuentro(contexto) {
     const flujo = this.rng.flujo('mundo');
     return Tablas.elegir(flujo, contexto);
+  }
+
+  /**
+   * Riesgo de encuentro mientras se espera (decisión del 6-oct-2026: esperar
+   * en un sitio peligroso tiene riesgo).
+   *
+   * Mismo riesgo POR TIEMPO que explorar (la probabilidad de `explorar` es
+   * por 30 minutos), repartido según los minutos reales del pulso: un pulso
+   * parcial de 5 minutos cuenta 5, no 10, y partir 2 h en pulsos da el mismo
+   * riesgo total que 2 h seguidas (1 − (1 − p)^(minutos/30)). Pasa por
+   * `tocaEncuentro` (intensidad y gracia de siempre) y por las tablas de
+   * siempre: no todo es pelea. Seguro: un asentamiento, un interior, peligro
+   * 0. Un campamento no hace seguro un sitio. Con un encuentro o un combate ya
+   * en marcha, nada.
+   *
+   * @param {number} minutos Del pulso.
+   * @returns {Object|null} El encuentro, ya presentado, o null.
+   */
+  riesgoAlEsperar(minutos) {
+    if (this._encuentro || this.leer('combat.activo', false)) return null;
+    if (!(minutos > 0) || this.leer('world.sublugar')) return null;
+    const lugar = obtenerLugar(this.leer('world.ubicacion'));
+    const peligro = lugar?.peligro ?? 0;
+    if (!lugar || lugar.tipo === 'asentamiento' || peligro <= 0) return null;
+
+    const efectos = this.sistema('events')?.efectos() ?? {};
+    const por30 = Math.min(0.35, (peligro + (efectos.peligroRutas ?? 0)) * 0.07) * ESPERA_RIESGO.factor;
+    const probabilidad = 1 - (1 - por30) ** (minutos / 30);
+    if (!this.tocaEncuentro(probabilidad, this.rng.flujo('mundo'))) return null;
+
+    const encuentro = this.generarEncuentro({ terreno: lugar.terreno, peligro });
+    if (!encuentro) return null;
+    this._presentar(encuentro, { terreno: lugar.terreno, esperando: true });
+    return encuentro;
   }
 
   /**
