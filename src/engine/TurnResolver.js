@@ -287,7 +287,7 @@ export class TurnResolver extends SystemBase {
     // escena que el motor sí tenía descrita, y de ahí salían los turnos que no
     // decían nada.
     this.escuchar('memory:context', ({ texto, temporal = true }) => {
-      this.memoria.anotarContexto(texto, { temporal });
+      this.memoria.anotarContexto(texto, { temporal, lugar: this.leer('world.ubicacion', null) });
     });
 
     // Canon que no viene de un turno: la gente y los sitios de una historia
@@ -499,6 +499,8 @@ export class TurnResolver extends SystemBase {
       this.emitir(EVENTOS_TURNO.BLOQUEADO, { motivo: 'la crónica ha terminado' });
       return null;
     }
+
+    this._podarEscena();
 
     // ─── 0. Cambiar el canon, a propósito y fuera de la historia ───────
     // «canon: mi hermano murió en el paso» es el jugador editando su propio
@@ -1922,6 +1924,25 @@ export class TurnResolver extends SystemBase {
     return (this.leer('npcs.presentes', []) ?? [])
       .map((id) => this.leer(`npcs.conocidos.porId.${id}.nombre`))
       .some((otro) => otro && otro !== suyo && resto.includes(otro));
+  }
+
+  /**
+   * Lo apuntado en escena espera al siguiente turno narrado, y entre medias
+   * puede no valer ya. Leído en dos partidas nuevas: tras ir del Vado al
+   * Camino del Norte se narraba «Berger ha empezado a desatar la manta», con
+   * Berger en el Vado; y «Valcio se te acerca con algo entre manos» dos turnos
+   * después de que Valcio se fuera. Se quita lo de otro lugar y la oferta de
+   * quien ya no está (el encargo sigue en el diario).
+   * @private
+   */
+  _podarEscena() {
+    const aqui = this.leer('world.ubicacion', null);
+    const presentes = new Set((this.leer('npcs.presentes', []) ?? []).map((id) => this.leer(`npcs.conocidos.porId.${id}.nombre`)).filter(Boolean));
+    this.memoria.podarContexto?.((c) => {
+      if (c.lugar && aqui && c.lugar !== aqui) return false;
+      const quien = String(c.texto).match(/^EN ESCENA:\s*(\p{Lu}[\p{L}'’-]*) se te acerca/u)?.[1];
+      return !quien || presentes.has(quien);
+    });
   }
 
   _cerrarTurno(texto, propuesta, interlocutor = null) {

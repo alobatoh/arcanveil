@@ -268,12 +268,12 @@ export class MemoryStore {
    * @param {boolean} [opciones.temporal] Si se descarta tras usarse.
    * @returns {boolean} Si se apuntó (los duplicados se ignoran).
    */
-  anotarContexto(texto, { temporal = true } = {}) {
+  anotarContexto(texto, { temporal = true, lugar = null } = {}) {
     const limpio = limpiar(String(texto ?? ''));
     if (!limpio) return false;
     if (this.contextoEscena.some((c) => c.texto === limpio)) return false;
 
-    this.contextoEscena.push({ texto: limpio, temporal: Boolean(temporal) });
+    this.contextoEscena.push({ texto: limpio, temporal: Boolean(temporal), lugar });
 
     // Techo bajo a propósito: si llegan doce cosas a la vez, las primeras ya
     // no son «lo que está pasando ahora», son ruido.
@@ -298,6 +298,18 @@ export class MemoryStore {
    */
   consumirContexto() {
     this.contextoEscena = this.contextoEscena.filter((c) => !c.temporal);
+  }
+
+  /**
+   * Quita lo temporal que ya no vale (`seQueda` decide). Lo apuntado espera
+   * al siguiente turno narrado, y entre medias el jugador puede irse o la
+   * gente marcharse.
+   *
+   * @param {(c: {texto: string, temporal: boolean, lugar: ?string}) => boolean} seQueda
+   * @returns {void}
+   */
+  podarContexto(seQueda) {
+    this.contextoEscena = this.contextoEscena.filter((c) => !c.temporal || seQueda(c));
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
