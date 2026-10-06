@@ -178,11 +178,15 @@ console.log('\n── El arma que no está (semilla 9303) ──');
   comprobar(/^No llevas hacha\./.test(r.texto) && !/atacas/.test(r.texto) && quieto(r, { gastaTurno: false }),
     'orden compuesta con ataque y hacha ausente: aclara antes de hacer nada, sin combate', r.texto);
   r = await p.turno(`afilo el cuchillo y ataco a ${korsa.nombre}`);
-  comprobar(new RegExp(`atacas a ${korsa.nombre}`).test(r.texto) && r.despues.turno === r.antes.turno + 1 && r.despues.inventario === r.antes.inventario,
+  comprobar(new RegExp(`atacas a ${korsa.nombre}`, 'i').test(r.texto) && r.despues.turno === r.antes.turno + 1 && r.despues.inventario === r.antes.inventario,
     '  con el cuchillo, que sí lleva: el ataque no se pierde detrás del gesto', r.texto);
-
+}
+{
+  // Desde el 6-oct atacar a un civil abre combate: el hacha se prueba en una
+  // partida nueva, no en mitad de la pelea con Korsa.
+  const p = await partida(9303, 'rastreador');
   p.dar('hacha_mano');
-  r = await p.turno('afilo el hacha a la vista de todos');
+  let r = await p.turno('afilo el hacha a la vista de todos');
   comprobar(/^Afilas el hacha a la vista de todos\./.test(r.texto) && quieto(r), 'hacha presente: se afila el hacha, sin tirada ni combate', r.texto);
 
   p.m.guardarYCargar();

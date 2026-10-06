@@ -460,8 +460,13 @@ console.log('\n── El blanco nombrado no se cambia (semilla 9303) ──');
     const p = await partida(9303);
     const r = await p.turno(frase);
     rutas.push(r);
-    comprobar(!r.combate.length && !/Guardia corrupto|no te han visto/.test(r.texto) && /atac\w* a Korsa/.test(r.texto) && r.despues.turno === r.antes.turno + 1,
-      `«${frase}»: agresión a Korsa por la ruta de siempre, sin abrir combate contra un guardia`, r.texto);
+    // Contrato cambiado el 6-oct-2026 (decisión: a los civiles se les puede
+    // atacar, con consecuencias). Antes se exigía que no hubiera combate; lo
+    // que se mantiene es la IDENTIDAD: la pelea es contra Korsa, nunca contra
+    // un guardia sacado de la tabla («no te han visto»).
+    const contraKorsa = r.combate.length === 1 && r.combate[0].contra === 'Korsa' && r.combate[0].enemies?.[0]?.nombre === 'Korsa' && r.combate[0].enemies[0].npc;
+    comprobar(contraKorsa && !/no te han visto/.test(r.texto) && /atac\w* a Korsa/i.test(r.texto) && r.despues.turno === r.antes.turno + 1,
+      `«${frase}»: el ataque va contra Korsa (su ficha y su referencia), no contra un guardia ajeno`, `${JSON.stringify(r.combate)} · ${r.texto}`);
   }
   comprobar(rutas.every((r) => r.despues.reputacion === rutas[0].despues.reputacion && r.despues.vida === rutas[0].despues.vida),
     '  las tres frases dejan la misma vida y reputación (misma ruta)');
@@ -469,8 +474,9 @@ console.log('\n── El blanco nombrado no se cambia (semilla 9303) ──');
   const p = await partida(9303);
   const r = await p.turno('ataco a Xivio');
   const pedido = r.combate[0];
-  comprobar(pedido && pedido.enemies?.[0]?.count === 2 && pedido.teVen === true && /Xivio ve venir el golpe/.test(r.texto),
-    'control: «ataco a Xivio» abre contra dos guardias, te ven, y se narra la intervención', JSON.stringify(pedido));
+  const cuantos = (pedido?.enemies ?? []).reduce((a, e) => a + (e.count ?? 1), 0);
+  comprobar(pedido && cuantos === 2 && pedido.enemies.some((e) => e.nombre === 'Xivio' && e.npc) && pedido.teVen === true && /Xivio ve venir el golpe/.test(r.texto),
+    'control: «ataco a Xivio» abre contra dos guardias (Xivio por su nombre y el del pretil), te ven, y se narra la intervención', JSON.stringify(pedido));
 
   for (const [frase, que] of [['no ataco a Korsa', 'negación'], ['si Korsa se mueve, ataco a Korsa', 'condición'], ['guardo el cuchillo', 'guardar'], ['afilo el cuchillo', 'afilar'], ['miro el cuchillo', 'mirar'], ['toco el cuchillo', 'tocar'], ['el cuchillo brilla al sol', 'nombrar']]) {
     const q = await partida(9303);
