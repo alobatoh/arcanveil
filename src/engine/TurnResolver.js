@@ -1810,7 +1810,7 @@ export class TurnResolver extends SystemBase {
       ubicacion: this.leer('world.ubicacion'),
       presentes: [...(this.leer('npcs.presentes', []) ?? [])],
       vida: p.vida?.actual ?? 0,
-      hambre: p.hambre, sed: p.sed, fatiga: p.fatiga,
+      fatiga: p.fatiga,
       combate: Boolean(this.leer('combat.activo', false)),
       encuentro: Boolean(this.sistema('exploration')?.encuentroActivo),
     };
@@ -1855,12 +1855,12 @@ export class TurnResolver extends SystemBase {
     }
 
     if (d.vida < a.vida) {
-      const falta = ['hambre', 'sed', 'fatiga'].filter((k) => (d[k] ?? 1) <= 0);
-      const por = { hambre: 'el hambre', sed: 'la sed', fatiga: 'el agotamiento' };
-      return { tipo: 'recursos', texto: `${falta.length ? falta.map((k) => por[k]).join(' y ') : 'el cuerpo'} te pasa factura: pierdes ${a.vida - d.vida} de vida.` };
+      // Solo el agotamiento hace daño (6-oct-2026): un guardado viejo con el
+      // hambre o la sed a cero no debe echarles la culpa.
+      const porAgotamiento = (d.fatiga ?? 1) <= 0;
+      return { tipo: 'recursos', texto: `${porAgotamiento ? 'el agotamiento' : 'el cuerpo'} te pasa factura: pierdes ${a.vida - d.vida} de vida.` };
     }
-    const agotado = ['hambre', 'sed', 'fatiga'].find((k) => (a[k] ?? 1) > 0 && (d[k] ?? 1) <= 0);
-    if (agotado) return { tipo: 'recursos', texto: `${{ hambre: 'el hambre', sed: 'la sed', fatiga: 'el cansancio' }[agotado]} ya no se aguanta.` };
+    if ((a.fatiga ?? 1) > 0 && (d.fatiga ?? 1) <= 0) return { tipo: 'recursos', texto: 'el cansancio ya no se aguanta.' };
 
     if (avisos.mision) return { tipo: 'mision', texto: avisos.mision };
     return null;
