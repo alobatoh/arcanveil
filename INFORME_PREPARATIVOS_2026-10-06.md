@@ -1,8 +1,8 @@
 # Preparativos del motor y medición offline: informe (6-oct-2026)
 
-**Rama local** `feat/preparativos-motor-20261006`, sacada de `feat/arreglo-playtest` en **f2bc6f2**: el SHA del encargo, sin cambios ni trabajo nuevo encima al empezar. **HEAD final: 2280e8a.** Son 10 commits y 14 ficheros (+1763 / −19). No se ha tocado `main`.
+**Rama** `feat/preparativos-motor-20261006`, sacada de `feat/arreglo-playtest` en **f2bc6f2**: el SHA del encargo, sin cambios ni trabajo nuevo encima al empezar. **HEAD del código: 2280e8a.** Son 10 commits y 14 ficheros (+1763 / −19). No se ha tocado `main`.
 
-**Sin push, sin PR, sin merge.** No se ha usado ninguna API real ni cuota: ni Groq, ni Anthropic, ni Gemini, ni Cloudflare, ni ComfyUI, ni servicios de imágenes. Tampoco hay claves, ni pagos, ni accesos nuevos. Todo se ha probado con partidas, personajes y proveedores ficticios, y no se han tocado partidas ni galerías reales.
+**Subida a GitHub el 6-oct-2026** porque Alejandro lo pidió explícitamente («siempre que termines pushea»); el encargo decía no hacerlo. **Sin PR y sin merge.** No se ha usado ninguna API real ni cuota: ni Groq, ni Anthropic, ni Gemini, ni Cloudflare, ni ComfyUI, ni servicios de imágenes. Tampoco hay claves, ni pagos, ni accesos nuevos. Todo se ha probado con partidas, personajes y proveedores ficticios, y no se han tocado partidas ni galerías reales.
 
 La prueba de concepto `feat/coherencia-turnos-costes-20261006` (38bbac4, 0555570) **no está en este equipo**, así que no se ha usado ni comparado. Todo lo de aquí está hecho y medido en esta copia.
 
