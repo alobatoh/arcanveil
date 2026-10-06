@@ -23,16 +23,15 @@
  *     vaya el guardia», «a que llegue»), «un rato», «hasta mañana», cifras
  *     imposibles. Eso se aclara antes de fingir que ha pasado.
  *
- * Las fronteras son las de `MUNDO.tiempo.franjas`, las mismas con que el
- * reloj guarda la franja: lo que se narra coincide con lo guardado. Ojo:
- * `TimeSystem.horasDeLuz` calcula el anochecer con otra regla (19 h por un
- * factor de estación) y las dos no coinciden. Esa deuda sigue abierta; aquí
- * se usa la del reloj, que es la que ve el jugador.
+ * Las fronteras son las del reloj (`world/Calendario.js`, la única regla de
+ * tiempo desde el 6-oct-2026): lo que se narra coincide con lo guardado y
+ * con lo que calcula `TimeSystem`.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
 import { sinAcentos } from '../utils/text.js';
 import { MUNDO } from '../config/balance.config.js';
+import * as Calendario from '../world/Calendario.js';
 
 /** Lo más que se espera de una vez en esta fase: un día. */
 export const ESPERA_MAXIMA_MIN = 24 * 60;
@@ -81,7 +80,7 @@ const FRONTERAS = [
 
 /** Hora de inicio de una franja del reloj. */
 export function inicioDeFranja(clave) {
-  return MUNDO.tiempo.franjas.find((f) => f.clave === clave)?.desde ?? null;
+  return Calendario.inicioDeFranja(clave);
 }
 
 function cantidad(palabra) {

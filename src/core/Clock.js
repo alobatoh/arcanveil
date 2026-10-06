@@ -22,6 +22,7 @@
 
 import { SystemBase } from './SystemBase.js';
 import { MUNDO } from '../config/balance.config.js';
+import * as Calendario from '../world/Calendario.js';
 import { ATRIBUTOS_DOC, ICONOS_FRANJA } from '../config/ui.config.js';
 
 /** Eventos publicados por el reloj. */
@@ -148,18 +149,17 @@ export class Clock extends SystemBase {
 
     let dia = t.dia;
     let diasTotales = t.diasTotales;
-    let estacion = t.estacion;
 
     const diasSumados = Math.floor(hora / cfg.horasPorDia);
     if (diasSumados > 0) {
       hora = hora % cfg.horasPorDia;
       dia += diasSumados;
       diasTotales += diasSumados;
-
-      // Cambio de estación al superar la duración configurada.
-      const indice = Math.floor(diasTotales / cfg.diasPorEstacion) % cfg.estaciones.length;
-      estacion = cfg.estaciones[indice];
     }
+
+    // La estación se deriva siempre del día absoluto, con la regla única
+    // (`world/Calendario.js`): no se arrastra la que hubiera guardada.
+    const estacion = Calendario.estacionDe(diasTotales);
 
     const franja = this.calcularFranja(hora);
 
@@ -201,14 +201,26 @@ export class Clock extends SystemBase {
     const p = accion.payload ?? {};
     const t = estado.world.tiempo;
     const hora = p.hora ?? t.hora;
+    let diasTotales = p.diasTotales ?? t.diasTotales;
+    // La estación sale del día: pedir una estación (consola de depuración,
+    // pruebas) mueve el día a esa estación del mismo año, mismo día dentro de
+    // la estación. Antes se guardaba la estación pedida sin tocar el día, y el
+    // siguiente cambio de día la deshacía.
+    if (p.estacion && p.diasTotales === undefined) {
+      const i = Calendario.ESTACIONES_CLAVES.indexOf(p.estacion);
+      if (i >= 0) {
+        const ano = Math.floor(diasTotales / Calendario.DIAS_POR_ANO);
+        diasTotales = ano * Calendario.DIAS_POR_ANO + i * Calendario.DIAS_POR_ESTACION + Calendario.diaDeEstacion(diasTotales);
+      }
+    }
     return {
       world: {
         tiempo: {
           dia: p.dia ?? t.dia,
           hora,
           minuto: p.minuto ?? t.minuto,
-          estacion: p.estacion ?? t.estacion,
-          diasTotales: p.diasTotales ?? t.diasTotales,
+          estacion: Calendario.estacionDe(diasTotales),
+          diasTotales,
           franja: this.calcularFranja(hora),
         },
       },
@@ -225,12 +237,7 @@ export class Clock extends SystemBase {
    * @returns {string} 'madrugada'|'alba'|'manana'|'mediodia'|'tarde'|'ocaso'|'noche'
    */
   calcularFranja(hora) {
-    const franjas = MUNDO.tiempo.franjas;
-    let resultado = franjas[0].clave;
-    for (const f of franjas) {
-      if (hora >= f.desde) resultado = f.clave;
-    }
-    return resultado;
+    return Calendario.franjaDe(hora);
   }
 
   /** @returns {boolean} true entre el ocaso y el alba. */

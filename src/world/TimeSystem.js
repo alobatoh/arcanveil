@@ -23,6 +23,7 @@
 
 import { SystemBase } from '../core/SystemBase.js';
 import { obtenerLugar } from '../data/locations.data.js';
+import * as Calendario from './Calendario.js';
 
 /** Eventos publicados. */
 export const EVENTOS_TIEMPO = Object.freeze({
@@ -80,36 +81,40 @@ export const HORARIOS = Object.freeze({
 
 /**
  * @typedef {Object} Estacion
- * @property {string} clave
+ * @property {string} clave La del reloj (`MUNDO.tiempo.estaciones`).
  * @property {string} nombre
- * @property {number} desde Día del año en que empieza.
+ * @property {string} articulo «la primavera», «el estío».
  * @property {Object} efectos
  * @property {string} descripcion
  */
 
-/** Las cuatro estaciones, de noventa días cada una. */
+/**
+ * Lo que trae cada estación. CUÁNDO es cada una no se decide aquí: lo dice
+ * el reloj (28 días por estación, ver `world/Calendario.js`). Antes había
+ * aquí años de 360 días, estaciones de 90, «verano» en vez de «estio» y un
+ * factor de horas de luz con su propio anochecer; ya no. Fuera también
+ * `consumoAgua` y `consumoRaciones`: el hambre y la sed ya no son presión
+ * de supervivencia (decisión del 6-oct-2026).
+ */
 export const ESTACIONES = Object.freeze([
   {
-    clave: 'primavera', nombre: 'primavera', desde: 0,
+    clave: 'primavera', nombre: 'primavera', articulo: 'la',
     efectos: { climaLluvia: 1.4, precioComida: 1.1 },
     descripcion: 'El deshielo abre los caminos y el barro los complica.',
   },
   {
-    clave: 'verano', nombre: 'verano', desde: 90,
-    efectos: { horasLuz: 1.2, climaTormenta: 1.3, consumoAgua: 1.4 },
+    clave: 'estio', nombre: 'estío', articulo: 'el',
+    efectos: { climaTormenta: 1.3 },
     descripcion: 'Días largos y calor que agota.',
   },
   {
-    clave: 'otono', nombre: 'otoño', desde: 180,
+    clave: 'otono', nombre: 'otoño', articulo: 'el',
     efectos: { precioComida: 0.8, climaNiebla: 1.5 },
     descripcion: 'La cosecha llena los graneros y la niebla los caminos.',
   },
   {
-    clave: 'invierno', nombre: 'invierno', desde: 270,
-    efectos: {
-      horasLuz: 0.7, climaNieve: 2, precioComida: 1.6,
-      pasosCerrados: true, consumoRaciones: 1.3,
-    },
+    clave: 'invierno', nombre: 'invierno', articulo: 'el',
+    efectos: { climaNieve: 2, precioComida: 1.6, pasosCerrados: true },
     descripcion: 'Los pasos se cierran y la comida se encarece.',
   },
 ]);
@@ -164,20 +169,16 @@ export class TimeSystem extends SystemBase {
    * @returns {Estacion}
    */
   estacionActual() {
-    const dia = this.leer('world.tiempo.diasTotales', 0);
-    const diaDelAno = dia % 360;
-
-    // Se busca la última estación cuyo umbral se haya cruzado.
-    return [...ESTACIONES].reverse().find((e) => diaDelAno >= e.desde) ?? ESTACIONES[0];
+    const clave = Calendario.estacionDe(this.leer('world.tiempo.diasTotales', 0));
+    return ESTACIONES.find((e) => e.clave === clave) ?? ESTACIONES[0];
   }
 
   /**
-   * Día dentro de la estación actual.
+   * Día dentro de la estación actual (0 el primero).
    * @returns {number}
    */
   diaDeEstacion() {
-    const diaDelAno = this.leer('world.tiempo.diasTotales', 0) % 360;
-    return diaDelAno - this.estacionActual().desde;
+    return Calendario.diaDeEstacion(this.leer('world.tiempo.diasTotales', 0));
   }
 
   /**
@@ -202,12 +203,12 @@ export class TimeSystem extends SystemBase {
       });
 
       this.emitir('narrative:direct', {
-        texto: `Ha entrado el ${estacion.nombre}. ${estacion.descripcion}`,
+        texto: `Ha entrado ${estacion.articulo} ${estacion.nombre}. ${estacion.descripcion}`,
         voz: 'system',
       });
 
       this.emitir('memory:remember', {
-        texto: `Entró el ${estacion.nombre}.`,
+        texto: `Entró ${estacion.articulo} ${estacion.nombre}.`,
         peso: 2,
       });
 
@@ -515,13 +516,10 @@ export class TimeSystem extends SystemBase {
    * @returns {number}
    */
   horasDeLuz() {
-    const hora = this.leer('world.tiempo.hora', 12);
-    const factor = this.efectosEstacion().horasLuz ?? 1;
-
-    // El anochecer se desplaza con la estación.
-    const anochece = Math.round(19 * factor);
-
-    return Math.max(0, anochece - hora);
+    // El anochecer es el del reloj (la frontera de «noche»), el mismo que
+    // ve el jugador en la cabecera. Antes era round(19 × factor de estación):
+    // otra hora distinta según la estación, y ninguna coincidía con el reloj.
+    return Calendario.horasDeLuz(this.leer('world.tiempo.hora', 12));
   }
 
   /**

@@ -176,7 +176,7 @@ export const EVENTOS_REGIONALES = Object.freeze({
     alcance: 'regional',
     peso: 45,
     duracion: [15, 30],
-    requisitos: { regiones: ['valle_central', 'dunas_rojas'], estaciones: ['verano', 'otono'] },
+    requisitos: { regiones: ['valle_central', 'dunas_rojas'], estaciones: ['estio', 'otono'] },
     efectos: { precios: 0.75, precioComida: 0.6, actitudLocal: 10 },
     ganchos: [
       'hay más grano del que se puede almacenar',

@@ -18,6 +18,7 @@ import { Component } from '../Component.js';
 import { qs, texto as fijarTexto, atributo } from '../DOM.js';
 import { SELECTORES, ICONOS_FRANJA, ICONOS } from '../../config/ui.config.js';
 import { reloj } from '../../utils/format.js';
+import { nombreEstacion } from '../../world/Calendario.js';
 
 /** Nombre visible de cada franja del día. */
 const NOMBRE_FRANJA = Object.freeze({
@@ -92,7 +93,7 @@ export class WorldClock extends Component {
     const detalle = [
       reloj(t.hora, t.minuto),
       NOMBRE_CLIMA[clima] ?? clima,
-      this._capitalizar(t.estacion),
+      this._capitalizar(nombreEstacion(t.estacion)),
     ].join(' · ');
 
     atributo(this._contenedor, 'data-tooltip', detalle);

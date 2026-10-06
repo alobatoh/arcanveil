@@ -300,7 +300,7 @@ export class WeatherSystem extends SystemBase {
 
     const factores = {
       primavera: { lluvia: 1.5, nieve: 0.3, ventisca: 0.1, calorSofocante: 0.2 },
-      verano: { calorSofocante: 2, tormenta: 1.4, nieve: 0, ventisca: 0 },
+      estio: { calorSofocante: 2, tormenta: 1.4, nieve: 0, ventisca: 0 },
       otono: { niebla: 1.8, lluvia: 1.3, nieve: 0.4, calorSofocante: 0.2 },
       invierno: { nieve: 2.5, ventisca: 2, lluvia: 0.5, calorSofocante: 0 },
     };
