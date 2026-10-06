@@ -33,6 +33,8 @@ import { obtenerClase } from '../data/classes.data.js';
 import { obtenerTrasfondo } from '../data/backgrounds.data.js';
 import { trasPreposicion } from '../utils/text.js';
 import { LIMITES } from '../config/app.config.js';
+import { OFERTAS } from '../config/balance.config.js';
+import * as Calendario from '../world/Calendario.js';
 
 /** Eventos publicados. */
 export const EVENTOS_MISION = Object.freeze({
@@ -47,8 +49,6 @@ export const EVENTOS_MISION = Object.freeze({
 /** Misiones activas simultáneas como máximo. */
 const ACTIVAS_MAX = 6;
 
-/** Turnos entre ofertas espontáneas. */
-const GRACIA_OFERTA = 12;
 
 export class QuestSystem extends SystemBase {
   static nombre = 'quests';
@@ -99,6 +99,13 @@ export class QuestSystem extends SystemBase {
 
     // ─── Plazos ─────────────────────────────────────────────────────────
     this.escuchar('clock:day:new', ({ diasTotales }) => this._revisarPlazos(diasTotales));
+
+    // ─── Ofertas por tiempo del mundo ───────────────────────────────────
+    // La cuenta empieza al crear el personaje, no en el primer turno normal.
+    this.escuchar('player:created', () => {
+      const ahora = Calendario.minutoAbsoluto(this.leer('world.tiempo', {}) ?? {});
+      this._fijarOferta({ ultimaMinuto: ahora, revisadoMinuto: ahora });
+    });
   }
 
   /**
@@ -107,7 +114,11 @@ export class QuestSystem extends SystemBase {
    */
   alTurno(contexto) {
     if (contexto.tipo === 'combate') return;
-    this._evaluarOferta(contexto.turno);
+    // Durante una espera no se publica nada: el tiempo cuenta, y la
+    // oportunidad queda para el siguiente turno normal (sin cola ni ráfaga).
+    // Una oferta nueva no es algo que deba cortar la espera.
+    if (contexto.tipo === 'espera') return;
+    this._evaluarOferta(Calendario.minutoAbsoluto(this.leer('world.tiempo', {}) ?? {}));
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -263,7 +274,7 @@ export class QuestSystem extends SystemBase {
     if (ajustes.length) this.log.debug('misión normalizada', ajustes);
 
     this.despachar('quests/registrar', { mision });
-    this._ultimaOferta = this.leer('meta.turno', 0);
+    this._anotarOferta();
 
     this.emitir(EVENTOS_MISION.OFRECIDA, {
       refId: mision.refId,
@@ -610,18 +621,54 @@ export class QuestSystem extends SystemBase {
    * @param {number} turno
    * @private
    */
-  _evaluarOferta(turno) {
-    if (turno - this._ultimaOferta < GRACIA_OFERTA) return;
+  _evaluarOferta(ahora) {
+    // Por tiempo del mundo, guardado en el estado (sobrevive a cargar). Antes
+    // era cada 12 turnos con el turno en memoria: una espera de 2 h (12
+    // pulsos) traía una oferta que la cortaba, y al cargar volvía a 0.
+    const estado = this.leer('quests.oferta', null);
+    if (!estado || !Number.isFinite(estado.ultimaMinuto)) {
+      // Partida nueva o guardado sin este dato: se cuenta desde ahora (la
+      // primera oferta espera la cadencia entera; sin ráfaga al cargar).
+      this._fijarOferta({ ultimaMinuto: ahora, revisadoMinuto: ahora });
+      return;
+    }
+    const cadencia = OFERTAS.cadenciaHoras * 60;
+    const desde = estado.ultimaMinuto + cadencia;
+    const revisado = Number.isFinite(estado.revisadoMinuto) ? estado.revisadoMinuto : estado.ultimaMinuto;
+    if (ahora < desde) {
+      this._fijarOferta({ ...estado, revisadoMinuto: ahora });
+      return;
+    }
+
+    // Una tirada por revisión, con la probabilidad de todo el tiempo que ha
+    // pasado desde la anterior: 2 h de golpe valen lo mismo que doce turnos
+    // de 10 minutos (estadísticamente: 1 − 0,8^12), sin tirar doce veces.
+    const tramos = Math.max(1, Math.round((ahora - Math.max(revisado, desde)) / 10));
+    const probabilidad = 1 - (1 - OFERTAS.probabilidadCada10Min) ** tramos;
+    this._fijarOferta({ ...estado, revisadoMinuto: ahora });
+
     if (this.activas().length >= ACTIVAS_MAX - 2) return;
 
-    // Solo donde hay con quién hablar.
+    // Solo donde hay con quién hablar: sin nadie no se inventa quien ofrezca.
     const npcs = this.sistema('npcs');
     const presentes = npcs?.presentes() ?? [];
     if (!presentes.length) return;
 
-    if (!this.rng.flujo('narrativa').oportunidad(0.2)) return;
+    if (!this.rng.flujo('narrativa').oportunidad(Math.min(1, probabilidad))) return;
 
     this.generarOferta();
+  }
+
+  /** @private */
+  _fijarOferta(datos) {
+    this.store.fijar('quests.oferta', datos);
+  }
+
+  /** Marca ahora como el momento de la última oferta. @private */
+  _anotarOferta() {
+    this._ultimaOferta = this.leer('meta.turno', 0);
+    const ahora = Calendario.minutoAbsoluto(this.leer('world.tiempo', {}) ?? {});
+    this._fijarOferta({ ultimaMinuto: ahora, revisadoMinuto: ahora });
   }
 
   /**
@@ -670,7 +717,7 @@ export class QuestSystem extends SystemBase {
     if (mision.plantilla) this._plantillasUsadas.push(mision.plantilla);
 
     this.despachar('quests/registrar', { mision });
-    this._ultimaOferta = this.leer('meta.turno', 0);
+    this._anotarOferta();
 
     this.emitir(EVENTOS_MISION.OFRECIDA, {
       refId: mision.refId,

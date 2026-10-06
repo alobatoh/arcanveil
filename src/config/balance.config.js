@@ -512,6 +512,29 @@ export const ECONOMIA = congelar({
    ficha pelea quien no tiene una de enemigo.
    ═══════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Ofertas espontáneas de encargos, por TIEMPO DEL MUNDO (decisión del
+ * 6-oct-2026: horas, no turnos ni pulsos). Las cifras son PROPUESTA TÉCNICA
+ * ajustable: la cadencia no traduce los 12 turnos de antes a 12 horas; la
+ * probabilidad es la de antes (0,2 por turno de 10 minutos), ahora por cada
+ * 10 minutos de mundo transcurridos, se juegue como se juegue.
+ */
+export const OFERTAS = congelar({
+  /** Horas de mundo, como mínimo, entre una oferta espontánea y la siguiente. */
+  cadenciaHoras: 3,
+  /** Probabilidad por cada 10 minutos de mundo, una vez cumplida la cadencia. */
+  probabilidadCada10Min: 0.2,
+});
+
+/**
+ * Riesgo de encuentro al esperar en un sitio peligroso (decisión del
+ * 6-oct-2026). PROPUESTA TÉCNICA ajustable: `factor` 1 = el mismo riesgo por
+ * hora que explorar ese sitio (ver `Exploration.riesgoAlEsperar`).
+ */
+export const ESPERA_RIESGO = congelar({
+  factor: 1,
+});
+
 export const AGRESION = congelar({
   /** Ficha de combate de un civil sin ficha propia (ver `enemies.data.js`, `civil`). */
   plantillaCivil: 'civil',
