@@ -24,6 +24,8 @@ import { obtenerLugar } from '../data/locations.data.js';
 import { nombreAleatorio } from '../player/CharacterRandom.js';
 import { sinAcentos } from '../utils/text.js';
 import { actoDeHabla, ACTO } from '../engine/ActoDeHabla.js';
+import { ataca } from '../engine/ArmaPedida.js';
+import { sintagmaDestinatario } from '../engine/Destinatario.js';
 
 /**
  * Frases que apuntan a «lo que está pasando» sin nombrarlo: «me acerco a ver
@@ -221,6 +223,17 @@ export class SituationSystem extends SystemBase {
     if (!plantilla) return null;
 
     const n = llano(texto);
+
+    // Un ataque es de esta situación solo si su DESTINATARIO es de los suyos
+    // (o no nombra a nadie). «Ataco a Korsa mientras Xivio mira» abría la
+    // pelea del peaje contra Xivio, que solo miraba (ver `engine/Destinatario.js`).
+    if (ataca(n)) {
+      const destino = sintagmaDestinatario(n);
+      const suyoEnDestino = Object.values(sit.actores).some((a) => (a.nombre && destino.includes(llano(a.nombre)))
+        || (a.rol && destino.split(/\s+/).some((p) => p.length >= 4 && llano(a.rol).startsWith(p.replace(/(?:es|s)$/, '')))));
+      if (destino && /\b(?:a|al|a la|a las|a los|contra)\s+\S/.test(destino) && !suyoEnDestino) return null;
+    }
+
     const nombrados = Object.values(sit.actores).some((a) => a.nombre && n.includes(llano(a.nombre)));
     // «Me acerco» a secas es ir a ver qué pasa; «me acerco al herrero» es ir
     // a otra cosa, y contaba como atender la situación que acababa de

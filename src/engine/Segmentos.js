@@ -33,6 +33,7 @@ export const TIPO_SEGMENTO = Object.freeze({
   CONDICIONAL: 'condicional',
   ESPERA: 'espera',
   DELEGACION: 'delegacion',
+  CIRCUNSTANCIA: 'circunstancia',
 });
 
 const CITA = /«[^»]*»|"[^"]*"|“[^”]*”/gu;
@@ -245,6 +246,11 @@ function clasificar(texto) {
     if (ORDEN_A_OTRO.test(llano(consecuencia))) return { ...base, tipo: TIPO_SEGMENTO.DIALOGO, citaImplicita: true };
     return { ...base, tipo: TIPO_SEGMENTO.CONDICIONAL, condicion, consecuencia };
   }
+
+  // «Mientras Korsa mira, ataco a Zorvak»: lo de «mientras» es lo que pasa
+  // alrededor, no lo que hace. Se tomaba por la acción del turno y el ataque
+  // de después se narraba («atacas a Zorvak») sin pasar por el motor.
+  if (/^mientras\s/.test(n)) return { ...base, tipo: TIPO_SEGMENTO.CIRCUNSTANCIA };
 
   if (OMISION.test(sinCitas)) {
     const objeto = texto.replace(/^\S+\s+(?:de\s+|caso\s+(?:a\s+|al\s+)?|a\s+|al\s+)?/iu, '').trim();

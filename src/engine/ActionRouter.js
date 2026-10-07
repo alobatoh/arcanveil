@@ -37,6 +37,7 @@ import { obtenerPlantilla } from '../data/items.data.js';
 import { ARMAS, leerGesto } from './IntentParser.js';
 import { aSegundaPersona } from '../ai/Persona.js';
 import { articulo, articuloIndet, capitalizar, sinAcentos } from '../utils/text.js';
+import { sintagmaDestinatario } from './Destinatario.js';
 import { VOCES } from '../config/ui.config.js';
 import { curarConTexto, PIDE_CURAR } from '../player/Curacion.js';
 import { SITUACIONES } from '../data/situaciones.data.js';
@@ -637,12 +638,19 @@ export class ActionRouter extends SystemBase {
    */
   _blancoDelAtaque(texto) {
     const original = String(texto ?? '');
-    const llano = sinAcentos(original.toLowerCase());
     const presentes = this._presentesConClave();
     const escapar = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+    // 0. Solo cuenta el DESTINATARIO: lo que va tras el verbo de ataque y su
+    //    «a / al / contra», hasta donde empieza otra cosa. «Ataco a Zorvak
+    //    mientras Korsa mira» pegaba a Korsa, que solo miraba: se buscaba
+    //    cualquier nombre en toda la frase. Testigos, compañía, instrumento y
+    //    lo que viene tras «mientras», «delante de», «y», la coma… no son blanco.
+    const llano = sintagmaDestinatario(sinAcentos(original.toLowerCase()));
+    if (!llano) return null;
+
     // 1. Un nombre de los que están (sin mirar mayúsculas ni tildes; nombres
-    //    de varias palabras enteros). Si nombra a dos, el primero tras el verbo.
+    //    de varias palabras enteros).
     const nombrados = presentes
       .map((n) => ({ n, i: llano.search(new RegExp(`\\b${escapar(sinAcentos(n.nombre.toLowerCase()))}\\b`)) }))
       .filter((x) => x.i >= 0)
