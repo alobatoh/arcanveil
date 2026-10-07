@@ -153,18 +153,80 @@ function cdp(method, params = {}) {
   ws.send(JSON.stringify({ id, method, params }));
   return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
 }
+/** Etapa en curso, con hora: el registro dice dónde se paró y cuándo. */
+const T0 = Date.now();
+let etapaActual = 'arranque';
+function etapa(nombre) {
+  etapaActual = nombre;
+  console.log(`[${((Date.now() - T0) / 1000).toFixed(1).padStart(6)} s] ${nombre}`);
+}
 async function evaluate(expression, awaitPromise = true) {
-  const r = await cdp('Runtime.evaluate', { expression, awaitPromise, returnByValue: true });
+  let r;
+  try {
+    r = await cdp('Runtime.evaluate', { expression, awaitPromise, returnByValue: true });
+  } catch (e) {
+    // Una navegación a mitad de una evaluación corta la respuesta. Si no se
+    // esperaba, es un fallo con su etapa, no algo que ignorar.
+    throw new Error(`${e.message} (etapa «${etapaActual}», al evaluar: ${expression.slice(0, 120)})`);
+  }
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
   return r.result?.value;
 }
+/** El estado del motor cuando algo no llega: para saber POR QUÉ. */
+const DIAGNOSTICO = `(() => { try { const A = window.ARCANVEIL; if (!A?.motor?.listo) return { motor: 'sin arrancar', pantalla: document.body?.dataset?.activeScreen };
+  const c = A.sistema('combat'); return { pantalla: document.body.dataset.activeScreen, fase: A.ver('meta.fase'), run: A.ver('meta.runId'), muerte: A.ver('meta.muerte')?.causa ?? null,
+  vida: A.ver('player.vida.actual'), combate: A.ver('combat.activo', false), esperando: c?.esperandoJugador ?? null, encuentro: Boolean(A.sistema('exploration')?.encuentroActivo),
+  viaje: A.sistema('travel')?.paraInterfaz?.() ?? null, ultimas: A.ver('narrative.entradas', []).slice(-4).map((e) => e.voz + ': ' + String(e.texto ?? '').slice(0, 90)) }; } catch (e) { return { error: String(e) }; } })()`;
 async function until(expression, timeout = 12000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     if (await evaluate(`Boolean(${expression})`)) return;
     await wait(100);
   }
-  throw new Error(`Tiempo agotado esperando: ${expression}`);
+  let estado = null;
+  try { estado = await evaluate(DIAGNOSTICO); } catch (e) { estado = { sinDiagnostico: e.message }; }
+  throw new Error(`Tiempo agotado (${timeout} ms, etapa «${etapaActual}») esperando: ${expression}\n  estado: ${JSON.stringify(estado)}`);
+}
+/**
+ * Pulsar algo que NAVEGA (recarga). Se pulsa desde un temporizador de la
+ * página para que la evaluación responda antes de que la página se vaya: si
+ * no, CDP contesta «Inspected target navigated or closed» según quién llegue
+ * antes (carrera vista en escritorio). Luego se espera al documento nuevo.
+ */
+async function pulsarYNavegar(selectorExpr, listo) {
+  const marca = `m${Date.now()}`;
+  await evaluate(`(() => { window.__marcaNavegacion = '${marca}'; const b = ${selectorExpr}; if (!b) throw new Error('no está el botón'); setTimeout(() => b.click(), 30); return true; })()`);
+  const inicio = Date.now();
+  while (Date.now() - inicio < 15000) {
+    await wait(150);
+    let sigue;
+    try { sigue = await evaluate(`window.__marcaNavegacion === '${marca}'`); } catch { sigue = true; }
+    if (!sigue) break;
+  }
+  await until(listo, 15000);
+}
+
+/**
+ * Tras una muerte: «Nueva partida» (recarga), se elige el primer personaje
+ * guardado y se empieza un run NUEVO. No se revive al muerto ni se le cura:
+ * es otro run, independiente, para seguir probando.
+ */
+async function empezarRunNuevo() {
+  await pulsarYNavegar(`[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida')`,
+    'window.ARCANVEIL?.motor?.listo && ["personajes", "creacion"].includes(document.body.dataset.activeScreen)');
+  await evaluate(`document.querySelector('.tarjeta-pj[data-personaje]').click()`);
+  await until('document.querySelector("#personajes-comenzar")');
+  await evaluate(`document.querySelector('#personajes-comenzar').click()`);
+  await until('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.vida.actual") > 0 && !ARCANVEIL.ver("meta.muerte")', 15000);
+  await evaluate(`window.__ataquesGrupo = []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataquesGrupo.push(e)); true`);
+}
+
+/** Desde el menú de inicio, «Continuar» la partida guardada. */
+async function continuarPartida(runId) {
+  await until('document.querySelector("#menu-continuar") && !document.querySelector("#menu-continuar").closest("[hidden]")', 8000);
+  await evaluate(`document.querySelector('#menu-continuar').click()`);
+  await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.runId") === ${JSON.stringify(runId)}`, 15000);
+  await evaluate(`window.__ataquesGrupo = window.__ataquesGrupo ?? []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataquesGrupo.push(e)); true`);
 }
 /**
  * Espera a que la pantalla esté quieta: sin texto a medio escribir ni
@@ -221,6 +283,7 @@ try {
   if (sinIA) {
     await cdp('Network.setBlockedURLs', { urls: ['*127.0.0.1:11437*', '*localhost:11437*'] });
     await cdp('Page.reload', { ignoreCache: true });
+    etapa(`arranque ${viewport.label}${sinIA ? ' sin generador' : ''}`);
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")');
   }
 
@@ -270,6 +333,7 @@ try {
   await evaluate(`document.querySelector('#inicio-jugar').click()`);
   await shot(`01b-menu-${viewport.label}.png`);
 
+  etapa('creación de personaje');
   await evaluate(`document.querySelector('#menu-nueva').click()`);
   await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#aleatoria-raza")');
   // El dado vuelve a tirar raza y nombre en cada pulsación.
@@ -376,6 +440,7 @@ try {
     'inspecciono las piedras','dejo una marca en el camino','vigilo los tejados','sigo las luces',
     'investigo el ruido','anoto lo descubierto','descanso un momento','decido el siguiente paso',
   ];
+  etapa('20 turnos');
   const turns = [];
   for (const a of acciones) {
     const result = await evaluate(`ARCANVEIL.jugar(${JSON.stringify(a)}).then(()=>({disabled:document.querySelector('#entrada').disabled, lines:ARCANVEIL.ver('narrative.entradas',[]).length, failures:document.querySelectorAll('#fallos .fallos__linea').length}))`);
@@ -665,6 +730,7 @@ try {
       primera = false;
     }
   }
+  etapa('pelea del grupo por menús');
   await pelearPorMenu({ fotos: viewport.label });
   const peleaGrupo = await evaluate(`(async () => {
     const { paraJugador } = await import('/src/combat/CombatLog.js');
@@ -726,6 +792,18 @@ try {
   if (/intentas\s+anoto/i.test(libre.texto)) throw new Error('acción libre mal integrada');
   if (!libre.marcador && !libre.aprobado) throw new Error('en la partida no hay ni retrato elegido ni marcador');
 
+  // Con muerte permanente, la pelea del grupo PUEDE matar (visto en
+  // escritorio: «La oscuridad te alcanza», y el combate siguiente no podía
+  // abrirse; la espera vencía). Si muere, se comprueba esa muerte natural y se
+  // sigue con un run nuevo. Ni se cura al muerto ni se alarga la espera.
+  if (await evaluate('Boolean(ARCANVEIL.ver("meta.muerte"))')) {
+    etapa('muerte natural en la pelea del grupo: se comprueba y run nuevo');
+    await until('!document.getElementById("caida-modal").hidden', 8000);
+    const natural = await evaluate(`({ titulo: document.getElementById('caida-titulo').textContent, botones: [...document.querySelectorAll('#caida-acciones button')].map((b) => b.textContent.trim()), combate: ARCANVEIL.ver('combat.activo', false) })`);
+    if (!/ha muerto/.test(natural.titulo) || !natural.botones.includes('Nueva partida') || natural.combate) throw new Error(`muerte natural sin su pantalla: ${JSON.stringify(natural)}`);
+    await empezarRunNuevo();
+  }
+  etapa('texto libre en combate');
   // En combate, el texto libre no ataca: los ataques van por el menú (la
   // caja no puede golpear al primero de la lista). El rival enseña su ficha.
   await evaluate(`ARCANVEIL.store.dispatch('player/curar', { cantidad: 99, origen: 'regresion' })`);
@@ -814,8 +892,8 @@ try {
   const ranuras = await evaluate(`ARCANVEIL.sistema('saves').listar().filter((r) => !r.vacia).map((r) => ({ ranura: r.ranura, muerto: r.muerto, run: r.cabecera?.runId }))`);
   if (!ranuras.some((r) => r.muerto && r.run === final.muerte.runId)) throw new Error(`el final no se guardó como muerto: ${JSON.stringify(ranuras)}`);
 
-  await evaluate(`[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida').click()`);
-  await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo") && ["personajes", "creacion"].includes(document.body.dataset.activeScreen)', 15000);
+  await pulsarYNavegar(`[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida')`,
+    'window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo") && ["personajes", "creacion"].includes(document.body.dataset.activeScreen)');
   await shot(`09-nueva-partida-${viewport.label}.png`);
   const trasMorir = await evaluate(`({
     pantalla: document.body.dataset.activeScreen,
@@ -829,6 +907,7 @@ try {
   }
   if (!trasMorir.cargar || trasMorir.cargar.exito || trasMorir.cargar.motivo !== 'muerto') throw new Error(`la ranura del muerto se dejó cargar: ${JSON.stringify(trasMorir.cargar)}`);
 
+  etapa('sin red');
   const beforeOffline = await evaluate(`navigator.serviceWorker.ready.then(()=>({controlled:Boolean(navigator.serviceWorker.controller),lines:ARCANVEIL.ver('narrative.entradas',[]).length}))`);
   await wait(700);
   await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
