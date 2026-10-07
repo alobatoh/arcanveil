@@ -352,7 +352,12 @@ export const OCULTAS = Object.freeze({
     condicion: (s) => (s.promesasTardias ?? 0) >= 1,
   },
 
+  // RETIRADA (7-oct-2026): el hambre ya no cuenta (decisión del 6-oct) y
+  // `turnosBienAlimentado` no sube, así que nadie podía conseguirla. No se
+  // evalúa en partidas nuevas ni cuenta en el total; quien ya la tenga la
+  // conserva y la ve. Si se sustituye o se reinterpreta lo decide Alejandro.
   glotón: {
+    retirada: true,
     refId: 'gloton',
     nombre: 'Nunca con hambre',
     descripcion: 'Pasar cincuenta turnos sin bajar de la mitad de comida.',
@@ -434,7 +439,7 @@ export function evaluar(stats, estado, yaConseguidas = []) {
   const conseguidas = new Set(yaConseguidas);
 
   return Object.values(HAZANAS).filter((h) => {
-    if (conseguidas.has(h.refId)) return false;
+    if (conseguidas.has(h.refId) || h.retirada) return false;
 
     try {
       return Boolean(h.condicion(stats, estado));
@@ -481,7 +486,7 @@ export function listado(conseguidas, stats, estado) {
   const logradas = new Set(conseguidas);
 
   return Object.values(HAZANAS)
-    .filter((h) => !h.oculta || logradas.has(h.refId))
+    .filter((h) => (!h.oculta && !h.retirada) || logradas.has(h.refId))
     .map((h) => ({
       refId: h.refId,
       nombre: h.nombre,
@@ -504,7 +509,7 @@ export function listado(conseguidas, stats, estado) {
  * @returns {{total: number, visibles: number, ocultas: number}}
  */
 export function conteo() {
-  const todas = Object.values(HAZANAS);
+  const todas = Object.values(HAZANAS).filter((h) => !h.retirada);
   const ocultas = todas.filter((h) => h.oculta);
 
   return {

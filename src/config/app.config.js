@@ -308,7 +308,6 @@ export const FUNCIONES = congelar({
   relaciones: true,
   clima: true,
   cicloDiaNoche: true,
-  hambreYSed: true,
   fatiga: true,
   moral: true,
   durabilidad: true,

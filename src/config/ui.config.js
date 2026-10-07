@@ -534,8 +534,6 @@ export const TEXTOS = congelar({
     oroGanado: 'Has ganado',
     oroPerdido: 'Has perdido',
     sobrecargado: 'Vas sobrecargado',
-    hambre: 'El hambre aprieta',
-    sed: 'La sed te castiga',
     agotamiento: 'Estás agotado',
     guardado: 'Crónica guardada',
     cargado: 'Crónica recuperada',

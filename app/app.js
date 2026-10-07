@@ -2292,11 +2292,6 @@ async function viajar(refId) {
     return;
   }
 
-  if (plan.sinProvisiones
-    && !confirm(`No llevas provisiones para el camino a ${obtenerLugar(refId)?.nombre}. ¿Salir igualmente?`)) {
-    return;
-  }
-
   bloquear(true);
   await travel.viajar(refId, { forzar: true });
   bloquear(false);

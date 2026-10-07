@@ -404,7 +404,7 @@ export class MapPanel extends Component {
               onClick: () => this._viajar(refId, plan),
             },
               icono('mapa', { class: 'icon--sm' }),
-              h('span', { text: plan.sinProvisiones ? 'Ir de todos modos' : 'Emprender el viaje' }),
+              h('span', { text: 'Emprender el viaje' }),
             ),
           ),
     );
@@ -461,15 +461,6 @@ export class MapPanel extends Component {
    */
   async _viajar(refId, plan) {
     const travel = this.ui?.registry?.obtener?.('travel');
-
-    if (plan.sinProvisiones) {
-      const seguro = await this.ui?.confirmar(
-        'No llevas provisiones suficientes para este camino. ¿Salir igualmente?',
-        { titulo: 'Sin provisiones', si: 'Salir', no: 'Cancelar', peligroso: true },
-      );
-
-      if (!seguro) return;
-    }
 
     this._seleccionado = null;
     this.ui?.cajon?.('derecho', false);
