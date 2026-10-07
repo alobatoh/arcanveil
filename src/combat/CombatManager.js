@@ -700,9 +700,11 @@ export class CombatManager extends SystemBase {
 
     if (resultado.cayo) await this._registrarCaida(resultado.objetivo);
 
-    // El desgaste del equipo es real: atacar gasta el arma.
+    // El desgaste del equipo es real: atacar gasta el arma QUE atacó (la
+    // elegida en el menú, por su ID), con la regla de siempre: un golpe con
+    // daño. Sin arma (golpe, magia) no se desgasta ninguna.
     if (atacante.esJugador && resultado.dano) {
-      this._desgastarArma();
+      this._desgastarArma(decision.ataque?.itemId ?? null);
     }
     if (objetivo.esJugador && resultado.dano) {
       this._desgastarArmadura(resultado.dano.total);
@@ -1024,13 +1026,24 @@ export class CombatManager extends SystemBase {
     const jugador = this._combatientes.jugador;
     const objetos = this.leer('inventory.objetos.porId', {}) ?? {};
     const enMano = new Set(Object.values(this.leer('inventory.equipado', {}) ?? {}).filter(Boolean));
-    const ataques = (jugador?.ataques ?? []).map((a) => {
+    // Los ataques salen del equipo de AHORA, no de la foto del principio de
+    // la pelea: un arma que se rompe (y se desequipa sola) deja de ser un
+    // ataque válido, y con las manos vacías aparece el golpe sin arma.
+    const actuales = jugador ? Comb.ataquesDelJugador(this.sistema('inventory')?.bonificadores?.() ?? {}) : [];
+    const motivoDe = (a) => {
       const objeto = a.itemId ? objetos[a.itemId] : null;
       const durabilidad = typeof objeto?.durabilidad === 'number' ? objeto.durabilidad : objeto?.durabilidad?.actual;
-      let motivo = null;
-      if (a.itemId && !objeto) motivo = 'ya no lo llevas';
-      else if (a.itemId && !enMano.has(a.itemId)) motivo = 'no está en la mano';
-      else if (durabilidad === 0) motivo = 'está roto';
+      if (a.itemId && !objeto) return 'ya no lo llevas';
+      if (durabilidad !== undefined && durabilidad <= 0) return 'está roto';
+      if (a.itemId && !enMano.has(a.itemId)) return 'no está en la mano';
+      return null;
+    };
+    // Lo que se tenía y ya no vale se enseña con su motivo (no desaparece sin
+    // explicación); no se puede elegir.
+    const perdidos = (jugador?.ataques ?? []).filter((a) => a.itemId && !actuales.some((b) => b.id === a.id));
+    if (jugador) jugador.ataques = actuales;
+    const ataques = [...actuales, ...perdidos].map((a) => {
+      const motivo = motivoDe(a) ?? (actuales.includes(a) ? null : 'no está en la mano');
       return { id: a.id, itemId: a.itemId ?? null, nombre: a.nombre, dano: a.dano, tipo: a.tipo, alcance: a.alcance, coste: null, disponible: !motivo, motivo };
     });
     const enemigos = this._enemigosVivos().map((c) => {
@@ -1521,11 +1534,13 @@ export class CombatManager extends SystemBase {
   }
 
   /** @private */
-  _desgastarArma() {
-    const equipado = this.leer('inventory.equipado.manoPrincipal');
-    if (equipado) {
-      this.despachar('inventory/desgastar', { idObjeto: equipado, tipo: 'arma' });
-    }
+  _desgastarArma(idObjeto) {
+    // Leía `equipado.manoPrincipal`, una ranura que no existe (es
+    // `armaPrincipal`): las armas no se desgastaban nunca. Y con dos manos
+    // no sabía cuál había golpeado. Ahora: el objeto del ataque, por su ID,
+    // si sigue en el inventario.
+    if (!idObjeto || !this.leer(`inventory.objetos.porId.${idObjeto}`, null)) return;
+    this.despachar('inventory/desgastar', { idObjeto, tipo: 'arma' });
   }
 
   /** @private */

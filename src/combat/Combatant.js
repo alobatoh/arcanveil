@@ -97,7 +97,7 @@ export function desdeJugador(jugador, bonificadores = {}) {
     nivel: jugador.nivel ?? 1,
 
     // El arma equipada se convierte en el ataque disponible.
-    ataques: _ataquesDelJugador(bonificadores),
+    ataques: ataquesDelJugador(bonificadores),
 
     // Los estados del jugador se arrastran al combate: envenenarse antes de
     // pelear tiene consecuencias en la pelea.
@@ -171,7 +171,7 @@ export function desdeCompanero(ficha, miembro = {}) {
  * @returns {Array<Object>}
  * @private
  */
-function _ataquesDelJugador(bonificadores) {
+export function ataquesDelJugador(bonificadores) {
   // Cada arma empuñada con daño da su ataque: la de la mano principal y la de
   // la secundaria (la rastreadora lleva el cuchillo ahí y peleaba a puñetazos:
   // solo se miraba la principal). Un escudo no tiene daño y no cuenta. Sin
