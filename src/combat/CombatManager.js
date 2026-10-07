@@ -959,6 +959,50 @@ export class CombatManager extends SystemBase {
      MENÚ: lo que se puede elegir y UNA acción validada
      ═══════════════════════════════════════════════════════════════════════ */
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     GUARDAR Y CARGAR EN MITAD DE UN COMBATE
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * El combate en curso, para el guardado. Solo en el turno del jugador: a
+   * mitad de la resolución (el enemigo actuando) no hay un punto estable que
+   * guardar, y `SaveManager` lo dice en vez de guardar a medias.
+   * @returns {null|Object}
+   */
+  serializar() {
+    if (!this.leer('combat.activo', false) || !this._esperando) return null;
+    return {
+      version: 1,
+      combateId: this._combateId,
+      turnoJugador: this._turnoJugador ?? 0,
+      combatientes: JSON.parse(JSON.stringify(this._combatientes)),
+      ordenes: { ...(this._ordenes ?? {}) },
+      estado: JSON.parse(JSON.stringify(this.leer('combat', {}))),
+    };
+  }
+
+  /**
+   * Restaura el combate guardado: participantes, vida, estados, iniciativa,
+   * ronda. Vuelve a ser el turno del jugador con una ficha NUEVA: lo que
+   * estuviera a medio elegir en la interfaz se descarta, y una orden de antes
+   * de guardar no vale. Ni turno extra ni daño repetido.
+   */
+  restaurar(datos) {
+    if (!datos?.combatientes || !datos.estado) return;
+    this._combatientes = datos.combatientes;
+    this._combateId = datos.combateId ?? `cmb-restaurado-${Date.now().toString(36)}`;
+    this._turnoJugador = (datos.turnoJugador ?? 0) + 1;
+    this._ordenes = datos.ordenes ?? {};
+    this._registro = [];
+    this.store.fijar('combat', { ...datos.estado, activo: true });
+    this.store.fijar('meta.fase', 'combate');
+    this._esperando = true;
+    queueMicrotask(() => this.emitir(EVENTOS_COMBATE.ESPERANDO, {
+      ronda: this.leer('combat.ronda', 1),
+      acciones: Iniciativa.accionesDisponibles(this._combatientes.jugador),
+    }));
+  }
+
   /**
    * Ficha del turno del jugador en curso (combate + turno), o null si no es
    * su turno. La interfaz la manda con la acción; una ficha vieja o repetida

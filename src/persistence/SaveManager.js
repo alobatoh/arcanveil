@@ -239,6 +239,14 @@ export class SaveManager extends SystemBase {
       return { exito: false, motivo, tamano: null };
     }
 
+    // En mitad de una pelea solo se guarda en el turno del jugador: con el
+    // enemigo actuando no hay un punto estable (ver `CombatManager.serializar`).
+    if (this.leer('combat.activo', false) && !this.sistema('combat')?.esperandoJugador) {
+      const motivo = 'El combate se está resolviendo: guarda cuando sea tu turno.';
+      if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: motivo, tipo: 'aviso' });
+      return { exito: false, motivo, tamano: null };
+    }
+
     try {
       const guardado = this._construir(opciones.nota);
 
@@ -314,7 +322,7 @@ export class SaveManager extends SystemBase {
     // Los sistemas que guardan estado aparte lo aportan aquí.
     const sistemas = {};
 
-    for (const nombre of ['world', 'events', 'time', 'exploration', 'merchants', 'turns']) {
+    for (const nombre of ['world', 'events', 'time', 'exploration', 'merchants', 'turns', 'combat']) {
       const sistema = this.sistema(nombre);
       if (sistema?.serializar) sistemas[nombre] = sistema.serializar();
     }
@@ -411,6 +419,14 @@ export class SaveManager extends SystemBase {
       for (const [nombre, datos] of Object.entries(resultado.sistemas)) {
         const sistema = this.sistema(nombre);
         if (sistema?.restaurar) sistema.restaurar(datos);
+      }
+
+      // Un guardado de antes, hecho en mitad de una pelea, traía la fase
+      // «combate» sin el combate (no se guardaba): la partida quedaba en una
+      // pelea que no existía. Se vuelve a explorar.
+      if (this.leer('meta.fase') === 'combate' && !this.leer('combat.activo', false)) {
+        this.store.fijar('meta.fase', 'exploracion');
+        avisos.push('el guardado era de mitad de una pelea que no se guardaba: se sigue explorando');
       }
 
       this._ultimoAuto = resultado.estado.meta?.turno ?? 0;
