@@ -91,6 +91,8 @@ const MODOS = new Set([
   'ganas', 'empeno', 'intencion', 'alevosia', 'ventaja', 'sorpresa', 'agilidad', 'elegancia', 'torpeza', 'esfuerzo', 'estilo', 'arte',
   'tecnica', 'disimulo', 'discrecion', 'decoro', 'grito', 'gritos', 'rugido', 'alarido', 'golpe', 'golpes', 'tajo', 'tajos',
   'estocada', 'estocadas', 'embestida', 'carga', 'salto', 'finta', 'amago', 'barrido', 'impulso', 'carrerilla', 'impetu',
+  // Con «todo/toda mi…»: lo que se pone, no con qué se pega.
+  'peso', 'alma', 'corazon', 'empuje', 'potencia', 'vigor', 'brio', 'arrojo', 'temple', 'nervio', 'voluntad', 'aliento',
 ]);
 
 /** ¿Este trozo ataca? */
@@ -172,10 +174,13 @@ function candidatos(s, objetos, equipado = {}) {
 /**
  * ¿Es un modo («con calma», «con toda mi fuerza»), el cuerpo, magia o una
  * persona («con Korsa mirando»), y no un objeto?
+ *
+ * Un intensificador («todo», «toda», «todas»…) NO decide nada por sí solo:
+ * se quita y se mira lo que queda. «Con toda mi katana» se trataba como
+ * «con toda mi fuerza» y abría pelea sin katana.
  */
 function noEsObjeto(s, nombres = []) {
   if (CUERPO.has(s.palabras[0]) || MAGIA.has(s.palabras[0]) || MODOS.has(s.palabras[0])) return true;
-  if (s.intensifica) return true;
   if (nombres.some((n) => s.palabras[0] === llano(n).split(/\s+/)[0])) return true;
   return false;
 }
