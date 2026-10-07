@@ -144,8 +144,9 @@ export class Player extends SystemBase {
         creada: Date.now(),
         fase: 'exploracion',
         // Identidad de ESTA partida: la muerte se apunta por run, no por
-        // nombre (ver `player/Muerte.js`).
-        runId: nuevoRunId(),
+        // nombre (ver `player/Muerte.js`). La entrega de una herencia trae el
+        // suyo, reservado antes de crear (ver `persistence/EntregaLegado.js`).
+        runId: accion.payload?.runId ?? nuevoRunId(),
         muerte: null,
       },
     };
@@ -275,9 +276,19 @@ export class Player extends SystemBase {
 
   /** @private */
   _reducirXP(estado, accion) {
-    const { cantidad = 0, motivo = '' } = accion.payload ?? {};
-    // Ni una recompensa tardía después de morir.
-    if (cantidad <= 0 || estado.meta?.muerte) return null;
+    const { cantidad = 0, motivo = '', legado = null } = accion.payload ?? {};
+    // Ni una recompensa tardía después de morir. Una herencia de 0 sí se
+    // apunta (se entrega una vez, sin premio): por eso no se corta en 0.
+    if (!Number.isFinite(cantidad) || cantidad < 0 || (cantidad === 0 && !legado) || estado.meta?.muerte) return null;
+
+    // La herencia de un muerto: una sola, a un personaje recién creado (sin
+    // experiencia propia todavía), con su origen y su transacción. Entra por
+    // aquí para que nivel, vida, maná y puntos salgan de las reglas normales
+    // de SU clase; lo demás del muerto no se copia.
+    if (legado) {
+      if (estado.player.legadoRecibido || (estado.player.xp ?? 0) !== 0) return null;
+      if (!legado.runOrigen || !legado.transaccion || legado.runOrigen === estado.meta?.runId) return null;
+    }
 
     const clase = obtenerClase(estado.player.clase);
     const r = Progresion.otorgarXP(estado.player, cantidad, {
@@ -286,13 +297,33 @@ export class Player extends SystemBase {
       manaBase: clase?.manaBase ?? 0,
     });
 
+    if (legado) {
+      // Heredada y ganada, por separado: la ganada es `xp − xpHeredada`.
+      r.parche.player.xpHeredada = (estado.player.xpHeredada ?? 0) + r.xpGanada;
+      r.parche.player.legadoRecibido = {
+        runOrigen: legado.runOrigen,
+        transaccion: legado.transaccion,
+        xp: r.xpGanada,
+        xpOrigen: legado.xpOrigen ?? null,
+        nombreOrigen: legado.nombreOrigen ?? null,
+        claseOrigen: legado.claseOrigen ?? null,
+        momento: Date.now(),
+        nivelResultante: r.parche.player.nivel ?? estado.player.nivel ?? 1,
+      };
+    }
+
     queueMicrotask(() => {
-      this.emitir(EVENTOS_JUGADOR.XP_GANADA, { cantidad: r.xpGanada, motivo });
+      this.emitir(EVENTOS_JUGADOR.XP_GANADA, { cantidad: r.xpGanada, motivo, legado: Boolean(legado) });
       if (r.subioNivel) {
         this.emitir(EVENTOS_JUGADOR.SUBE_NIVEL, {
           niveles: r.nivelesGanados,
           nivelFinal: r.nivelesGanados.at(-1),
+          // `nivel` lo leían la crónica y el rótulo, y el evento no lo traía:
+          // salía «alcanzó el nivel undefined» / «NIVEL undefined».
+          nivel: r.nivelesGanados.at(-1),
           recompensas: r.recompensas,
+          // Niveles que vienen de una herencia, no de lo jugado.
+          legado: legado ? { nombreOrigen: legado.nombreOrigen ?? null } : null,
         });
       }
     });

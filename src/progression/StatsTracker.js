@@ -104,6 +104,8 @@ export function estadisticasIniciales() {
     // ─── Progresión ───────────────────────────────────────────────────────
     nivelesGanados: 0,
     xpTotal: 0,
+    // Lo recibido de un muerto: no cuenta como ganado jugando.
+    xpHeredada: 0,
   };
 }
 
@@ -202,7 +204,8 @@ export class StatsTracker extends SystemBase {
 
     // ─── Progresión ─────────────────────────────────────────────────────
     this.escuchar('player:levelup', () => this.registrar('nivelesGanados'));
-    this.escuchar('player:xp', ({ cantidad }) => this.registrar('xpTotal', cantidad));
+    // La experiencia heredada no es experiencia ganada jugando: va aparte.
+    this.escuchar('player:xp', ({ cantidad, legado }) => this.registrar(legado ? 'xpHeredada' : 'xpTotal', cantidad));
     // Los nombres estaban mal: el motor emite `player:rested` y `player:saved`.
     // Mismo desajuste que tuvieron `roll`/`tirada` y `player`/`jugador`, con la
     // misma consecuencia silenciosa: los dos contadores se quedaban a cero para

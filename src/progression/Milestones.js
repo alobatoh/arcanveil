@@ -244,7 +244,8 @@ export class Milestones extends SystemBase {
 
       ['npc:killed', (d) => ({ peso: 'personaMuerta', texto: `${d.nombre} murió` })],
 
-      ['player:levelup', (d) => ({ peso: 'nivelGanado', texto: `alcanzó el nivel ${d.nivel}` })],
+      // Lo heredado no es un hito jugado: se cuenta como lo que es.
+      ['player:levelup', (d) => ({ peso: 'nivelGanado', texto: d.legado ? `empezó en el nivel ${d.nivel} con lo heredado${d.legado.nombreOrigen ? ` de ${d.legado.nombreOrigen}` : ''}` : `alcanzó el nivel ${d.nivel}` })],
 
       ['player:lifesaver', () => ({ peso: 'salvavidas', texto: 'estuvo a punto de morir' })],
 
