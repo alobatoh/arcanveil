@@ -1547,7 +1547,8 @@ function abrirMuerte(muerte) {
   if (!modal || !muerte) return;
   bloquear(true);
 
-  const lugar = muerte.momento?.lugar ? (obtenerLugar(muerte.momento.lugar)?.nombre ?? '') : '';
+  // «en el Camino del Norte», no «en El Camino…»: el artículo, en minúscula.
+  const lugar = (muerte.momento?.lugar ? (obtenerLugar(muerte.momento.lugar)?.nombre ?? '') : '').replace(/^(El|La|Los|Las) /, (m) => m.toLowerCase());
   const cuando = Number.isFinite(muerte.momento?.dia)
     ? `Día ${muerte.momento.dia}, ${String(muerte.momento.hora ?? 0).padStart(2, '0')}:${String(muerte.momento.minuto ?? 0).padStart(2, '0')}${lugar ? `, en ${lugar}` : ''}.`
     : '';
@@ -2504,13 +2505,39 @@ function ajustarAltoEntrada() {
 /* ── combate ──────────────────────────────────────────────────────────── */
 
 /**
- * A quién apunta el jugador. Se queda entre repintados.
+ * El menú del turno del jugador (decisión del 7-oct-2026: combate por menús,
+ * a la manera de los juegos por turnos clásicos, con el aspecto de Arcanveil).
  *
- * Vive fuera de `pintarCombate` porque la función reconstruye el panel entero
- * en cada golpe: guardarlo dentro significaría perder la puntería cada vez que
- * alguien pega.
+ *   principal → Atacar → elegir ataque → elegir enemigo → confirmar
+ *             → Objeto → elegir objeto
+ *             → Defender / Huir (directos, con su coste dicho)
+ *
+ * Atacar no golpea, elegir ataque no golpea: solo «Confirmar» ejecuta, y
+ * manda al motor la ficha del turno, el ataque y el objetivo elegidos (el
+ * motor vuelve a comprobarlo todo antes de tocar nada). Volver o cambiar no
+ * gasta nada. Con la ficha de un turno nuevo la selección se borra: el
+ * siguiente ataque exige elegir otra vez, aunque el enemigo de antes siga en
+ * pie. Elegir el objetivo con un clic y confirmar con otro es una decisión de
+ * interfaz (que se vea ataque, objetivo y coste antes de ejecutar), no algo
+ * pedido tal cual.
  */
-let objetivoCombate = null;
+const menuCombate = { etapa: 'principal', token: null, ataqueId: null, objetivoId: null, resolviendo: false, aviso: null };
+
+function reiniciarMenuCombate(token = null) {
+  Object.assign(menuCombate, { etapa: 'principal', token, ataqueId: null, objetivoId: null, resolviendo: false, aviso: null });
+}
+
+/** Volver una etapa atrás (botón «Volver» o Escape). No gasta nada. */
+function volverMenuCombate() {
+  if (menuCombate.resolviendo) return;
+  const atras = { ataque: 'principal', objeto: 'principal', objetivo: 'ataque', confirmar: 'objetivo' }[menuCombate.etapa] ?? 'principal';
+  if (atras === 'ataque') menuCombate.ataqueId = null;
+  if (atras === 'objetivo') menuCombate.objetivoId = null;
+  menuCombate.etapa = atras;
+  menuCombate.aviso = null;
+  pintarCombate();
+  $('#combate .combate__menu button:not([disabled])')?.focus();
+}
 
 /**
  * El parte del combate: una línea por golpe.
@@ -2532,7 +2559,7 @@ function pintarCombate() {
   const entrada = $('#entrada');
   if (entrada) {
     entrada.placeholder = activo
-      ? 'Describe tu jugada: «le lanzo arena a los ojos»…'
+      ? 'Habla o huye con palabras; ataca desde el menú'
       : 'Escribe lo que haces o dices…';
   }
 
@@ -2595,23 +2622,33 @@ function pintarCombate() {
     }
   }
 
-  // El objetivo deja de valer cuando cae: se pasa al siguiente en pie en vez
-  // de dejar al jugador apuntando a un cadáver.
-  //
-  // Solo se apunta al otro bando. Con «no es el jugador» bastaba mientras
-  // se peleaba solo; con compañeros, el primero de la lista era el compañero
-  // y el botón decía «Atacar a Cornis».
-  const enemigosVivos = datos.combatientes.filter((c) => esEnemigo(c) && c.vivo);
-  if (!enemigosVivos.some((c) => c.id === objetivoCombate)) {
-    objetivoCombate = enemigosVivos[0]?.id ?? null;
+  // El menú del turno: lo que se puede elegir sale del motor (ataques del
+  // equipo, enemigos vivos, consumibles). Ficha nueva = turno nuevo =
+  // selección limpia. Lo elegido que deje de valer (el enemigo cae o huye,
+  // el arma sale de la mano) se borra y se dice; no se pasa a otro.
+  const menu = manager.esperandoJugador ? manager.accionesDelJugador?.() : null;
+  if (menu && menu.token !== menuCombate.token) reiniciarMenuCombate(menu.token);
+  if (menu && menuCombate.objetivoId && !menu.enemigos.some((e) => e.id === menuCombate.objetivoId)) {
+    menuCombate.objetivoId = null;
+    if (menuCombate.etapa === 'confirmar') menuCombate.etapa = 'objetivo';
+    menuCombate.aviso = 'El enemigo que habías elegido ya no está en pie. Elige a quién.';
   }
+  if (menu && menuCombate.ataqueId && !menu.ataques.some((a) => a.id === menuCombate.ataqueId && a.disponible)) {
+    menuCombate.ataqueId = null;
+    menuCombate.objetivoId = null;
+    if (['objetivo', 'confirmar'].includes(menuCombate.etapa)) menuCombate.etapa = 'ataque';
+    menuCombate.aviso = 'Ese ataque ya no está disponible. Elige otro.';
+  }
+  const eligiendo = Boolean(menu) && !menuCombate.resolviendo && ['objetivo', 'confirmar'].includes(menuCombate.etapa);
 
   const lista = el('div', { class: 'combate__lista' });
 
   for (const c of datos.combatientes) {
     const frac = Math.round(c.fraccionVida * 100);
-    const esObjetivo = c.id === objetivoCombate;
-    const elegible = esEnemigo(c) && c.vivo;
+    const esObjetivo = c.id === menuCombate.objetivoId;
+    // Solo se pulsa a un enemigo cuando toca elegir a quién: fuera de esa
+    // etapa, tocar una fila no selecciona nada (ni un objetivo invisible).
+    const elegible = eligiendo && esEnemigo(c) && c.vivo && menu.enemigos.some((e) => e.id === c.id);
 
     // Se puede elegir a quién pegar.
     //
@@ -2632,7 +2669,14 @@ function pintarCombate() {
 
     if (elegible) {
       atributos['aria-pressed'] = String(esObjetivo);
-      atributos.onClick = () => { objetivoCombate = c.id; pintarCombate(); };
+      atributos['aria-label'] = `Elegir a ${c.nombre} (${c.vida?.actual ?? '?'} de ${c.vida?.max ?? '?'} de vida)`;
+      atributos.onClick = () => {
+        menuCombate.objetivoId = c.id;
+        menuCombate.etapa = 'confirmar';
+        menuCombate.aviso = null;
+        pintarCombate();
+        $('#combate .combate__confirmar')?.focus();
+      };
     }
 
     // Cada luchador con su cara.
@@ -2697,29 +2741,8 @@ function pintarCombate() {
     capa.append(parte);
   }
 
-  if (manager.esperandoJugador) {
-    const objetivo = datos.combatientes.find((c) => c.id === objetivoCombate);
-
-    capa.append(el('div', { class: 'combate__acciones' },
-      el('button', {
-        class: 'btn btn--peligro',
-        // El nombre solo cabe si es corto. «Atacar a Lobo ceniciento C» parte
-        // el botón en tres líneas y lo deja más alto que los otros dos; quién
-        // es el objetivo ya lo dice la cuña de la lista.
-        title: objetivo ? `Atacar a ${objetivo.nombre}` : 'Atacar',
-        onClick: protegido('atacar', () => accionCombate('atacar', objetivoCombate)),
-      }, objetivo && objetivo.nombre.length <= 12 ? `Atacar a ${objetivo.nombre}` : 'Atacar'),
-      el('button', { class: 'btn', onClick: protegido('defender', () => accionCombate('defender')) }, 'Defender'),
-      el('button', { class: 'btn btn--fantasma', onClick: protegido('huir', () => accionCombate('huir')) }, 'Huir'),
-    ));
-
-    // Ya no hay segunda caja.
-    //
-    // La había, y era la equivocada: el jugador escribía abajo —donde está el
-    // foco y donde la mano busca— y aquel texto se iba al turno normal, que
-    // devolvía una frase de relleno sin tocar un solo punto de vida. Dos
-    // sitios para escribir lo mismo es una trampa, no una comodidad.
-    capa.append(el('p', { class: 'combate__ayuda', text: 'O describe tu jugada abajo, con tus palabras.' }));
+  if (menu) {
+    capa.append(menuDelTurno(menu, datos));
   } else {
     capa.append(el('p', { class: 'combate__espera', text: 'El enemigo actúa…' }));
   }
@@ -2728,6 +2751,98 @@ function pintarCombate() {
   // pasar, así que la vista se queda abajo.
   const parte = $('#combate-parte');
   if (parte) parte.scrollTop = parte.scrollHeight;
+}
+
+/** El menú del turno según su etapa. */
+function menuDelTurno(menu, datos) {
+  const caja = el('div', { class: 'combate__menu-caja' });
+  const ataque = menu.ataques.find((a) => a.id === menuCombate.ataqueId) ?? null;
+  const objetivo = menu.enemigos.find((e) => e.id === menuCombate.objetivoId) ?? null;
+  const ocupado = menuCombate.resolviendo;
+  const boton = (texto, accion, { clase = 'btn', deshabilitado = false, titulo, sub } = {}) => el('button', {
+    class: clase, disabled: ocupado || deshabilitado ? true : undefined, title: titulo,
+    onClick: protegido('combate', accion),
+  }, sub ? el('span', { class: 'combate__opcion-nombre', text: texto }) : texto, sub ? el('span', { class: 'combate__opcion-dato', text: sub }) : null);
+  const describirAtaque = (a) => `${a.dano} ${a.tipo ?? ''} · ${a.alcance === 'distancia' ? 'a distancia' : 'cuerpo a cuerpo'} · sin coste`.replace(/\s+·/g, ' ·');
+
+  // Qué etapa es y qué hay elegido: se lee y se anuncia.
+  const etapas = {
+    principal: 'Tu turno: elige qué haces.',
+    ataque: 'Atacar: elige el ataque.',
+    objetivo: `${ataque?.nombre ?? 'Ataque'}: elige a quién atacas (toca su fila).`,
+    confirmar: objetivo && ataque ? `Atacar a ${objetivo.nombre} con ${ataque.nombre}.` : 'Confirma el ataque.',
+    objeto: 'Objeto: elige qué usas.',
+  };
+  caja.append(el('p', { class: 'combate__etapa', role: 'status', 'aria-live': 'polite', text: ocupado ? 'Resolviendo…' : etapas[menuCombate.etapa] }));
+  if (menuCombate.aviso) caja.append(el('p', { class: 'combate__aviso', role: 'alert', text: menuCombate.aviso }));
+
+  const opciones = el('div', { class: 'combate__menu', 'data-etapa': menuCombate.etapa });
+  if (menuCombate.etapa === 'principal') {
+    opciones.append(
+      boton('Atacar', () => { menuCombate.etapa = 'ataque'; menuCombate.aviso = null; pintarCombate(); $('#combate .combate__menu button:not([disabled])')?.focus(); }, { clase: 'btn btn--peligro', sub: 'Elige ataque y enemigo' }),
+      boton('Defender', () => ejecutarMenuCombate({ tipo: 'defender' }), { sub: 'Protegido hasta tu próximo turno' }),
+      boton('Objeto', () => { menuCombate.etapa = 'objeto'; menuCombate.aviso = null; pintarCombate(); $('#combate .combate__menu button:not([disabled])')?.focus(); }, { sub: ((n) => `${n} ${n === 1 ? 'disponible' : 'disponibles'}`)(menu.consumibles.filter((o) => o.disponible).length), deshabilitado: !menu.consumibles.length }),
+      boton('Huir', () => ejecutarMenuCombate({ tipo: 'huir' }), { clase: 'btn btn--fantasma', sub: 'Tirada difícil; si falla, pierdes el turno' }),
+    );
+  } else if (menuCombate.etapa === 'ataque') {
+    if (!menu.ataques.length) opciones.append(el('p', { class: 'combate__aviso', text: 'No tienes con qué atacar.' }));
+    for (const a of menu.ataques) {
+      opciones.append(boton(a.nombre, () => {
+        menuCombate.ataqueId = a.id; menuCombate.objetivoId = null; menuCombate.etapa = 'objetivo'; menuCombate.aviso = null;
+        pintarCombate();
+        $('#combate .luchador--elegible')?.focus();
+      }, { clase: 'btn btn--peligro combate__opcion', deshabilitado: !a.disponible, sub: a.disponible ? describirAtaque(a) : a.motivo }));
+    }
+  } else if (menuCombate.etapa === 'confirmar' && ataque && objetivo) {
+    opciones.append(
+      boton(`Atacar a ${objetivo.nombre}`, () => ejecutarMenuCombate({ tipo: 'atacar', ataqueId: ataque.id, itemId: ataque.itemId ?? null, objetivoId: objetivo.id }), {
+        clase: 'btn btn--peligro combate__confirmar', sub: `${ataque.nombre} · ${describirAtaque(ataque)} · ${objetivo.vida}/${objetivo.max} de vida`,
+      }),
+      boton('Cambiar de enemigo', () => { menuCombate.objetivoId = null; menuCombate.etapa = 'objetivo'; pintarCombate(); $('#combate .luchador--elegible')?.focus(); }),
+    );
+  } else if (menuCombate.etapa === 'objeto') {
+    for (const o of menu.consumibles) {
+      opciones.append(boton(`${o.nombre}${o.cantidad > 1 ? ` ×${o.cantidad}` : ''}`, () => ejecutarMenuCombate({ tipo: 'usar_objeto', itemId: o.id }), {
+        clase: 'btn combate__opcion', deshabilitado: !o.disponible, sub: o.disponible ? 'Usar ahora (gasta el turno)' : o.motivo,
+      }));
+    }
+  }
+  if (menuCombate.etapa !== 'principal') {
+    opciones.append(boton('Volver', volverMenuCombate, { clase: 'btn btn--fantasma combate__volver' }));
+  }
+  caja.append(opciones);
+  caja.append(el('p', { class: 'combate__ayuda', text: 'Abajo puedes hablar, defenderte, huir o curarte con tus palabras; los ataques se eligen aquí.' }));
+  return caja;
+}
+
+/**
+ * Manda UNA acción del menú al motor, con la ficha del turno. Mientras se
+ * resuelve, el menú se bloquea (el doble clic no actúa dos veces; además el
+ * motor solo acepta la ficha una vez). Si el motor la rechaza, se dice y se
+ * vuelve a la etapa que toca, sin atacar a nadie por su cuenta.
+ */
+async function ejecutarMenuCombate(accion) {
+  const manager = sistema('combat');
+  if (!manager?.esperandoJugador || menuCombate.resolviendo) return;
+  menuCombate.resolviendo = true;
+  menuCombate.aviso = null;
+  pintarCombate();
+  bloquear(true);
+  let r = null;
+  try {
+    r = await manager.ejecutar({ ...accion, token: menuCombate.token });
+  } finally {
+    menuCombate.resolviendo = false;
+    bloquear(false);
+  }
+  if (r && !r.ok) {
+    menuCombate.aviso = r.texto ?? 'No se ha podido hacer.';
+    if (r.motivo === 'objetivo') { menuCombate.objetivoId = null; menuCombate.etapa = 'objetivo'; }
+    else if (r.motivo === 'ataque') { menuCombate.ataqueId = null; menuCombate.objetivoId = null; menuCombate.etapa = 'ataque'; }
+    else if (r.motivo === 'objeto') menuCombate.etapa = 'objeto';
+    else reiniciarMenuCombate(manager.turnoToken?.() ?? null);
+  }
+  refrescarTodo();
 }
 
 async function accionCombateLibre(desdeFuera) {
@@ -2744,8 +2859,10 @@ async function accionCombateLibre(desdeFuera) {
   // reducían a atacar, defender o huir, y lo escrito no contaba. El objetivo
   // marcado vale si la frase no nombra otro: quien ha marcado al saqueador
   // tocado y escribe «le doy en la pierna» quiere decir a ÉSE.
+  // Sin objetivo marcado: lo escrito no puede atacar a nadie por su cuenta
+  // (los ataques van por el menú; ver `CombatManager.jugadaLibre`).
   bloquear(true);
-  await manager.jugadaLibre(texto, { marcado: objetivoCombate });
+  await manager.jugadaLibre(texto);
   bloquear(false);
   refrescarTodo();
 
@@ -2753,18 +2870,6 @@ async function accionCombateLibre(desdeFuera) {
   if (campo) campo.value = '';
 }
 
-async function accionCombate(tipo, objetivo = null) {
-  const manager = sistema('combat');
-  if (!manager?.esperandoJugador) return;
-
-  bloquear(true);
-  // El objetivo viaja al motor. Sin él, `accionJugador` cae en su objetivo por
-  // defecto y la elección del jugador no servía de nada.
-  await manager.accionJugador(objetivo ? { tipo, objetivo } : { tipo });
-  bloquear(false);
-
-  refrescarTodo();
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    AVISOS
@@ -2952,7 +3057,13 @@ function conectarEventos() {
   });
 
   // Cada combate empieza con el parte en blanco y sin puntería heredada.
-  bus.on('combat:start', () => { registroCombate.length = 0; objetivoCombate = null; });
+  bus.on('combat:start', () => { registroCombate.length = 0; reiniciarMenuCombate(null); });
+  // Escape vuelve una etapa del menú de combate (nunca ejecuta nada).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || $('#combate')?.hidden || menuCombate.etapa === 'principal') return;
+    e.preventDefault();
+    volverMenuCombate();
+  });
 
   // Cualquier cambio del mundo redibuja lo que corresponda.
   for (const evento of ['combat:start', 'combat:end', 'combat:turn', 'combat:awaiting', 'combat:log']) {

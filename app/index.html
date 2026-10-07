@@ -613,6 +613,18 @@ body::before{content:'';position:fixed;inset:-12%;z-index:-1;pointer-events:none
 .combate__libre{display:flex;gap:.55rem;width:min(34rem,100%);margin:.85rem auto .2rem}
 .combate__libre .entrada{flex:1;min-width:0}
 .combate__ayuda{text-align:center;color:var(--texto-3);font-size:.72rem;margin:.25rem 0 .75rem}
+/* Menú del turno (7-oct-2026): etapas, opciones con su dato, aviso. */
+.combate__menu-caja{flex:0 0 auto;display:flex;flex-direction:column;gap:.4rem}
+.combate__etapa{margin:0;font-family:var(--display);font-size:.8rem;letter-spacing:.06em;color:#EEC9A8}
+.combate__aviso{margin:0;padding:.35rem .5rem;font-size:.75rem;color:#F3C2B2;background:rgba(146,62,53,.18);border-left:3px solid #C9604C}
+.combate__menu{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:.45rem}
+.combate__menu .btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.1rem;min-height:49px;text-align:center}
+.combate__menu .btn:focus-visible{outline:2px solid var(--bronce);outline-offset:2px}
+.combate__menu .btn[disabled]{opacity:.5;cursor:not-allowed}
+.combate__opcion-nombre{font-weight:600}
+.combate__opcion-dato{font-family:var(--sans);font-size:.66rem;letter-spacing:0;text-transform:none;opacity:.85}
+.combate__confirmar{grid-column:1/-1}
+@media(max-width:560px){.combate__menu{grid-template-columns:1fr 1fr}.combate__opcion-dato{font-size:.6rem}}
 .escena{position:relative;box-shadow:inset 0 -40px 55px rgba(17,16,31,.45)}
 .ficha.es-elegida{background:linear-gradient(135deg,rgba(143,124,255,.16),rgba(255,111,145,.08));box-shadow:inset 3px 0 var(--bronce)}
 
@@ -973,6 +985,10 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 .combate__lista{overflow-y:auto;overscroll-behavior:contain;min-height:4.5rem;flex:1 1 auto}
 .combate__parte{flex:0 0 auto;height:6rem}
 .combate__rival,.combate__acciones,.combate__libre,.combate__eti{flex:0 0 auto}
+/* Con el menú por etapas el panel crece: en el móvil no puede tapar la barra
+   de arriba (Menú, Narrador, Guardar). Cede la lista de luchadores. */
+.combate__menu-caja{flex:0 0 auto}
+@media(max-width:560px){.combate{max-height:calc(100vh - 12.2rem)}}
 
 /* Cada luchador con su cara al lado de la barra. Se reconoce de un vistazo,
    que es lo que hace falta cuando decides a cuál rematas. */
