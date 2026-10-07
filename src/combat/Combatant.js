@@ -177,6 +177,10 @@ function _ataquesDelJugador(bonificadores) {
   if (!arma) {
     // Sin arma se pelea igual, solo que peor.
     return [{
+      // Identidad del ataque para el menú: «golpe» sin arma, «arma:<id del
+      // objeto>» con arma. El motor la comprueba antes de resolver.
+      id: 'golpe',
+      itemId: null,
       nombre: 'Golpe',
       dano: '1d3',
       tipo: 'contundente',
@@ -189,6 +193,8 @@ function _ataquesDelJugador(bonificadores) {
   const stats = arma.stats ?? {};
 
   return [{
+    id: arma.objeto?.id ? `arma:${arma.objeto.id}` : 'arma',
+    itemId: arma.objeto?.id ?? null,
     nombre: arma.objeto?.nombre ?? 'Arma',
     dano: stats.dano?.notacion ?? '1d6',
     tipo: stats.dano?.tipo ?? 'contundente',

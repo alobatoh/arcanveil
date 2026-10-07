@@ -42,6 +42,8 @@ import { aclararArma } from '../engine/ArmaPedida.js';
 import { leerEspera } from '../engine/Espera.js';
 import { segmentar } from '../engine/Segmentos.js';
 import { curarConTexto } from '../player/Curacion.js';
+import * as Comida from '../player/Comida.js';
+import { obtenerPlantilla as obtenerPlantillaObjeto } from '../data/items.data.js';
 import { obtenerEstado } from '../data/statuses.data.js';
 import { concordar } from '../utils/text.js';
 import { xpPorEnemigo } from '../player/Progression.js';
@@ -122,6 +124,9 @@ export class CombatManager extends SystemBase {
       this.log.aviso('ya hay un combate en curso');
       return;
     }
+    CombatManager._contador = (CombatManager._contador ?? 0) + 1;
+    this._combateId = `cmb-${Date.now().toString(36)}-${CombatManager._contador}`;
+    this._turnoJugador = 0;
 
     const flujo = this.rng.combate;
 
@@ -304,7 +309,10 @@ export class CombatManager extends SystemBase {
 
       // ─── Acción ───────────────────────────────────────────────────────
       if (actor.esJugador) {
-        // Se cede el control y se espera la acción.
+        // Se cede el control y se espera la acción. Cada turno del jugador
+        // lleva su ficha (`turnoToken`): una orden de otro turno, repetida
+        // o de otro combate se rechaza antes de tocar nada.
+        this._turnoJugador = (this._turnoJugador ?? 0) + 1;
         this._esperando = true;
         this.emitir(EVENTOS_COMBATE.ESPERANDO, {
           ronda,
@@ -903,30 +911,198 @@ export class CombatManager extends SystemBase {
         await this._avanzar();
         return jugada;
 
-      case 'maniobra':
+      case 'maniobra': {
+        // Una maniobra (arena a los ojos) solo contra alguien NOMBRADO de los
+        // que pelean: sin nombre, la lectura caía en el primero de la lista.
+        const nombrado = this._nombradoEn(texto);
+        if (!nombrado || nombrado.id !== jugada.objetivo) {
+          return this._seguirSuTurno({ tipo: 'aclaracion', motivo: 'maniobra_sin_blanco', texto: `¿Contra quién? Nombra a uno de los que pelean (${this._enemigosVivos().map((e) => e.nombre).join(', ')}). No se ha hecho nada.` });
+        }
         this._esperando = false;
         await this._maniobra(jugada);
         await this._terminarTurnoDe(this._combatientes.jugador);
         await this._avanzar();
         return jugada;
-
-      default: {
-        this._esperando = false;
-        const objetivo = this._combatientes[jugada.objetivo] ?? this._objetivoPorDefecto();
-        if (objetivo && jugador?.vivo) {
-          await this._ejecutarAtaque(jugador, {
-            objetivo: objetivo.id,
-            ataque: jugador.ataques[0],
-            creatividad: jugada.creatividad.valor,
-            estadoAlAcertar: jugada.golpea ? jugada.estado : null,
-          }, this.leer('combat.ronda', 1));
-          if (jugada.estado && jugada.golpea) this._ultimaJugada = { estado: jugada.estado.refId };
-        }
-        await this._terminarTurnoDe(this._combatientes.jugador);
-        await this._avanzar();
-        return jugada;
       }
+
+      default:
+        // Atacar se elige en el menú: ataque y a quién, cada vez. El texto
+        // libre no puede resolver un golpe contra el primero de la lista ni
+        // contra el más débil (decisión del 7-oct-2026).
+        return this._seguirSuTurno({ tipo: 'aclaracion', motivo: 'ataque_por_menu', texto: 'En combate se ataca desde el menú: Atacar, elige el ataque y elige a quién. No se ha hecho nada.' });
     }
+  }
+
+  /** Aclara, deja el turno abierto y lo devuelve. @private */
+  _seguirSuTurno(resultado) {
+    this.emitir('narrative:direct', { texto: resultado.texto, voz: 'system' });
+    this.emitir(EVENTOS_COMBATE.ESPERANDO, { ronda: this.leer('combat.ronda', 1), acciones: Iniciativa.accionesDisponibles(this._combatientes.jugador) });
+    return resultado;
+  }
+
+  /** @private */
+  _enemigosVivos() {
+    return Object.values(this._combatientes).filter((c) => c.vivo && c.bando === Comb.BANDO.ENEMIGO);
+  }
+
+  /** El enemigo vivo nombrado en el texto, si es uno y solo uno. @private */
+  _nombradoEn(texto) {
+    const llano = String(texto ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const quien = this._enemigosVivos().filter((e) => {
+      const n = String(e.nombre ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return n && llano.includes(n);
+    });
+    return quien.length === 1 ? quien[0] : null;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     MENÚ: lo que se puede elegir y UNA acción validada
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * Ficha del turno del jugador en curso (combate + turno), o null si no es
+   * su turno. La interfaz la manda con la acción; una ficha vieja o repetida
+   * se rechaza.
+   */
+  turnoToken() {
+    return this._esperando && this._combateId ? `${this._combateId}:${this._turnoJugador}` : null;
+  }
+
+  /**
+   * Lo que el jugador puede elegir ahora, sacado del estado real: sus
+   * ataques (del equipo), los enemigos vivos y los consumibles que lleva.
+   * Sin catálogo inventado: si solo hay un ataque, sale uno (y se elige).
+   *
+   * @returns {null|{token: string, ronda: number, ataques: Object[], enemigos: Object[], consumibles: Object[]}}
+   */
+  accionesDelJugador() {
+    if (!this._esperando) return null;
+    const jugador = this._combatientes.jugador;
+    const objetos = this.leer('inventory.objetos.porId', {}) ?? {};
+    const enMano = new Set(Object.values(this.leer('inventory.equipado', {}) ?? {}).filter(Boolean));
+    const ataques = (jugador?.ataques ?? []).map((a) => {
+      const objeto = a.itemId ? objetos[a.itemId] : null;
+      const durabilidad = typeof objeto?.durabilidad === 'number' ? objeto.durabilidad : objeto?.durabilidad?.actual;
+      let motivo = null;
+      if (a.itemId && !objeto) motivo = 'ya no lo llevas';
+      else if (a.itemId && !enMano.has(a.itemId)) motivo = 'no está en la mano';
+      else if (durabilidad === 0) motivo = 'está roto';
+      return { id: a.id, itemId: a.itemId ?? null, nombre: a.nombre, dano: a.dano, tipo: a.tipo, alcance: a.alcance, coste: null, disponible: !motivo, motivo };
+    });
+    const enemigos = this._enemigosVivos().map((c) => {
+      const ui = Comb.paraInterfaz(c);
+      return { id: c.id, nombre: c.nombre, vida: c.vida.actual, max: c.vida.max, condicion: ui.condicion, npc: c.npc ?? null };
+    });
+    const consumibles = Object.values(objetos)
+      .filter((o) => o.categoria === 'consumible' && (Number.isFinite(o.cantidad) ? o.cantidad : 1) > 0)
+      .map((o) => {
+        const v = this._validarObjeto(o.id);
+        return { id: o.id, nombre: o.nombre, cantidad: o.cantidad ?? 1, disponible: v.ok, motivo: v.ok ? null : v.texto };
+      });
+    return { token: this.turnoToken(), ronda: this.leer('combat.ronda', 1), ataques, enemigos, consumibles };
+  }
+
+  /** ¿Se puede usar este objeto ahora, en combate? Sin efectos. @private */
+  _validarObjeto(idObjeto) {
+    const objeto = this.leer(`inventory.objetos.porId.${idObjeto}`, null);
+    if (!objeto || (Number.isFinite(objeto.cantidad) && objeto.cantidad <= 0)) return { ok: false, motivo: 'objeto', texto: 'Ya no llevas eso.' };
+    if (objeto.categoria !== 'consumible') return { ok: false, motivo: 'objeto', texto: `${objeto.nombre} no se usa así.` };
+    const efecto = objeto.efecto?.tipo ?? obtenerPlantillaObjeto(objeto.refId)?.efecto?.tipo;
+    if (efecto === 'comida') {
+      const regla = Comida.puedeComer({
+        objeto: { ...objeto, efecto: { tipo: 'comida' } },
+        vida: this.leer('player.vida'),
+        enCampamento: Comida.campamentoValido({ campamento: this.leer('world.campamento', null), ubicacion: this.leer('world.ubicacion'), sublugar: this.leer('world.sublugar') }),
+      });
+      if (!regla.ok) return { ok: false, motivo: 'objeto', texto: regla.texto };
+    }
+    if (efecto === 'bebida') return { ok: false, motivo: 'objeto', texto: 'Beber no hace nada en combate: el odre se queda como está.' };
+    return { ok: true, objeto };
+  }
+
+  /**
+   * Comprueba una acción del menú SIN tocar nada.
+   * @returns {{ok: true, ataque?: Object, objetivo?: Object}|{ok: false, motivo: string, texto: string}}
+   */
+  validarAccion(accion = {}) {
+    if (!this._esperando || !accion.token || accion.token !== this.turnoToken()) {
+      return { ok: false, motivo: 'turno', texto: 'Esa orden ya no vale: no es este turno.' };
+    }
+    const jugador = this._combatientes.jugador;
+    if (!jugador?.vivo) return { ok: false, motivo: 'turno', texto: 'No puedes actuar.' };
+    switch (accion.tipo) {
+      case 'atacar': {
+        const ataque = (jugador.ataques ?? []).find((a) => a.id === accion.ataqueId);
+        const disponible = this.accionesDelJugador()?.ataques.find((a) => a.id === accion.ataqueId);
+        if (!accion.ataqueId) return { ok: false, motivo: 'ataque', texto: 'Elige el ataque.' };
+        if (!ataque || !disponible) return { ok: false, motivo: 'ataque', texto: 'Ese ataque ya no está disponible. Elige otro.' };
+        if (!disponible.disponible) return { ok: false, motivo: 'ataque', texto: `${ataque.nombre}: ${disponible.motivo}. Elige otro.` };
+        if (accion.itemId !== undefined && accion.itemId !== (ataque.itemId ?? null)) return { ok: false, motivo: 'ataque', texto: 'Ese arma no es la del ataque elegido.' };
+        const objetivo = accion.objetivoId ? this._combatientes[accion.objetivoId] : null;
+        if (!objetivo) return { ok: false, motivo: 'objetivo', texto: 'Ese objetivo no está en esta pelea. Elige a quién.' };
+        if (objetivo.bando !== Comb.BANDO.ENEMIGO) return { ok: false, motivo: 'objetivo', texto: `${objetivo.nombre} es de tu lado. Elige a un enemigo.` };
+        if (!objetivo.vivo) return { ok: false, motivo: 'objetivo', texto: `${objetivo.nombre} ya ha caído. Elige a otro.` };
+        return { ok: true, ataque, objetivo };
+      }
+      case 'usar_objeto': {
+        const v = this._validarObjeto(accion.itemId ?? accion.idObjeto);
+        return v.ok ? { ok: true, objeto: v.objeto } : v;
+      }
+      case 'defender':
+      case 'huir':
+        return { ok: true };
+      default:
+        return { ok: false, motivo: 'tipo', texto: 'Esa acción no existe.' };
+    }
+  }
+
+  /**
+   * Ejecuta UNA acción elegida en el menú. Valida antes de mutar; si no vale,
+   * el turno sigue abierto y se dice por qué (sin coste, sin tirada, sin
+   * atacar a otro). Una ficha de turno solo sirve una vez: el doble clic o
+   * el Enter repetido no actúan dos veces.
+   *
+   * @param {{tipo: string, token: string, ataqueId?: string, itemId?: string, objetivoId?: string}} accion
+   * @returns {Promise<{ok: boolean, motivo?: string, texto?: string}>}
+   */
+  async ejecutar(accion = {}) {
+    const v = this.validarAccion(accion);
+    if (!v.ok) {
+      if (v.motivo !== 'turno') this._seguirSuTurno({ tipo: 'aclaracion', ...v });
+      return v;
+    }
+    this._esperando = false;
+    const jugador = this._combatientes.jugador;
+    const ronda = this.leer('combat.ronda', 1);
+    switch (accion.tipo) {
+      case 'atacar':
+        await this._ejecutarAtaque(jugador, { objetivo: v.objetivo.id, ataque: v.ataque }, ronda);
+        break;
+      case 'defender':
+        this._defender(jugador);
+        break;
+      case 'usar_objeto':
+        this.despachar('inventory/consumir', { idObjeto: v.objeto.id });
+        this._refrescarJugador();
+        break;
+      case 'huir':
+        await this._intentarHuir(jugador);
+        return { ok: true };
+    }
+    await this._terminarTurnoDe(this._combatientes.jugador);
+    await this._avanzar();
+    return { ok: true };
+  }
+
+  /** Defenderse: protegido hasta el final de su próximo turno. @private */
+  _defender(jugador) {
+    // Defenderse protege hasta el final de tu próximo turno: una ronda
+    // entera de ataques enemigos. Las rondas se descuentan al terminar el
+    // turno de quien lleva el estado, así que con 1 caducaba en este mismo
+    // turno, antes de que nadie atacara, y defenderse no servía de nada.
+    const r = Estados.aplicar(jugador, 'protegido', { rondas: 2 });
+    this._guardar(r.combatiente);
+    this.emitir('narrative:direct', { texto: 'Te cubres y aguantas la posición.', voz: 'system' });
   }
 
   /**
@@ -976,72 +1152,28 @@ export class CombatManager extends SystemBase {
   }
 
   /**
-   * Procesa la acción que el jugador elige en su turno.
+   * La vía antigua (`combat:action`, el panel clásico): la misma validación
+   * que el menú, con la ficha del turno en curso. Atacar exige ataque y
+   * objetivo: ya no hay «el más débil» ni «el primer ataque» por defecto.
    *
-   * @param {Object} accion
-   * @returns {Promise<void>}
+   * @param {{tipo: string, objetivo?: string, ataqueId?: string, idObjeto?: string}} accion
    */
-  async accionJugador(accion) {
-    if (!this._esperando) return;
-
-    this._esperando = false;
-
-    const jugador = this._combatientes.jugador;
-    const ronda = this.leer('combat.ronda', 1);
-
-    if (!jugador?.vivo) {
+  async accionJugador(accion = {}) {
+    if (accion.tipo === 'esperar') {
+      if (!this._esperando) return { ok: false, motivo: 'turno' };
+      this._esperando = false;
+      this.emitir('narrative:direct', { texto: 'Esperas tu momento.', voz: 'system' });
+      await this._terminarTurnoDe(this._combatientes.jugador);
       await this._avanzar();
-      return;
+      return { ok: true };
     }
-
-    switch (accion.tipo) {
-      case 'atacar': {
-        // Solo se acepta un objetivo del otro bando y en pie: un id de un
-        // compañero, del propio jugador o de un caído cae al de por defecto.
-        const pedido = accion.objetivo ? this._combatientes[accion.objetivo] : null;
-        const objetivo = pedido?.vivo && pedido.bando === Comb.BANDO.ENEMIGO
-          ? pedido
-          : this._objetivoPorDefecto();
-
-        if (!objetivo) break;
-
-        const ataque = jugador.ataques[0];
-        await this._ejecutarAtaque(jugador, { objetivo: objetivo.id, ataque }, ronda);
-        break;
-      }
-
-      case 'defender': {
-        // Defenderse protege hasta el final de tu próximo turno: una ronda
-        // entera de ataques enemigos. Las rondas se descuentan al terminar el
-        // turno de quien lleva el estado, así que con 1 caducaba en este mismo
-        // turno, antes de que nadie atacara, y defenderse no servía de nada.
-        const r = Estados.aplicar(jugador, 'protegido', { rondas: 2 });
-        this._guardar(r.combatiente);
-
-        this.emitir('narrative:direct', {
-          texto: 'Te cubres y aguantas la posición.',
-          voz: 'system',
-        });
-        break;
-      }
-
-      case 'usar_objeto':
-        this.despachar('inventory/consumir', { idObjeto: accion.idObjeto });
-        // El consumo modifica el estado real; se refleja en el combatiente.
-        this._refrescarJugador();
-        break;
-
-      case 'huir':
-        await this._intentarHuir(jugador);
-        return;
-
-      case 'esperar':
-        this.emitir('narrative:direct', { texto: 'Esperas tu momento.', voz: 'system' });
-        break;
-    }
-
-    await this._terminarTurnoDe(this._combatientes.jugador);
-    await this._avanzar();
+    return this.ejecutar({
+      tipo: accion.tipo,
+      token: accion.token ?? this.turnoToken(),
+      ataqueId: accion.ataqueId,
+      objetivoId: accion.objetivoId ?? accion.objetivo,
+      itemId: accion.itemId ?? accion.idObjeto,
+    });
   }
 
   /**
@@ -1073,17 +1205,6 @@ export class CombatManager extends SystemBase {
 
     await this._terminarTurnoDe(this._combatientes.jugador);
     await this._avanzar();
-  }
-
-  /**
-   * Objetivo por defecto: el enemigo más débil, que es lo que la mayoría
-   * elegiría si tuviera que pensarlo.
-   * @private
-   */
-  _objetivoPorDefecto() {
-    return Object.values(this._combatientes)
-      .filter((c) => c.vivo && c.bando === Comb.BANDO.ENEMIGO)
-      .sort((a, b) => a.vida.actual - b.vida.actual)[0] ?? null;
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
