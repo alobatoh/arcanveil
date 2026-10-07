@@ -131,6 +131,9 @@ export function cabecera(estado, nota) {
     genero: jugador.genero ?? null,
     semillaRetrato: jugador.semillaRetrato ?? null,
     personajeId: estado.meta?.personajeId ?? null,
+    // El run y si terminó con la muerte: «Cargar» lo dice sin deserializar.
+    runId: estado.meta?.runId ?? null,
+    muerto: Boolean(estado.meta?.muerte),
 
     // La intensidad elegida al crearla: «Nivel 3 · El Vado · Pacífica».
     intensidad: estado.settings?.dificultad ?? 'equilibrado',

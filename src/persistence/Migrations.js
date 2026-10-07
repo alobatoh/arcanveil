@@ -342,6 +342,54 @@ export const MIGRACIONES = Object.freeze([
       return { guardado: { ...g, estado, version: 9 }, avisos };
     },
   },
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     9 → 10 · Identidad de run y muerte permanente
+     ---------------------------------------------------------------------
+     Decisión del 7-oct-2026: la muerte termina la partida.
+       · `meta.runId`: si falta, uno ESTABLE sacado del propio guardado
+         (semilla, creación, nombre, raza, clase y plantilla): migrar dos
+         veces, o dos ranuras del mismo run, dan el mismo; dos personas
+         llamadas igual con distinta creación o semilla, distinto. No se
+         juntan por nombre ni se inventan parentescos. Sin fecha de creación,
+         dos ranuras del mismo run podrían quedar separadas: se avisa.
+       · Un guardado con el personaje a 0 de vida no abre una exploración
+         rota: pasa a resultado terminal (`meta.muerte`). Uno vivo sigue vivo.
+     Idempotente.
+     ───────────────────────────────────────────────────────────────────────── */
+  {
+    desde: 9,
+    descripcion: 'da identidad estable al run y cierra los guardados con el personaje a 0 de vida',
+    aplicar: (g) => {
+      const avisos = [];
+      const estado = clonar(g.estado);
+      estado.meta = estado.meta ?? {};
+      const p = estado.player ?? {};
+
+      if (!estado.meta.runId) {
+        const semilla = [estado.meta.semilla ?? null, estado.meta.creada ?? null, p.nombre ?? null, p.raza ?? null, p.clase ?? null, estado.meta.personajeId ?? null];
+        let h = 0x811c9dc5;
+        for (const c of JSON.stringify(semilla)) { h ^= c.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+        estado.meta.runId = `run-v9-${h.toString(36)}`;
+        if (!estado.meta.creada) avisos.push('guardado sin fecha de creación: su identidad de run sale de la semilla y del personaje');
+      }
+      if (estado.meta.muerte === undefined) estado.meta.muerte = null;
+
+      const vida = p.vida?.actual;
+      if (!estado.meta.muerte && p.nombre && Number.isFinite(vida) && vida <= 0) {
+        estado.meta.fase = 'fin';
+        estado.meta.muerte = {
+          runId: estado.meta.runId, nombre: p.nombre, clase: p.clase ?? null, raza: p.raza ?? null, nivel: p.nivel ?? 1,
+          causa: 'Guardado de antes de la muerte permanente con el personaje a 0 de vida.', origen: 'migracion',
+          momento: { dia: estado.world?.tiempo?.dia ?? null, hora: estado.world?.tiempo?.hora ?? null, minuto: estado.world?.tiempo?.minuto ?? null, lugar: estado.world?.ubicacion ?? null },
+          turno: estado.meta.turno ?? 0, migrada: true, legado: null,
+        };
+        avisos.push(`${p.nombre} estaba a 0 de vida: la partida queda cerrada (muerte permanente)`);
+      }
+
+      return { guardado: { ...g, estado, version: 10 }, avisos };
+    },
+  },
 ]);
 
 /* ═══════════════════════════════════════════════════════════════════════════

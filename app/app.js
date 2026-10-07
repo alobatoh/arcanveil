@@ -19,6 +19,7 @@ import { GestorRNG } from '../src/core/RNG.js';
 
 import { Clock } from '../src/core/Clock.js';
 import { Player } from '../src/player/Player.js';
+import { Muerte } from '../src/player/Muerte.js';
 import { Inventory } from '../src/inventory/Inventory.js';
 import { TimeSystem } from '../src/world/TimeSystem.js';
 import { WeatherSystem } from '../src/world/WeatherSystem.js';
@@ -176,7 +177,7 @@ async function arrancarMotor() {
   decir('Registrando sistemas…');
 
   motor.registry.registrarTodos([
-    Clock, Player, Inventory,
+    Clock, Player, Muerte, Inventory,
     TimeSystem, WeatherSystem, DynamicEvents, Travel, Exploration, World,
     RelationshipSystem, ReputationSystem, FactionSystem, DialogueSystem,
     MerchantSystem, EconomySystem, QuestSystem, PartySystem, SceneSystem, SituationSystem,
@@ -323,9 +324,14 @@ function recuperarPersistencia() {
   if (recordada) activarPersistencia();
 }
 
-function partidasGuardadas() {
+/**
+ * Las partidas guardadas, la más reciente primero. Las de un personaje muerto
+ * (muerte permanente) no se pueden continuar: «Continuar» no las ofrece y
+ * «Cargar» las enseña cerradas.
+ */
+function partidasGuardadas({ conMuertas = false } = {}) {
   return (sistema('saves')?.listar?.() ?? [])
-    .filter((r) => !r.vacia && r.abrible !== false)
+    .filter((r) => !r.vacia && r.abrible !== false && (conMuertas || !r.muerto))
     .sort((a, b) => (b.guardadoEn ?? 0) - (a.guardadoEn ?? 0));
 }
 
@@ -352,6 +358,8 @@ function guardarPartidaActual({ silencioso = true } = {}) {
 function cargarRanura(ranura) {
   const r = sistema('saves').cargar(ranura);
   if (!r.exito) {
+    // Un run muerto no se reanuda: no es un fallo, es la regla.
+    if (r.motivo === 'muerto') { avisar(r.texto, 'aviso'); pintarCargar(); return; }
     avisarFallo('cargar partida', new Error(r.motivo));
     return;
   }
@@ -373,7 +381,7 @@ function pintarCargar() {
   const caja = $('#cargar-lista');
   vaciar(caja);
 
-  const partidas = partidasGuardadas();
+  const partidas = partidasGuardadas({ conMuertas: true });
   if (!partidas.length) {
     caja.append(el('p', { class: 'cargar__vacio', text: 'No hay partidas guardadas todavía.' }));
     return;
@@ -384,15 +392,17 @@ function pintarCargar() {
     const cara = el('div', { class: 'tarjeta-pj__cara' });
     const fecha = p.guardadoEn ? new Date(p.guardadoEn).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' }) : '';
 
-    caja.append(el('div', { class: 'tarjeta-pj tarjeta-pj--partida' },
+    caja.append(el('div', { class: `tarjeta-pj tarjeta-pj--partida${p.muerto ? ' tarjeta-pj--muerta' : ''}` },
       el('button', {
-        class: 'tarjeta-pj__abrir', dataset: { ranura: p.ranura },
+        class: 'tarjeta-pj__abrir', dataset: { ranura: p.ranura, muerta: p.muerto ? '1' : '' },
+        disabled: p.muerto ? true : undefined,
+        'aria-label': p.muerto ? `${c.nombre ?? 'Personaje'}: murió, la crónica terminó` : undefined,
         onClick: protegido('cargar partida', () => cargarRanura(p.ranura)),
       },
         cara,
         el('span', { class: 'tarjeta-pj__texto' },
           el('strong', { class: 'tarjeta-pj__nombre', text: c.nombre ?? 'Sin nombre' }),
-          el('span', { class: 'tarjeta-pj__dato', text: `Nivel ${c.nivel ?? 1} · ${RAZAS[c.raza]?.nombre ?? ''} · ${CLASES[c.clase]?.nombre ?? ''}` }),
+          el('span', { class: 'tarjeta-pj__dato', text: `${p.muerto ? 'Muerto · ' : ''}Nivel ${c.nivel ?? 1} · ${RAZAS[c.raza]?.nombre ?? ''} · ${CLASES[c.clase]?.nombre ?? ''}` }),
           el('span', { class: 'tarjeta-pj__dato tarjeta-pj__dato--tenue', text: `${c.lugar ?? ''} · ${nombreIntensidad(c.intensidad)} · día ${c.dia ?? 1} · ${fecha}` }),
         ),
       ),
@@ -1523,80 +1533,58 @@ function escribirSiguiente() {
 /* ── has caído ─────────────────────────────────────────────────────────── */
 
 /**
- * Abre la bifurcación de la caída.
+ * La muerte termina la partida (decisión del 7-oct-2026).
  *
- * Antes esto era un aviso flotante que decía «la crónica termina aquí» y no
- * terminaba nada: la caja seguía activa, cada «ataco» abría un combate nuevo
- * con el personaje a cero de vida y el juego contestaba «las piernas te
- * fallan» sin parar. Decirle al jugador que ha muerto y dejarle seguir jugando
- * es la peor de las dos opciones posibles.
+ * La pone el motor (`player/Muerte.js`): fase terminal, causa, momento,
+ * marca del run y herencia pendiente. Aquí solo se enseña el final y la
+ * salida: una partida nueva. No hay «Volver en ti» ni ninguna forma de curar
+ * la derrota: contradicen la muerte permanente.
  *
- * La fase la pone el motor (`Player._alCaer`), así que el turno ya está
- * bloqueado de verdad antes de que esto se pinte. Aquí solo se ofrece la
- * salida.
- *
- * @param {string} motivo Lo que le ha pasado, en una frase.
+ * @param {Object} muerte `meta.muerte`.
  */
-function abrirCaida(motivo) {
+function abrirMuerte(muerte) {
   const modal = $('#caida-modal');
-  if (!modal) return;
-
+  if (!modal || !muerte) return;
   bloquear(true);
 
-  const dificultad = ver('settings.dificultad', 'equilibrado');
-  const implacable = dificultad === 'implacable';
-
-  $('#caida-nota').textContent = implacable
-    ? `${motivo} En esta intensidad no hay vuelta atrás: la crónica de ${ver('player.nombre', 'tu personaje')} termina aquí.`
-    : `${motivo} Puedes volver en ti, pero no sales de esta de gratis.`;
+  const lugar = muerte.momento?.lugar ? (obtenerLugar(muerte.momento.lugar)?.nombre ?? '') : '';
+  const cuando = Number.isFinite(muerte.momento?.dia)
+    ? `Día ${muerte.momento.dia}, ${String(muerte.momento.hora ?? 0).padStart(2, '0')}:${String(muerte.momento.minuto ?? 0).padStart(2, '0')}${lugar ? `, en ${lugar}` : ''}.`
+    : '';
+  $('#caida-titulo').textContent = `${muerte.nombre} ha muerto`;
+  const nota = $('#caida-nota');
+  vaciar(nota);
+  nota.append(
+    el('p', { text: `${muerte.causa ?? ''} ${cuando}`.trim() }),
+    el('p', { class: 'caida__resumen', text: `Nivel ${muerte.nivel ?? 1} · ${muerte.resumen?.turnos ?? muerte.turno ?? 0} turnos. La crónica termina aquí.` }),
+    el('p', { class: 'caida__legado', text: 'Tu próximo personaje heredará el 35 % de lo que deja: queda guardado, a falta de decidir si es experiencia o puntos de habilidad. Todavía no se aplica.' }),
+  );
+  if (muerte.guardado && !muerte.guardado.marca) {
+    nota.append(el('p', { class: 'caida__aviso', text: `No se ha podido guardar la marca de esta muerte en el navegador (${muerte.guardado.error ?? 'error'}).` }));
+  }
 
   const acciones = $('#caida-acciones');
   vaciar(acciones);
-
-  if (!implacable) {
-    acciones.append(el('button', {
-      class: 'btn btn--grande', onClick: protegido('volver en ti', volverEnTi),
-    }, 'Volver en ti'));
-  }
-
   acciones.append(
-    el('button', { class: 'btn', onClick: protegido('cargar partida', () => { modal.hidden = true; mostrar('cargar'); pintarCargar(); }) }, 'Cargar partida'),
-    el('button', { class: 'btn btn--fantasma', onClick: protegido('nueva crónica', () => { modal.hidden = true; abrirCreacion(); }) }, 'Nueva crónica'),
+    el('button', { class: 'btn btn--grande', onClick: protegido('nueva partida', irANuevaPartida) }, 'Nueva partida'),
+    el('button', { class: 'btn btn--fantasma', onClick: protegido('volver al menú', () => {
+      try { sessionStorage.setItem('arcanveil:abrir-menu', '1'); } catch { /* sin sesión, portada */ }
+      location.reload();
+    }) }, 'Volver al menú'),
   );
 
   modal.hidden = false;
+  acciones.querySelector('button')?.focus();
 }
 
 /**
- * Te levantas, pero pagando.
- *
- * El precio no es simbólico: si no cuesta nada, caer deja de importar y el
- * combate pierde su tensión. Se cobra en oro porque es lo que menos rompe una
- * partida en marcha —perder el arma equipada a mitad de una misión frustra más
- * de lo que enseña— y se van horas del reloj, que es lo que justifica que
- * alguien te haya encontrado.
+ * Partida nueva tras morir: se recarga para tener un motor limpio (la forma
+ * establecida de volver a empezar) y se abre la elección de personaje. El
+ * mundo anterior no se toca ni se repone.
  */
-async function volverEnTi() {
-  const oro = ver('player.oro', 0);
-  const perdido = Math.max(1, Math.round(oro * 0.4));
-
-  store.transaccion(() => {
-    store.dispatch('player/revivir', { vida: 1 });
-    if (oro > 0) store.dispatch('inventory/oro', { delta: -perdido });
-  });
-
-  sistema('clock')?.avanzarTiempo(360, 'inconsciencia');
-
-  bus.emit('narrative:direct', {
-    texto: oro > 0
-      ? `Despiertas horas después, con la boca seca y ${perdido} monedas menos. Alguien te encontró, te arrastró a cubierto y se cobró la molestia.`
-      : 'Despiertas horas después, con la boca seca. Alguien te encontró y te arrastró a cubierto. No llevabas nada que valiera la pena robar.',
-    voz: 'system',
-  });
-
-  $('#caida-modal').hidden = true;
-  bloquear(false);
-  refrescarTodo();
+function irANuevaPartida() {
+  try { sessionStorage.setItem('arcanveil:nueva-partida', '1'); } catch { /* sin sesión */ }
+  location.reload();
 }
 
 /* ── traer una historia de fuera ───────────────────────────────────────── */
@@ -2451,9 +2439,9 @@ function bloquear(si) {
   const campo = $('#entrada');
   const boton = $('#enviar');
 
-  // Si el jugador ha caído, nada reabre la caja: la acción o el turno que
+  // Si el personaje ha muerto, nada reabre la caja: la acción o el turno que
   // estaba en marcha cuando cayó termina después y llamaba a `bloquear(false)`.
-  // Solo `volverEnTi`, que antes devuelve la fase a exploración, la reabre.
+  // La fase `fin` no se deshace (muerte permanente).
   const cerrada = !si && ver('meta.fase') === 'fin';
 
   if (campo) campo.disabled = si || cerrada;
@@ -3002,26 +2990,18 @@ function conectarEventos() {
 
   bus.on('narrative:direct', () => setTimeout(pintarBitacora, 10));
   bus.on('world:arrived', () => refrescarTodo());
-  // Se escuchan los DOS avisos de caída. `player:defeated` lo emite el
-  // combate; `player:down` lo emite el jugador cuando cae fuera de combate,
-  // por hambre, sed o agotamiento. Solo se escuchaba el primero, así que morir
-  // de hambre no sacaba rótulo, ni aviso, ni nada: el personaje llegaba a cero
-  // de vida y la partida seguía como si tal cosa.
-  //
-  // Los dos pueden llegar juntos. Si la pantalla de caída ya está abierta,
-  // basta con asegurar la caja cerrada. Se mira la pantalla y no una marca:
-  // la marca solo se rearmaba al crear personaje, así que tras «Volver en ti»
-  // o cargar partida la segunda caída de la sesión dejaba la fase en `fin`
-  // sin pantalla y con la caja abierta.
-  const caer = (motivo) => {
+  // La muerte la cierra el motor (`player/Muerte.js`), que escucha las dos
+  // caídas (combate y agotamiento) y avisa una sola vez con `run:ended`.
+  // Aquí: se guarda el resultado terminal ANTES de ofrecer partida nueva, y
+  // se enseña el final. Si la pantalla ya está abierta, solo se asegura la
+  // caja cerrada.
+  bus.on('run:ended', (muerte) => {
+    guardarPartidaActual();
     const modal = $('#caida-modal');
     if (modal && !modal.hidden) { bloquear(true); return; }
-    rotuloMomento('HAS CAÍDO', 'sangre');
-    abrirCaida(motivo);
-  };
-
-  bus.on('player:defeated', () => caer('El combate te ha podido.'));
-  bus.on('player:down', ({ causa } = {}) => caer(causa ? `Te ha podido ${causa}.` : 'No has aguantado más.'));
+    rotuloMomento('HA MUERTO', 'sangre');
+    abrirMuerte(muerte);
+  });
 
   // Un retrato elegido (o la galería recién cargada) se ve en todas partes:
   // la galería llega después de pintar la primera pantalla, que suele ser la
@@ -3119,6 +3099,9 @@ async function arrancar() {
     let alMenu = false;
     try { alMenu = sessionStorage.getItem('arcanveil:abrir-menu') === '1'; sessionStorage.removeItem('arcanveil:abrir-menu'); } catch { /* sin sesión */ }
     if (alMenu) abrirMenuInicio({ foco: false });
+    let nueva = false;
+    try { nueva = sessionStorage.getItem('arcanveil:nueva-partida') === '1'; sessionStorage.removeItem('arcanveil:nueva-partida'); } catch { /* sin sesión */ }
+    if (nueva) abrirNuevaPartida();
     menuTrasArrancar = true;
     arranqueListo();
     comenzarPendiente();

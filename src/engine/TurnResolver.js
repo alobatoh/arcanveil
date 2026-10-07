@@ -497,6 +497,11 @@ export class TurnResolver extends SystemBase {
 
     if (this.leer('meta.fase') === 'fin') {
       this.emitir(EVENTOS_TURNO.BLOQUEADO, { motivo: 'la crónica ha terminado' });
+      // Que no sea una caja muda: se dice por qué no pasa nada.
+      const muerte = this.leer('meta.muerte', null);
+      if (muerte) {
+        this._anadirEntrada(VOCES.SISTEMA, `La crónica de ${muerte.nombre} ha terminado: ha muerto. ${muerte.causa ?? ''} Empieza una partida nueva.`.replace(/\s+/g, ' ').trim());
+      }
       return null;
     }
 

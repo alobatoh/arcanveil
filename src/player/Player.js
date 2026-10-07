@@ -31,6 +31,7 @@ import * as Habilidades from './SkillSystem.js';
 import * as Alineamiento from './Alignment.js';
 import * as Vocacion from './ClassSystem.js';
 import { crearPersonaje, fichaParaDirector } from './CharacterFactory.js';
+import { nuevoRunId } from './Muerte.js';
 
 /** Eventos publicados por el sistema de jugador. */
 export const EVENTOS_JUGADOR = Object.freeze({
@@ -69,7 +70,6 @@ export class Player extends SystemBase {
       'player/rasgo/usar': this._reducirUsarRasgo,
       'player/avanzada': this._reducirClaseAvanzada,
       'player/flag': this._reducirBandera,
-      'player/revivir': this._reducirRevivir,
       'player/desgaste': this._reducirDesgaste,
     });
 
@@ -143,6 +143,10 @@ export class Player extends SystemBase {
         titulo: `Crónica de ${resultado.jugador.nombre}`,
         creada: Date.now(),
         fase: 'exploracion',
+        // Identidad de ESTA partida: la muerte se apunta por run, no por
+        // nombre (ver `player/Muerte.js`).
+        runId: nuevoRunId(),
+        muerte: null,
       },
     };
   }
@@ -178,7 +182,8 @@ export class Player extends SystemBase {
   /** @private */
   _reducirCurar(estado, accion) {
     const { cantidad = 0, origen = 'desconocido' } = accion.payload ?? {};
-    if (cantidad <= 0) return null;
+    // Un muerto no se cura (ver `player/Muerte.js`).
+    if (cantidad <= 0 || estado.meta?.muerte) return null;
 
     const r = Vitals.modificarVida(estado.player, cantidad);
 
@@ -271,7 +276,8 @@ export class Player extends SystemBase {
   /** @private */
   _reducirXP(estado, accion) {
     const { cantidad = 0, motivo = '' } = accion.payload ?? {};
-    if (cantidad <= 0) return null;
+    // Ni una recompensa tardía después de morir.
+    if (cantidad <= 0 || estado.meta?.muerte) return null;
 
     const clase = obtenerClase(estado.player.clase);
     const r = Progresion.otorgarXP(estado.player, cantidad, {
@@ -419,31 +425,6 @@ export class Player extends SystemBase {
     this.store.fijar('meta.fase', FASE.FIN);
 
     this.emitir(EVENTOS_JUGADOR.CAIDO, { nombre: jugador.nombre, turno: this.leer('meta.turno') });
-  }
-
-  /**
-   * Devuelve al personaje al mundo con un hilo de vida.
-   *
-   * No es una resurrección gratis: quien lo aplica decide el precio —oro,
-   * objetos, horas perdidas— y esto solo se ocupa de la parte que toca al
-   * jugador. Existe para que la caída tenga salida sin que nadie escriba el
-   * estado a mano desde la interfaz.
-   *
-   * @private
-   */
-  _reducirRevivir(estado, accion) {
-    const { vida = 1 } = accion.payload ?? {};
-    const max = estado.player?.vida?.max ?? 1;
-
-    return {
-      meta: { fase: FASE.EXPLORACION },
-      player: {
-        vida: { actual: Math.max(1, Math.min(vida, max)) },
-        // Los estados que le tumbaron no sobreviven: volver en ti sangrando y
-        // envenenado es volver para caer otra vez en dos turnos.
-        estados: [],
-      },
-    };
   }
 
   /* ─────────────────────────────────────────────────────────────────────────

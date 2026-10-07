@@ -28,6 +28,7 @@
 import { SystemBase } from '../core/SystemBase.js';
 import * as Ser from './Serializer.js';
 import * as Mig from './Migrations.js';
+import * as RegistroRuns from './RegistroRuns.js';
 import { crearEstadoInicial } from '../core/GameState.js';
 import { PERSISTENCIA, APP } from '../config/app.config.js';
 
@@ -383,6 +384,25 @@ export class SaveManager extends SystemBase {
 
     avisos.push(...resultado.avisos);
 
+    // ─── Muerte permanente ──────────────────────────────────────────────
+    // Un run muerto no se reanuda: ni su guardado final ni una ranura
+    // anterior del MISMO run (por runId, nunca por nombre). Las demás
+    // partidas cargan como siempre. Coherencia local, no antifraude (ver
+    // `persistence/RegistroRuns.js`).
+    {
+      const meta = resultado.estado.meta ?? {};
+      const jugador = resultado.estado.player ?? {};
+      const vida = jugador.vida?.actual;
+      const muerto = Boolean(meta.muerte) || RegistroRuns.estaMuerto(meta.runId)
+        || (Boolean(jugador.nombre) && Number.isFinite(vida) && vida <= 0);
+      if (muerto) {
+        if (meta.runId) RegistroRuns.marcarMuerto(meta.runId, { nombre: jugador.nombre, causa: meta.muerte?.causa ?? null });
+        const texto = `${jugador.nombre ?? 'Ese personaje'} murió: esa crónica terminó y no se puede continuar. Empieza una partida nueva.`;
+        this.emitir('ui:notice', { mensaje: texto, tipo: 'aviso' });
+        return { exito: false, motivo: 'muerto', texto, avisos };
+      }
+    }
+
     // ─── Aplicación ─────────────────────────────────────────────────────
     try {
       this.store.reemplazar(resultado.estado);
@@ -485,6 +505,8 @@ export class SaveManager extends SystemBase {
         vacia: false,
         automatica: ranura === RANURA_AUTO,
         cabecera: guardado.cabecera ?? {},
+        // Muerto: su propio final o una ranura anterior de un run ya muerto.
+        muerto: Boolean(guardado.cabecera?.muerto) || RegistroRuns.estaMuerto(guardado.cabecera?.runId ?? guardado.estado?.meta?.runId),
         guardadoEn: guardado.guardadoEn,
         version: guardado.version,
         app: guardado.app,

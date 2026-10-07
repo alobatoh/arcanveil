@@ -116,6 +116,8 @@ export class CombatManager extends SystemBase {
    * @returns {Promise<void>}
    */
   async empezarCombate(peticion) {
+    // Una partida terminada no abre peleas (muerte permanente).
+    if (this.leer('meta.muerte', null)) return;
     if (this.leer('combat.activo', false)) {
       this.log.aviso('ya hay un combate en curso');
       return;

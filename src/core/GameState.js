@@ -73,6 +73,10 @@ export function crearMeta() {
   return {
     /** Identificador único de esta crónica. */
     id: null,
+    /** Identidad del run (partida + personaje); la muerte se apunta por ella. */
+    runId: null,
+    /** Si el personaje murió: el hecho (ver `player/Muerte.js`). La partida termina. */
+    muerte: null,
     /** Título mostrado en el menú de carga. */
     titulo: 'Crónica sin nombre',
     /** Versión del esquema de estado, para las migraciones. */

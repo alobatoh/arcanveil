@@ -45,7 +45,7 @@ const { Logger, NIVEL } = await import('../src/core/Logger.js');
 const S = (ruta, nombre) => import(ruta).then((m) => m[nombre]);
 const SISTEMAS = await Promise.all([
   S('../src/core/Clock.js', 'Clock'),
-  S('../src/player/Player.js', 'Player'), S('../src/inventory/Inventory.js', 'Inventory'),
+  S('../src/player/Player.js', 'Player'), S('../src/player/Muerte.js', 'Muerte'), S('../src/inventory/Inventory.js', 'Inventory'),
   S('../src/world/TimeSystem.js', 'TimeSystem'), S('../src/world/WeatherSystem.js', 'WeatherSystem'),
   S('../src/world/DynamicEvents.js', 'DynamicEvents'), S('../src/world/Travel.js', 'Travel'),
   S('../src/world/Exploration.js', 'Exploration'), S('../src/world/World.js', 'World'),
