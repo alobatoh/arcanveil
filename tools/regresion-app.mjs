@@ -849,8 +849,8 @@ try {
   const lleno = await evaluate(`({ sigo: window.__sigo, nota: document.getElementById('salida-nota').textContent })`);
   if (lleno.sigo !== 1 || !/espacio/.test(lleno.nota)) throw new Error(`almacenamiento lleno: ${JSON.stringify(lleno)}`);
   await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Salir sin guardar…').click(); true`);
-  const confirma = await evaluate(`({ sigo: window.__sigo, titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()) })`);
-  if (confirma.sigo !== 1 || confirma.titulo !== 'Salir sin guardar' || !/Se perderá/.test(confirma.nota) || !confirma.botones.includes('Volver')) throw new Error(`salir sin guardar sin confirmación clara: ${JSON.stringify(confirma)}`);
+  const confirma = await evaluate(`({ sigo: window.__sigo, titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()), foco: document.activeElement?.textContent?.trim() })`);
+  if (confirma.sigo !== 1 || confirma.titulo !== 'Salir sin guardar' || !/Se perderá/.test(confirma.nota) || !confirma.botones.includes('Volver') || confirma.foco !== 'Volver') throw new Error(`salir sin guardar sin confirmación clara (o con el foco en lo destructivo): ${JSON.stringify(confirma)}`);
   await shot(`12-salir-sin-guardar-${viewport.label}.png`);
   await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Volver').click(); true`);
   await wait(200);
