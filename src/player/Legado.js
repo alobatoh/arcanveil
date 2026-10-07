@@ -2,145 +2,170 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * ARCANVEIL · player/Legado.js
  * ---------------------------------------------------------------------------
- * Lo que un personaje muerto deja al siguiente. PREPARADO, NO APLICADO.
+ * Lo que un personaje muerto deja al siguiente.
  *
- * Decisión de Alejandro (7-oct-2026): la muerte es definitiva y se empieza
- * una partida nueva; el siguiente personaje hereda el 35 % de la
- * experiencia O de los puntos de habilidad del muerto.
+ * Decisión de Alejandro (7-oct-2026), CERRADA:
+ *   · moneda: la EXPERIENCIA ACUMULADA del muerto (`player.xp`), nunca puntos
+ *     de habilidad, talento o atributo;
+ *   · fracción: 35 %, redondeada HACIA ABAJO;
+ *   · una entrega por muerto, a un solo sucesor, al confirmar su creación;
+ *   · el sucesor progresa por las reglas normales de SU clase: la experiencia
+ *     entra por el canal de siempre (`player/xp`), que recalcula nivel, vida,
+ *     maná y recompensas. No se copia nada más del muerto.
  *
- * CONFIRMADO: la fracción (0,35) y que la recibe el siguiente personaje.
- * PENDIENTE (no lo decide el código):
- *   · ¿Experiencia acumulada (`player.xp`) o puntos de habilidad?
- *   · Si son puntos: ¿solo los disponibles o también los gastados?
- *   · Redondeo de las fracciones.
- *   · Qué hacer con lo heredado de generaciones anteriores.
+ * «Acumulada» es el saldo guardado del muerto, incluida la experiencia que él
+ * mismo heredó: B heredó 350, ganó 650 y muere con 1000 → C recibe 350
+ * (35 % de 1000). No se resta lo heredado ni se suma dos veces; se apunta por
+ * separado (heredada / ganada) para poder auditarlo.
  *
- * Por eso aquí hay:
- *   · `fotoDeLegado`: la foto al morir, con las bases posibles por separado
- *     (no se suman estadísticas para inventar un total);
- *   · `calcularLegado`: función pura por modalidad, para probar;
- *   · `aplicarLegado`: DESACTIVADA mientras `LEGADO_CONFIRMADO` sea null.
- *     Cuando se confirme, aplica por el canal normal de progresión del NUEVO
- *     personaje (`player/xp` recalcula niveles y sus recompensas normales),
- *     una vez, a un sucesor, sin copiar nivel, objetos ni habilidades.
- *
- * Funciones puras.
+ * Aquí solo hay funciones puras: la foto al morir, el cálculo y la lectura de
+ * fotos antiguas. La entrega persistente (reserva, guardado del sucesor,
+ * confirmación, recuperación) está en `persistence/EntregaLegado.js`.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-/** La fracción: constante del contrato, no un parámetro de balance. */
-export const FRACCION_LEGADO = 0.35;
+/** La fracción, como entero sobre 100: 0,35 no es exacto en coma flotante. */
+export const LEGADO_NUMERADOR = 35;
+export const LEGADO_DENOMINADOR = 100;
+export const FRACCION_LEGADO = LEGADO_NUMERADOR / LEGADO_DENOMINADOR;
 
-/** Las bases posibles. Ninguna está elegida. */
-export const MODALIDAD = Object.freeze({
-  XP_ACUMULADA: 'xp_acumulada',
-  PUNTOS_DISPONIBLES: 'puntos_habilidad_disponibles',
-  PUNTOS_TOTALES: 'puntos_habilidad_totales',
-});
+/** La única moneda. */
+export const MODALIDAD = Object.freeze({ XP_ACUMULADA: 'xp_acumulada' });
+
+/** La decisión, ya tomada. */
+export const LEGADO_CONFIRMADO = Object.freeze({ modalidad: MODALIDAD.XP_ACUMULADA, redondeo: 'abajo' });
 
 /**
- * La decisión que falta. `null` = la herencia se guarda pero no se aplica.
- * Cuando Alejandro decida: `{ modalidad: MODALIDAD.X, redondeo: 'abajo' }`.
+ * Formato de la foto. 1 = el del 7-oct (preparada sin aplicar); 2 = con la
+ * experiencia separada en heredada y ganada. Las de la 1 se leen igual.
  */
-export const LEGADO_CONFIRMADO = null;
-
-export const VERSION_LEGADO = 1;
-
-const entero = (v) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : null);
+export const VERSION_LEGADO = 2;
 
 /**
- * La foto del muerto. Guarda cada base por separado, verificable.
+ * Tope de experiencia que se acepta como base: muy por encima de lo que da
+ * el juego y lejos de donde `xp * 35` dejaría de ser un entero exacto. Una
+ * cifra mayor no es una partida, es un dato roto.
+ */
+export const XP_MAXIMA_LEGADO = 1_000_000_000;
+
+/** ¿Es una cantidad de experiencia válida? Entero finito, ≥ 0 y dentro del tope. */
+export function xpValida(v) {
+  return Number.isSafeInteger(v) && v >= 0 && v <= XP_MAXIMA_LEGADO;
+}
+
+/**
+ * El 35 % redondeado hacia abajo, en enteros.
+ *
+ * `0.35` no es representable en coma flotante; aquí se multiplica por 35 y se
+ * divide entre 100 quitando el resto, sin pasar por decimales.
+ *
+ * @param {number} xp
+ * @returns {number|null} null si la base no es válida.
+ */
+export function cantidadLegado(xp) {
+  if (!xpValida(xp)) return null;
+  const n = xp * LEGADO_NUMERADOR;
+  return (n - (n % LEGADO_DENOMINADOR)) / LEGADO_DENOMINADOR;
+}
+
+/**
+ * La experiencia del jugador, separada en heredada y ganada.
+ * Partidas anteriores al legado no tienen contador: todo es ganado.
+ */
+export function procedenciaXP(jugador = {}) {
+  const total = jugador.xp ?? 0;
+  const heredada = jugador.xpHeredada ?? jugador.legadoRecibido?.xp ?? 0;
+  return { total, heredada, ganada: total - heredada };
+}
+
+/**
+ * La foto del muerto: su experiencia acumulada, verificable, con la
+ * procedencia aparte. Si la experiencia no es válida, la foto nace bloqueada
+ * con su motivo y el valor original a la vista (no se inventa una cifra).
  *
  * @param {Object} estado Estado completo al morir.
- * @param {Object} [opciones]
- * @param {string} [opciones.runId]
- * @param {number} [opciones.ahora] Marca de tiempo (inyectable en pruebas).
+ * @param {{runId?: string, ahora?: number}} [opciones]
  */
 export function fotoDeLegado(estado, { runId = null, ahora = Date.now() } = {}) {
   const p = estado?.player ?? {};
-  const heredado = entero(p.legadoRecibido?.xp) ?? 0;
+  const { total, heredada, ganada } = procedenciaXP(p);
+  const valida = xpValida(total) && xpValida(heredada) && heredada <= total;
   return {
     version: VERSION_LEGADO,
     runOrigen: runId ?? estado?.meta?.runId ?? null,
-    origen: { nombre: p.nombre ?? null, raza: p.raza ?? null, clase: p.clase ?? null, nivel: entero(p.nivel) },
-    fraccion: FRACCION_LEGADO,
-    base: {
-      // Experiencia acumulada, con lo que ya venía heredado aparte: no se
-      // decide aquí si cuenta otra vez.
-      xpAcumulada: entero(p.xp),
-      xpHeredadaIncluida: heredado,
-      puntosHabilidadDisponibles: entero(p.puntosHabilidad),
-      // Los gastados no se pueden reconstruir con seguridad desde el estado
-      // (no hay un contador): se guarda lo invertido para decidir después.
-      habilidades: p.habilidades && typeof p.habilidades === 'object' ? { ...p.habilidades } : {},
-    },
-    modalidad: LEGADO_CONFIRMADO?.modalidad ?? 'pendiente',
-    estado: 'pendiente',
+    origen: { nombre: p.nombre ?? null, raza: p.raza ?? null, clase: p.clase ?? null, nivel: Number.isSafeInteger(p.nivel) ? p.nivel : null },
+    fraccion: `${LEGADO_NUMERADOR}/${LEGADO_DENOMINADOR}`,
+    modalidad: MODALIDAD.XP_ACUMULADA,
+    base: valida
+      ? { xpAcumulada: total, xpHeredada: heredada, xpGanada: ganada }
+      : { xpAcumulada: null, xpOriginal: Number.isFinite(total) ? total : String(total), xpHeredada: null, xpGanada: null },
+    cantidad: valida ? cantidadLegado(total) : null,
+    estado: valida ? 'pendiente' : 'bloqueado',
+    motivo: valida ? null : 'La experiencia guardada al morir no es un número válido.',
     destinatario: null,
     creado: ahora,
   };
 }
 
-/**
- * Cuánto se hereda con una modalidad. Pura; no aplica nada.
- *
- * @param {ReturnType<typeof fotoDeLegado>} foto
- * @param {string} modalidad Una de `MODALIDAD`.
- * @param {{redondeo?: 'abajo'|'cercano'|'arriba', excluirHeredado?: boolean}} [opciones]
- * @returns {{ok: true, cantidad: number, moneda: 'xp'|'puntosHabilidad'}|{ok: false, motivo: string}}
- */
-export function calcularLegado(foto, modalidad, { redondeo = 'abajo', excluirHeredado = false } = {}) {
-  const b = foto?.base ?? {};
-  const redondear = { abajo: Math.floor, cercano: Math.round, arriba: Math.ceil }[redondeo];
-  if (!redondear) return { ok: false, motivo: 'redondeo desconocido' };
-
-  let base;
-  let moneda;
-  if (modalidad === MODALIDAD.XP_ACUMULADA) {
-    if (b.xpAcumulada === null || b.xpAcumulada === undefined) return { ok: false, motivo: 'xp no válida' };
-    base = b.xpAcumulada - (excluirHeredado ? (b.xpHeredadaIncluida ?? 0) : 0);
-    moneda = 'xp';
-  } else if (modalidad === MODALIDAD.PUNTOS_DISPONIBLES) {
-    if (b.puntosHabilidadDisponibles === null || b.puntosHabilidadDisponibles === undefined) return { ok: false, motivo: 'puntos no válidos' };
-    base = b.puntosHabilidadDisponibles;
-    moneda = 'puntosHabilidad';
-  } else if (modalidad === MODALIDAD.PUNTOS_TOTALES) {
-    // Necesita saber cuántos puntos se gastaron: no hay contador fiable.
-    return { ok: false, motivo: 'los puntos gastados no tienen una semántica definida todavía' };
-  } else {
-    return { ok: false, motivo: 'modalidad pendiente' };
-  }
-  if (!Number.isFinite(base) || base < 0) return { ok: false, motivo: 'base no válida' };
-  return { ok: true, cantidad: redondear(base * FRACCION_LEGADO), moneda };
-}
+const ESTADOS = ['pendiente', 'reservado', 'aplicado', 'bloqueado'];
 
 /**
- * Aplica la herencia a un sucesor. Devuelve las acciones a despachar (por el
- * canal normal) y la foto marcada como aplicada, o por qué no.
+ * Lee una foto guardada (de cualquier versión) y dice qué vale. No la
+ * modifica: lo que se escriba al entregarla conserva todo lo original.
  *
- * DESACTIVADA en producción: sin `confirmado` (o con `LEGADO_CONFIRMADO`
- * null) no hace nada. Las pruebas pasan una confirmación de prueba.
- *
- * @param {ReturnType<typeof fotoDeLegado>} foto
- * @param {{runId: string, nombre?: string}} sucesor El NUEVO personaje.
- * @param {{modalidad: string, redondeo?: string}|null} [confirmado]
+ * @param {Object} foto
  */
-export function aplicarLegado(foto, sucesor, confirmado = LEGADO_CONFIRMADO) {
-  if (!confirmado?.modalidad) return { ok: false, motivo: 'pendiente: falta decidir la base del 35 %' };
-  if (!foto || foto.estado !== 'pendiente') return { ok: false, motivo: 'ya aplicada o no disponible' };
-  if (!sucesor?.runId || sucesor.runId === foto.runOrigen) return { ok: false, motivo: 'sucesor no válido' };
-  const c = calcularLegado(foto, confirmado.modalidad, { redondeo: confirmado.redondeo });
-  if (!c.ok) return c;
-  const acciones = c.moneda === 'xp'
-    ? [{ tipo: 'player/xp', payload: { cantidad: c.cantidad, motivo: 'legado', legado: true } }]
-    : [{ tipo: 'player/legado/puntos', payload: { puntosHabilidad: c.cantidad } }];
-  return {
-    ok: true,
-    cantidad: c.cantidad,
-    moneda: c.moneda,
-    acciones,
-    foto: { ...foto, estado: 'aplicado', modalidad: confirmado.modalidad, destinatario: sucesor.runId, aplicado: { cantidad: c.cantidad, moneda: c.moneda } },
+export function leerFoto(foto) {
+  const f = foto && typeof foto === 'object' ? foto : {};
+  const b = f.base ?? {};
+  const xp = b.xpAcumulada;
+  // Versión 1: `xpHeredadaIncluida`; versión 2: `xpHeredada`.
+  const heredada = b.xpHeredada ?? b.xpHeredadaIncluida ?? 0;
+  const vista = {
+    version: Number.isInteger(f.version) ? f.version : 1,
+    runOrigen: typeof f.runOrigen === 'string' && f.runOrigen ? f.runOrigen : null,
+    origen: f.origen && typeof f.origen === 'object' ? f.origen : {},
+    estado: f.estado ?? 'pendiente',
+    xpAcumulada: xpValida(xp) ? xp : null,
+    xpHeredada: xpValida(heredada) ? heredada : null,
+    xpGanada: null,
+    cantidad: null,
+    motivo: f.motivo ?? null,
+    destinatario: f.destinatario ?? null,
+    ranura: f.ranura ?? null,
+    transaccion: f.transaccion ?? null,
   };
+  if (!ESTADOS.includes(vista.estado)) {
+    return { ...vista, estado: 'bloqueado', motivo: `Estado desconocido («${String(vista.estado)}»).` };
+  }
+  if (!vista.runOrigen) return { ...vista, estado: 'bloqueado', motivo: 'La herencia no dice de qué partida viene.' };
+  if (vista.estado === 'aplicado') {
+    // Lo entregado se queda entregado aunque la base no se pueda releer.
+    return { ...vista, cantidad: Number.isSafeInteger(f.aplicado?.cantidad) ? f.aplicado.cantidad : cantidadLegado(xp) };
+  }
+  if (vista.estado === 'bloqueado') return vista;
+  if (vista.xpAcumulada === null || vista.xpHeredada === null || vista.xpHeredada > vista.xpAcumulada) {
+    return { ...vista, estado: 'bloqueado', motivo: 'La experiencia guardada de ese personaje no es un número válido: no se puede calcular su herencia.' };
+  }
+  return { ...vista, xpGanada: vista.xpAcumulada - vista.xpHeredada, cantidad: cantidadLegado(vista.xpAcumulada) };
 }
 
-export default { FRACCION_LEGADO, MODALIDAD, LEGADO_CONFIRMADO, fotoDeLegado, calcularLegado, aplicarLegado };
+/**
+ * Cuánto se hereda de una foto. Pura.
+ * @returns {{ok: true, cantidad: number, moneda: 'xp'}|{ok: false, motivo: string}}
+ */
+export function calcularLegado(foto) {
+  const v = leerFoto(foto);
+  if (v.cantidad === null) return { ok: false, motivo: v.motivo ?? 'base no válida' };
+  return { ok: true, cantidad: v.cantidad, moneda: 'xp' };
+}
+
+/** El texto del cálculo, igual en todas las pantallas. */
+export function explicarLegado(v) {
+  return `${v.cantidad} XP: el 35 % de ${v.xpAcumulada} XP, redondeado hacia abajo`;
+}
+
+export default {
+  FRACCION_LEGADO, LEGADO_NUMERADOR, LEGADO_DENOMINADOR, MODALIDAD, LEGADO_CONFIRMADO, VERSION_LEGADO,
+  XP_MAXIMA_LEGADO, xpValida, cantidadLegado, procedenciaXP, fotoDeLegado, leerFoto, calcularLegado, explicarLegado,
+};

@@ -90,7 +90,8 @@ await caso(async () => {
   comprobar(!p.m.ver('combat.activo', false), 'ni se abre otro combate');
   comprobar(Registro?.estaMuerto(runId), 'marca durable del run en el almacenamiento local');
   const legados = Registro?.legados() ?? {};
-  comprobar(legados[runId]?.estado === 'pendiente' && legados[runId].fraccion === 0.35, 'herencia guardada, pendiente y sin aplicar (35 %)', JSON.stringify(legados[runId])?.slice(0, 200));
+  comprobar(legados[runId]?.estado === 'pendiente' && legados[runId].fraccion === '35/100' && legados[runId].cantidad === Legado.cantidadLegado(xp),
+    `herencia guardada y pendiente de sucesor: ${legados[runId]?.cantidad} XP (35 % de ${xp})`, JSON.stringify(legados[runId])?.slice(0, 200));
 });
 
 console.log('\n── Muerte por agotamiento (FIXTURE: fatiga 0 y 1 de vida) ──');
@@ -157,27 +158,20 @@ await caso(async () => {
   comprobar(g && g.marca === false && /lleno/.test(g.error ?? ''), 'FIXTURE almacenamiento lleno: no se promete la marca (queda dicho)', JSON.stringify(g));
 });
 
-console.log('\n── Legado del 35 % (preparado, sin decidir la base) ──');
+// La entrega (sucesor, atomicidad, generaciones…) se audita entera en
+// `tools/auditar-legado.mjs`; aquí, lo que deja la muerte.
+console.log('\n── Legado del 35 % de la experiencia (decisión cerrada el 7-oct) ──');
 await caso(async () => {
-  const { calcularLegado, aplicarLegado, fotoDeLegado, MODALIDAD, FRACCION_LEGADO, LEGADO_CONFIRMADO } = Legado;
-  comprobar(FRACCION_LEGADO === 0.35 && LEGADO_CONFIRMADO === null, 'fracción 0,35 fija; la modalidad sigue sin confirmar');
-  const foto = (xp, puntos = 0, heredado = 0) => fotoDeLegado({ meta: { runId: 'run-a' }, player: { nombre: 'Ena', xp, puntosHabilidad: puntos, legadoRecibido: heredado ? { xp: heredado } : undefined } }, { ahora: 1 });
-  const xp = (n, o) => calcularLegado(foto(n), MODALIDAD.XP_ACUMULADA, o);
-  comprobar(xp(100).cantidad === 35 && xp(200).cantidad === 70 && xp(0).cantidad === 0, '100 → 35, 200 → 70, 0 → 0 de experiencia');
-  comprobar(xp(103).cantidad === 36 && xp(1).cantidad === 0 && xp(103, { redondeo: 'cercano' }).cantidad === 36 && xp(1, { redondeo: 'arriba' }).cantidad === 1, '103 y 1: la fracción se calcula; el redondeo productivo sigue pendiente');
-  comprobar(calcularLegado(foto(0, 10), MODALIDAD.PUNTOS_DISPONIBLES).cantidad === 3, '10 puntos disponibles → 3 (a la baja)');
-  comprobar(!calcularLegado(foto(0, 10), MODALIDAD.PUNTOS_TOTALES).ok, 'puntos gastados: sin semántica definida, no se calcula');
-  comprobar(calcularLegado(foto(1000, 0, 400), MODALIDAD.XP_ACUMULADA, { excluirHeredado: true }).cantidad === 210, 'lo heredado de antes se puede excluir (1000 − 400 → 210), sin decidirlo aquí');
+  const { calcularLegado, fotoDeLegado, FRACCION_LEGADO, LEGADO_CONFIRMADO } = Legado;
+  comprobar(FRACCION_LEGADO === 0.35 && LEGADO_CONFIRMADO?.modalidad === 'xp_acumulada' && LEGADO_CONFIRMADO.redondeo === 'abajo', 'experiencia acumulada, 35 %, hacia abajo: confirmado');
+  const foto = (xp, heredado = 0) => fotoDeLegado({ meta: { runId: 'run-a' }, player: { nombre: 'Ena', xp, puntosHabilidad: 10, legadoRecibido: heredado ? { xp: heredado } : undefined } }, { ahora: 1 });
+  const xp = (n, h) => calcularLegado(foto(n, h));
+  comprobar(xp(100).cantidad === 35 && xp(200).cantidad === 70 && xp(0).cantidad === 0 && xp(103).cantidad === 36 && xp(1).cantidad === 0, '100 → 35, 200 → 70, 0 → 0, 103 → 36, 1 → 0');
+  comprobar(xp(1000, 400).cantidad === 350, 'lo heredado de antes cuenta dentro de la acumulada, una vez (1000 → 350)');
+  comprobar(xp(0).cantidad === 0 && !('puntosHabilidadDisponibles' in foto(0).base), 'los puntos de habilidad no son base de nada');
   for (const malo of [NaN, -5, Infinity, 'x']) {
-    comprobar(!calcularLegado(fotoDeLegado({ player: { xp: malo } }), MODALIDAD.XP_ACUMULADA).ok, `valor corrupto (${String(malo)}): no hereda nada`);
+    comprobar(!calcularLegado(fotoDeLegado({ meta: { runId: 'run-z' }, player: { xp: malo } })).ok, `valor corrupto (${String(malo)}): no hereda nada`);
   }
-  const f = foto(200);
-  comprobar(!aplicarLegado(f, { runId: 'run-b' }).ok, 'aplicar SIN confirmación: no hace nada');
-  const prueba = { modalidad: MODALIDAD.XP_ACUMULADA, redondeo: 'abajo' }; // confirmación de PRUEBA
-  const r1 = aplicarLegado(f, { runId: 'run-b' }, prueba);
-  comprobar(r1.ok && r1.cantidad === 70 && r1.acciones.length === 1 && r1.acciones[0].tipo === 'player/xp' && r1.foto.estado === 'aplicado', 'con confirmación de prueba: 70 de experiencia por el canal normal, una sola acción (ni puntos extra)');
-  comprobar(!aplicarLegado(r1.foto, { runId: 'run-c' }, prueba).ok, 'una vez aplicada, no se aplica a otro sucesor');
-  comprobar(!aplicarLegado(f, { runId: 'run-a' }, prueba).ok, 'el muerto no es su propio sucesor');
 });
 
 console.log('\n── Limpieza: el logro «Nunca con hambre» queda retirado, no borrado ──');
