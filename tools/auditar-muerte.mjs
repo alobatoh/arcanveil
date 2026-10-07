@@ -180,5 +180,17 @@ await caso(async () => {
   comprobar(!aplicarLegado(f, { runId: 'run-a' }, prueba).ok, 'el muerto no es su propio sucesor');
 });
 
+console.log('\n── Limpieza: el logro «Nunca con hambre» queda retirado, no borrado ──');
+await caso(async () => {
+  const { evaluar, listado, conteo, HAZANAS } = await import('../src/data/achievements.data.js');
+  const gloton = Object.values(HAZANAS).find((h) => h.refId === 'gloton');
+  comprobar(gloton?.retirada === true, 'marcado como retirado');
+  comprobar(!evaluar({ turnosBienAlimentado: 999 }, {}, []).some((h) => h.refId === 'gloton'), 'no se evalúa en partidas nuevas (ni con el contador viejo alto)');
+  comprobar(listado(['gloton'], {}, {}).some((h) => h.refId === 'gloton' && h.conseguida), 'quien ya lo tenía lo conserva y lo ve');
+  comprobar(!listado([], {}, {}).some((h) => h.refId === 'gloton'), 'a quien no lo tiene no se le enseña');
+  const c = conteo();
+  comprobar(c.total === c.visibles + c.ocultas, `el total no lo cuenta (${c.total})`);
+});
+
 console.log(`\n${casos - fallos}/${casos} comprobaciones bien.`);
 process.exit(fallos ? 1 : 0);
