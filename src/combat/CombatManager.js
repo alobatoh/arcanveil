@@ -1307,6 +1307,16 @@ export class CombatManager extends SystemBase {
     return false;
   }
 
+  /**
+   * El jugador ha muerto por otra vía (ver `player/Muerte.js`): la pelea
+   * abierta termina como derrota. Nadie actúa ya; sin recompensas.
+   */
+  cerrarPorMuerte() {
+    if (!this.leer('combat.activo', false)) return;
+    this._esperando = false;
+    this._terminar('derrota');
+  }
+
   async _terminar(resultado) {
     const flujo = this.rng.combate;
     // Enemigos son los del otro bando: un compañero caído no da experiencia

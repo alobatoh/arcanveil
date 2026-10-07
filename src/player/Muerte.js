@@ -111,6 +111,9 @@ export class Muerte extends SystemBase {
     if (travel?._viaje) travel._viaje = null;
     const exploracion = this.sistema('exploration');
     if (exploracion?._encuentro) exploracion._encuentro = null;
+    // Una pelea abierta (la muerte vino de otra fuente: el director, el
+    // agotamiento) se cierra como derrota: no sigue con el muerto en pie.
+    this.sistema('combat')?.cerrarPorMuerte?.();
 
     // La marca y la herencia, antes de ofrecer partida nueva. Si no se pueden
     // escribir, se dice: no se promete lo que no ha ocurrido.
