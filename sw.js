@@ -1,8 +1,10 @@
 // Generado por tools/generar-sw.mjs. No editar a mano.
 // La lista se recorre del disco: un archivo nuevo entra solo al regenerar.
-const CACHE = 'arcanveil-15qv7qs';
+const CACHE = 'arcanveil-tp294a';
 const SHELL = [
   './manifest.webmanifest',
+  './index.html',
+  './clasico.html',
   './app/app.js',
   './app/efectos.js',
   './app/font-propuestas.html',
@@ -72,7 +74,6 @@ const SHELL = [
   './src/data/enemies.data.js',
   './src/data/events.data.js',
   './src/data/factions.data.js',
-  './src/data/interview.data.js',
   './src/data/items.data.js',
   './src/data/locations.data.js',
   './src/data/loot.tables.js',
@@ -113,7 +114,6 @@ const SHELL = [
   './src/inventory/ItemFactory.js',
   './src/inventory/LootGenerator.js',
   './src/inventory/Rarity.js',
-  './src/main.js',
   './src/npc/Companero.js',
   './src/npc/DialogueSystem.js',
   './src/npc/FactionSystem.js',
@@ -124,6 +124,7 @@ const SHELL = [
   './src/npc/RelationshipSystem.js',
   './src/npc/ReputationSystem.js',
   './src/persistence/CharacterRoster.js',
+  './src/persistence/EntregaLegado.js',
   './src/persistence/Migrations.js',
   './src/persistence/RegistroRuns.js',
   './src/persistence/SaveManager.js',
@@ -135,7 +136,6 @@ const SHELL = [
   './src/player/ClassSystem.js',
   './src/player/Comida.js',
   './src/player/Correccion.js',
-  './src/player/creation/CharacterInterview.js',
   './src/player/Curacion.js',
   './src/player/Legado.js',
   './src/player/Muerte.js',
@@ -150,39 +150,7 @@ const SHELL = [
   './src/quests/Quest.js',
   './src/quests/QuestGenerator.js',
   './src/quests/QuestSystem.js',
-  './src/ui/Component.js',
-  './src/ui/components/AchievementToast.js',
-  './src/ui/components/BridgePanel.js',
-  './src/ui/components/CharacterPanel.js',
-  './src/ui/components/ChoicePopup.js',
-  './src/ui/components/CombatPanel.js',
-  './src/ui/components/EquipmentSlots.js',
-  './src/ui/components/InputBar.js',
-  './src/ui/components/InventoryPanel.js',
-  './src/ui/components/ItemActions.js',
-  './src/ui/components/MapPanel.js',
-  './src/ui/components/Modal.js',
-  './src/ui/components/NarrativeLog.js',
-  './src/ui/components/NPCPanel.js',
-  './src/ui/components/Panel.js',
-  './src/ui/components/QuestPanel.js',
-  './src/ui/components/QuickChoices.js',
-  './src/ui/components/StatBar.js',
-  './src/ui/components/StatsPanel.js',
-  './src/ui/components/Toast.js',
-  './src/ui/components/Tooltip.js',
-  './src/ui/components/TypeWriter.js',
-  './src/ui/components/VitalsWidget.js',
-  './src/ui/components/WorldClock.js',
-  './src/ui/DOM.js',
-  './src/ui/screens/CreationScreen.js',
-  './src/ui/screens/MainMenuScreen.js',
-  './src/ui/screens/SaveScreen.js',
-  './src/ui/screens/SettingsScreen.js',
-  './src/ui/UIManager.js',
   './src/utils/clone.js',
-  './src/utils/debounce.js',
-  './src/utils/format.js',
   './src/utils/id.js',
   './src/utils/math.js',
   './src/utils/merge.js',
@@ -249,18 +217,14 @@ const SHELL = [
   './assets/paisajes/senda_raices.webp',
   './assets/paisajes/tumbas_bajas.webp',
   './assets/paisajes/umbral_albar.webp',
-  './assets/paisajes/vado_yunque.webp',
-  './styles/a11y.css',
-  './styles/animations.css',
-  './styles/base.css',
-  './styles/components.css',
-  './styles/layout.css',
-  './styles/main.css',
-  './styles/screens.css',
-  './styles/tokens.css'
+  './assets/paisajes/vado_yunque.webp'
 ];
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())));
-self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
+// Al activarse solo se borran las versiones anteriores DE ESTE JUEGO: el
+// origen puede ser compartido (GitHub Pages sirve varios proyectos desde el
+// mismo dominio) y sus cachés no son nuestras. Ni partidas ni galería viven
+// en cachés: este trabajador no las toca.
+self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('arcanveil-') && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
 // Solo lo propio pasa por la caché: los puentes locales (Groq, imágenes) y
 // cualquier otro origen van directos, o su estado se quedaba congelado en la
 // primera respuesta. La página del juego, de respaldo, solo al navegar.
