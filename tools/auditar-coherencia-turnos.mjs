@@ -450,11 +450,15 @@ console.log('\n── Armas dentro del combate ──');
     comprobar(j?.tipo === 'aclaracion' && a.ronda === d.ronda && a.turno === d.turno && a.vida === d.vida && a.e === d.e && a.inventario === d.inventario && p.registro.tiradas === t0 && c.esperandoJugador,
       `«${frase}»: aclara, misma ronda, mismos enemigos, sin tirada, y sigue siendo su turno`, JSON.stringify(j));
   }
+  // Control (contrato del 7-oct-2026: en combate se ataca por el menú): con
+  // el cuchillo en la mano, el ataque elegido se hace y la ronda avanza.
   const a = p.foto();
-  await c.jugadaLibre('ataco al guardia con el cuchillo');
+  const menu = c.accionesDelJugador();
+  const cuchillo = menu.ataques.find((x) => /cuchillo/i.test(x.nombre));
+  await c.ejecutar({ tipo: 'atacar', token: menu.token, ataqueId: cuchillo?.id, objetivoId: menu.enemigos[0].id });
   for (let i = 0; i < 300 && !c.esperandoJugador && p.m.ver('combat.activo', false); i++) await new Promise((res) => setTimeout(res, 10));
   const d = p.foto();
-  comprobar(d.ronda !== a.ronda || !d.combate, 'control: con el cuchillo en la mano el ataque se hace y la ronda avanza', `${a.ronda}→${d.ronda}`);
+  comprobar(cuchillo && (d.ronda !== a.ronda || !d.combate), 'control: con el cuchillo en la mano el ataque (elegido en el menú) se hace y la ronda avanza', `${a.ronda}→${d.ronda} · ${JSON.stringify(menu.ataques)}`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

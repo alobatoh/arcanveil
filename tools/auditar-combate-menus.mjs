@@ -62,6 +62,18 @@ await caso(async () => {
   comprobar(nombres === 'Berlo,Dalwen' && new Set(menu.enemigos.map((e) => e.id)).size === 2, `enemigos con nombre e id distintos: ${nombres}`);
 });
 
+await caso(async () => {
+  // Leído en la campaña 9303: la rastreadora lleva el cuchillo en la mano
+  // secundaria y el menú solo daba «Golpe 1d3» (se miraba la principal).
+  const m = await crearMotor({ semilla: 9303 });
+  await m.empezar({ nombre: 'Sive', raza: 'valdes', clase: 'rastreador', trasfondo: 'errante', genero: 'f' });
+  await m.jugar('ataco a Xivio');
+  const c = m.sistema('combat');
+  for (let i = 0; i < 400 && !c.esperandoJugador; i++) await espera(5);
+  const ataques = c.accionesDelJugador()?.ataques ?? [];
+  comprobar(ataques.length === 1 && ataques[0].nombre === 'Cuchillo de caza' && ataques[0].itemId === m.ver('inventory.equipado.armaSecundaria'), `9303 rastreadora: el cuchillo de la otra mano es su ataque (${JSON.stringify(ataques.map((a) => a.nombre))})`);
+});
+
 console.log('\n── Validación antes de mutar: el turno sigue abierto y no se ataca a nadie ──');
 const malos = [
   ['sin ficha', (c, m) => ({ tipo: 'atacar', ataqueId: m.ataques[0].id, objetivoId: m.enemigos[0].id })],

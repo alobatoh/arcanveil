@@ -110,8 +110,21 @@ for (const clase of ['glifista', 'rastreador']) {
 
 {
   const { jugada, m } = await pelea('rastreador');
+  // Contrato del 7-oct-2026: en combate se ataca por el menú (ataque y
+  // objetivo elegidos). El texto no golpea; se dice y el turno sigue.
   let r = await jugada('ataco al saqueador B');
-  comprobar(/Atacas a Saqueador B/.test(r.texto) && r.despues.ronda === r.antes.ronda + 1, 'atacar a otro objetivo: ataca a ese y pasa la ronda', resumen(r));
+  comprobar(/se ataca desde el menú/.test(r.texto) && r.despues.ronda === r.antes.ronda && r.despues.vida === r.antes.vida && r.despues.esperando, 'atacar por texto: al menú, sin golpe ni ronda', resumen(r));
+  {
+    const c = m.sistema('combat');
+    const menu = c.accionesDelJugador();
+    const b = menu.enemigos.find((e) => e.nombre === 'Saqueador B');
+    const golpes = [];
+    m.bus.on('combat:attack', (d) => { if (d?.atacante?.esJugador) golpes.push(d.objetivo?.nombre); });
+    const antes = m.ver('combat.ronda');
+    await c.ejecutar({ tipo: 'atacar', token: menu.token, ataqueId: menu.ataques[0].id, objetivoId: b.id });
+    await esperar(() => c.esperandoJugador || !m.ver('combat.activo'));
+    comprobar(golpes[0] === 'Saqueador B' && (m.ver('combat.ronda') === antes + 1 || !m.ver('combat.activo')), 'por el menú, contra Saqueador B: ataca a ese y pasa la ronda', JSON.stringify(golpes));
+  }
 
   r = await jugada('le lanzo arena a los ojos al saqueador A');
   comprobar(/Saqueador A queda cegad|Lo intentas con Saqueador A/.test(r.texto) && !/Atacas a/.test(r.texto), 'arena a los ojos: maniobra sin golpe, contra quien se dice', resumen(r));
