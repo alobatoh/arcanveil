@@ -158,7 +158,16 @@ export class UIManager {
       const Clase = modulo[exportado] ?? modulo.default;
       if (!Clase) return null;
       const instancia = new Clase(this._ctx);
-      instancia.montar(qs(selector));
+      // Montar vacía el contenedor: con «body», la capa de hazañas borraba la
+      // página entera (la interfaz clásica salía en negro). Se le da su
+      // propio hueco dentro del body.
+      let destino = qs(selector);
+      if (destino === document.body) {
+        destino = document.createElement('div');
+        destino.dataset.capa = exportado;
+        document.body.appendChild(destino);
+      }
+      instancia.montar(destino);
       return instancia;
     } catch (e) {
       log.aviso(`Capa ${exportado} no disponible todavía`);

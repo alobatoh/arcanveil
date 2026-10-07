@@ -307,18 +307,21 @@ export class CombatPanel extends Component {
             style: { fontSize: 'var(--f-2xs)', color: 'var(--c-texto-tenue)' },
             text: `Objetivo: ${objetivo.nombre}`,
           })
-        : h('p', {
-            style: { fontSize: 'var(--f-2xs)', color: 'var(--c-texto-tenue)' },
-            text: 'Sin objetivo elegido: atacarás al más débil.',
-          }),
+        : null,
+
+      // Interfaz antigua (7-oct-2026): el combate actual se juega por menús
+      // (ataque y enemigo elegidos, ficha de turno) y este panel no los tiene.
+      // No se ofrece un «Atacar» que el motor rechazaría ni se vuelve al
+      // «atacar al más débil». Adaptarla o retirarla queda por decidir.
+      h('p.combate-clasico__aviso', {
+        role: 'note',
+        style: { fontSize: 'var(--f-2xs)', color: 'var(--c-peligro)', textAlign: 'center' },
+      },
+        h('span', { text: 'Interfaz antigua: aquí no se puede atacar con el combate actual. ' }),
+        h('a', { attrs: { href: './app/index.html' }, text: 'Juega en la versión vigente' }),
+      ),
 
       h('div.actionbar__quick', {},
-        h('button.choice', {
-          type: 'button',
-          dataset: { accion: 'atacar' },
-          style: { borderColor: 'var(--c-peligro)' },
-        }, icono('espada', { class: 'icon--sm' }), h('span', { text: 'Atacar' })),
-
         h('button.choice', {
           type: 'button',
           dataset: { accion: 'defender' },
@@ -386,8 +389,9 @@ export class CombatPanel extends Component {
       const manager = this.ui?.registry?.obtener?.('combat');
       if (!manager?.esperandoJugador) return;
 
-      // Los números ejecutan las acciones; Tab cambia de objetivo.
-      const mapa = { 1: 'atacar', 2: 'defender', 3: 'objeto', 4: 'huir' };
+      // Los números ejecutan las acciones; Tab cambia de objetivo. El 1
+      // (atacar) ya no: en esta interfaz antigua no se ataca (ver arriba).
+      const mapa = { 2: 'defender', 3: 'objeto', 4: 'huir' };
 
       if (mapa[e.key]) {
         e.preventDefault();
