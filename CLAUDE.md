@@ -38,7 +38,7 @@ Consecuencias que ya están implementadas y no hay que deshacer:
 | 0 claves de configuración ausentes | `tools/auditar-config.mjs` |
 
 | Arranca en navegador real: menú, creación, partida, combate | Chromium, `app/index.html` |
-| El archivo único arranca desde `file://` | Chromium, `dist/app.html` |
+| El archivo único (`app/`) se juega desde `file://` | `tools/auditar-bundle.mjs`, Chromium |
 | 1088 piezas de arte se generan enteras | `tools/auditar-arte.mjs` |
 
 ### Roto o sin confirmar
@@ -52,8 +52,8 @@ ver §9.
 
 ```
 index.html          portada del sitio: redirige a app/
-clasico.html        shell de la interfaz original (fases 1-3)
-app/                LA APP QUE SE USA — index.html + app.js
+clasico.html        puente a app/ (la interfaz original se retiró el 7-oct-2026)
+app/                LA ÚNICA INTERFAZ — index.html + app.js
 src/
   core/             Store, EventBus, Registry, SystemBase, RNG, Dice, Clock
   config/           app · balance · ai · ui   ← constantes, nada de lógica
@@ -70,7 +70,6 @@ src/
   engine/           reglas, efectos, enrutado, consecuencias, ritmo, turno
   ai/               prompts, análisis de respuestas, coordinador, proveedores
   art/              generadores de arte: paisaje, retrato, criatura
-  ui/               componentes de la interfaz original
 assets/            vacía; puerta para sustituir el arte por imágenes
 tools/              bundle · servir · lamina-arte · auditar-{imports,config,arte}
 demo/               banco de pruebas + dom-simulado.mjs
@@ -144,9 +143,8 @@ los fallos reales aparecen al **ejecutar**.
 node tools/auditar-imports.mjs   # nombres importados que no existen
 node tools/auditar-config.mjs    # claves de config usadas pero no definidas
 node tools/auditar-arte.mjs      # las 1088 piezas de arte, enteras
-node tools/bundle.mjs            # empaqueta a dist/arcanveil.html
-node tools/bundle.mjs --entrada app/app.js --html app/index.html \
-     --sin-estilos --salida dist/app.html
+node tools/bundle.mjs            # empaqueta app/ a dist/arcanveil.html
+node tools/auditar-bundle.mjs    # y lo juega en Chrome desde file://
 ```
 
 **Para probar en el navegador, usa `node tools/servir.mjs`, no
@@ -183,7 +181,7 @@ comprobación estática, y todos aparecieron así:
 ## 6 · Trampas conocidas
 
 **El empaquetador no puede seguir `import(variable)`.** Usa siempre
-importadores literales: `() => import('./x.js')`. `UIManager` ya está así.
+importadores literales: `() => import('./x.js')`.
 
 **`$$` en una cadena de reemplazo significa `$`.** `html.replace(str, script)`
 corrompe cualquier código con `$$`, `$&` o `` $` ``. Usa función de reemplazo.

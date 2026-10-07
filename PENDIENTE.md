@@ -52,20 +52,13 @@ TurnResolver
 sistemas por nombre durante el turno. `World` coordina a `TimeSystem`,
 `WeatherSystem` y los demás, así que va después de ellos.
 
-## Montaje de componentes en UIManager
+## Interfaz original: retirada
 
-Los paneles de las fases posteriores necesitan montarse:
-
-```
-QuestPanel, NPCPanel     → panel derecho
-StatsPanel               → panel derecho
-MapPanel                 → panel derecho
-CombatPanel              → panel central
-InventoryPanel           → panel izquierdo
-ItemActions              → capa flotante
-BridgePanel              → capa modal
-AchievementToast         → capa de avisos
-```
+La interfaz de tres paneles de las fases 1-3 (`src/main.js`, `src/ui/`,
+`styles/`) se retiró el 7-oct-2026: no podía atacar con el combate por menús
+y se mantenía como segundo producto a medias. El juego tiene una sola
+interfaz, `app/`. `clasico.html` queda como puente a ella para no romper
+enlaces; las partidas guardadas son las mismas (mismo almacenamiento).
 
 ## Campos de estado que pueden faltar
 
@@ -87,5 +80,6 @@ campo que falte no rompe la carga: simplemente no se conserva.
 node tools/bundle.mjs
 ```
 
-Una vez actualizado `main.js`, el empaquetador recorrerá el grafo completo. Si
-avisa de módulos ausentes, son exactamente los que falten por registrar.
+Parte de `app/app.js` y `app/index.html`. Si avisa de módulos ausentes, el
+archivo puede no funcionar: `node tools/auditar-bundle.mjs` lo juega en Chrome
+desde `file://` para comprobarlo.

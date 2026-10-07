@@ -5,9 +5,16 @@
  * ---------------------------------------------------------------------------
  * Empaquetador a archivo único.
  *
- * Convierte el proyecto entero —HTML, CSS y noventa y nueve módulos ES6— en un
- * solo `arcanveil.html` que se abre haciendo doble clic. Sin servidor, sin
- * dependencias, sin instalación.
+ * Convierte la interfaz del juego (`app/`, la única desde el 7-oct-2026) con
+ * su HTML, su CSS y todos sus módulos ES6 en un solo `arcanveil.html` que se
+ * abre haciendo doble clic. Sin servidor, sin dependencias, sin instalación.
+ *
+ * Lo que el archivo único NO tiene, porque `file://` no lo permite: el modo
+ * sin conexión instalable (sin trabajador de servicio), las imágenes de
+ * `assets/` (se juega con los marcadores) y los puentes locales de IA e
+ * imagen (el narrador interno funciona igual). Las partidas se guardan en el
+ * almacenamiento del navegador para archivos locales, que es OTRO que el del
+ * juego servido: no comparten partidas.
  *
  * Por qué existe: los módulos ES6 no funcionan desde `file://` por la política
  * de mismo origen. Durante el desarrollo eso se resuelve con un servidor
@@ -16,7 +23,7 @@
  *
  * Cómo funciona:
  *
- *   1. Recorre las importaciones desde `src/main.js` construyendo el grafo.
+ *   1. Recorre las importaciones desde `app/app.js` construyendo el grafo.
  *   2. Ordena topológicamente: cada módulo va después de los que necesita.
  *   3. Reescribe `import` y `export` a asignaciones sobre un registro interno.
  *   4. Inserta el resultado dentro del HTML, con el CSS en línea.
@@ -45,23 +52,17 @@ import { fileURLToPath } from 'node:url';
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const RAIZ = resolve(AQUI, '..');
 
-const ENTRADA = 'src/main.js';
+const ENTRADA = 'app/app.js';
 
-// `index.html` es el redirector de la portada del sitio publicado, no una
-// interfaz: empaquetarlo daría un archivo único que solo sabe redirigir. La
-// plantilla de la interfaz original vive en `clasico.html`.
-const HTML_BASE = 'clasico.html';
+// `index.html` y `clasico.html` son redirectores de la raíz, no interfaces.
+// La plantilla es la de `app/`, que ya trae su CSS en línea.
+const HTML_BASE = 'app/index.html';
 
-/** Hojas de estilo, en el orden en que deben cargarse. */
-const ESTILOS = [
-  'styles/tokens.css',
-  'styles/base.css',
-  'styles/layout.css',
-  'styles/components.css',
-  'styles/screens.css',
-  'styles/animations.css',
-  'styles/a11y.css',
-];
+/**
+ * Hojas de estilo externas, en orden. La interfaz `app/` las lleva dentro de
+ * su HTML; las de `styles/` eran de la interfaz retirada.
+ */
+const ESTILOS = [];
 
 /* ═══════════════════════════════════════════════════════════════════════════
    ARGUMENTOS
@@ -601,6 +602,9 @@ async function ensamblarHTML(datos) {
 
   // ─── Se retiran los enlaces y scripts externos ──────────────────────────
   html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*>/gi, '');
+  // Manifiesto e iconos apuntan a `../` del servidor: desde un archivo suelto
+  // no existen y solo darían errores en la consola.
+  html = html.replace(/<link[^>]+rel=["'](?:manifest|icon|apple-touch-icon)["'][^>]*>/gi, '');
   html = html.replace(/<script[^>]+type=["']module["'][^>]*><\/script>/gi, '');
   html = html.replace(/<script[^>]+src=["'][^"']+["'][^>]*><\/script>/gi, '');
 

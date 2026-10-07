@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ARCANVEIL</title>
 
-<!-- La portada del sitio lleva al juego. La interfaz original de las fases
-     1-3 sigue publicada en `clasico.html`, que conserva su nombre en la raíz
-     para que sus rutas relativas a `styles/` y `src/` sigan resolviendo.
+<!-- La portada del sitio lleva al juego, que tiene una sola interfaz:
+     `app/`. La original de las fases 1-3 se retiró el 7-oct-2026;
+     `clasico.html` queda solo como puente a esta misma dirección.
 
      El redirector va por tres vías porque cada una cubre un hueco de la
      anterior: `replace` no ensucia el historial (el botón atrás del móvil
@@ -38,7 +38,6 @@
     <strong>ARCANVEIL</strong>
     <p>Abriendo la crónica…</p>
     <p><a href="./app/index.html">Entrar al juego</a></p>
-    <p style="font-size:.78rem"><a href="./clasico.html">Interfaz original (antigua: sin el combate actual)</a></p>
   </div>
 
   <script>

@@ -57,9 +57,15 @@ console.log('\n── servir.mjs: lo público y nada más ──');
 {
   const real = crearServidorEstatico();
   const p = await escuchar(real);
-  for (const ruta of ['/app/index.html', '/src/core/RNG.js', '/sw.js', '/manifest.webmanifest', '/styles/', '/index.html']) {
+  // `clasico.html` sigue publicado como puente a app/ (enlaces antiguos).
+  for (const ruta of ['/app/index.html', '/src/core/RNG.js', '/sw.js', '/manifest.webmanifest', '/index.html', '/clasico.html']) {
     const r = await pedir(p, ruta);
-    comprobar(r.estado === 200 || (ruta === '/styles/' && r.estado === 404), `público: ${ruta} → ${r.estado}`);
+    comprobar(r.estado === 200, `público: ${ruta} → ${r.estado}`);
+  }
+  // La interfaz retirada ya no se sirve.
+  for (const ruta of ['/src/main.js', '/styles/main.css', '/src/ui/UIManager.js']) {
+    const r = await pedir(p, ruta);
+    comprobar(r.estado === 404, `retirado: ${ruta} → ${r.estado}`);
   }
   for (const ruta of ['/.gitignore', '/tools/iniciar-groq.mjs', '/tools/groq-proxy.mjs', '/README.md', '/CLAUDE.md', '/paths.tmp', '/.git/config',
     '/app/..%2f.gitignore', '/%2e%2e/%2e%2e/Windows/win.ini', '/app/%2e%2e/tools/servir.mjs', '/app%5c..%5c.gitignore', '/src/../.gitignore',

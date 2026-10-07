@@ -19,7 +19,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 let fallos = 0;
@@ -100,8 +100,8 @@ const texto = async (r) => (r && !r.error && typeof r.text === 'function' ? r.te
   const sw = montar();
   let n = 0;
   sw.fijarRed(async () => new Response(`v${++n}`, { status: 200 }));
-  await sw.pedir(`${ORIGEN}/src/main.js`);
-  const otra = await sw.pedir(`${ORIGEN}/src/main.js`);
+  await sw.pedir(`${ORIGEN}/app/app.js`);
+  const otra = await sw.pedir(`${ORIGEN}/app/app.js`);
   comprobar(await texto(otra) === 'v1', 'lo propio sí se sirve de la caché (el juego funciona sin conexión)');
   sw.fijarRed(async () => new Response('no', { status: 404 }));
   await sw.pedir(`${ORIGEN}/src/falta.js`);
@@ -114,6 +114,32 @@ const texto = async (r) => (r && !r.error && typeof r.text === 'function' ? r.te
   // esta auditoría sale verde igual.
   const r = spawnSync(process.execPath, ['tools/generar-sw.mjs', '--revisar'], { encoding: 'utf8' });
   comprobar(r.status === 0, 'sw.js lista todos los archivos del juego (generar-sw --revisar)', (r.stdout + r.stderr).trim());
+}
+
+{
+  // Instalación vieja que se actualiza: al activarse, el trabajador nuevo
+  // borra SOLO las versiones anteriores de este juego. El origen puede ser
+  // compartido (GitHub Pages) y las cachés de otro proyecto no se tocan. Las
+  // partidas y la galería no viven en cachés: no las alcanza.
+  const borradas = [];
+  const oyentes = {};
+  const scope = { location: new URL(`${ORIGEN}/sw.js`), addEventListener: (tipo, fn) => { oyentes[tipo] = fn; }, skipWaiting: () => {}, clients: { claim: () => {} } };
+  const actual = /const CACHE = '([^']+)'/.exec(codigo)?.[1];
+  const caches = { open: async () => ({ addAll: async () => {} }), keys: async () => ['arcanveil-viejo1234', 'otro-proyecto-v3', actual, 'workbox-precache'], delete: async (k) => { borradas.push(k); return true; }, match: async () => undefined };
+  new Function('self', 'caches', 'fetch', codigo)(scope, caches, async () => { throw new TypeError('sin red'); });
+  let espera = null;
+  oyentes.activate({ waitUntil: (p) => { espera = p; } });
+  await espera;
+  comprobar(borradas.length === 1 && borradas[0] === 'arcanveil-viejo1234', 'actualizar desde una instalación vieja: solo se borra la caché vieja del juego, no las ajenas', JSON.stringify(borradas));
+
+  // La lista no trae la interfaz retirada (ni su código ni sus estilos) y sí
+  // la portada y el puente; todo lo listado existe en disco.
+  const shell = [...codigo.matchAll(/^ {2}'(\.\/[^']+)'/gm)].map((m) => m[1]);
+  const retirada = shell.filter((r) => /^\.\/(src\/main\.js|src\/ui\/|styles\/)/.test(r));
+  comprobar(shell.length > 50 && !retirada.length, `la lista sin conexión (${shell.length}) no guarda la interfaz retirada`, retirada.join(', '));
+  comprobar(shell.includes('./clasico.html') && shell.includes('./index.html') && shell.includes('./app/index.html'), 'sí guarda la portada y el puente antiguo, que llevan a app/');
+  const faltan = shell.filter((r) => !existsSync(new URL(`../${r.slice(2)}`, import.meta.url)));
+  comprobar(!faltan.length, 'todo lo que se precarga existe (uno que falte rompe la instalación entera)', faltan.join(', '));
 }
 
 console.log(`\n${casos - fallos}/${casos} comprobaciones`);

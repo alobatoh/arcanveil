@@ -110,7 +110,7 @@ ARCANVEIL.inspeccionar()       // todos los sistemas 'arrancado'
 ```
 
 Si algún sistema aparece como `pendiente` o `fallido`, el orden de registro en
-`main.js` está mal. `TurnResolver` debe ir último y `World` después de sus
+`app/app.js` está mal. `TurnResolver` debe ir último y `World` después de sus
 subsistemas.
 
 ---
@@ -624,15 +624,20 @@ y Tab debe cambiar de objetivo.
 ## 14 · Archivo único
 
 ```bash
-node tools/bundle.mjs
+node tools/bundle.mjs              # app/ → dist/arcanveil.html
+node tools/auditar-bundle.mjs      # lo juega en Chrome desde file://
 ```
 
 | Comprobar | Criterio de fallo |
 |---|---|
-| Genera `dist/arcanveil.html` sin avisos | Reporta módulos ausentes |
-| Se abre con doble clic, sin servidor | Pantalla en blanco |
-| Funciona igual que la versión servida | Falta algo |
-| Pesa menos de un megabyte | Excede |
+| Genera `dist/arcanveil.html` sin módulos ausentes | Reporta módulos ausentes |
+| Arranca la interfaz `app/` (no la retirada) desde `file://` | Pantalla en blanco o la interfaz antigua |
+| Se crea, se juega, se guarda, se recarga y se continúa | Algo se pierde al recargar |
+| Una muerte deja su herencia y un sucesor la recibe | La herencia no llega o llega dos veces |
+| Ninguna petición de red ni excepción | Cualquiera |
+
+No trae: modo sin conexión instalable, imágenes de `assets/` ni puentes
+locales de IA e imagen. Pesa unos 3,2 MB (todo el motor y el arte procedural).
 
 Si el empaquetado avisa de módulos ausentes, faltan archivos del proyecto.
 Consulta `PENDIENTE.md`.

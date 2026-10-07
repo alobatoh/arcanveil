@@ -201,16 +201,23 @@ await caso(async () => {
   }
 });
 
-/* ── 4. Interfaz clásica: sin «Atacar» que el motor rechazaría ───────────── */
+/* ── 4. Interfaz clásica: RETIRADA (decisión del #6, 7-oct-2026) ───────── */
+// El aviso provisional del #5 no era la retirada. Ahora: ninguna segunda
+// interfaz jugable, y la dirección vieja solo lleva a `app/`. En Chrome:
+// regresion-app (redirección con datos) y auditar-bundle (archivo único).
 
-console.log('\n── 4 · Interfaz clásica (comprobación del código; en Chrome: regresion-app) ──');
+console.log('\n── 4 · Interfaz clásica retirada (código; en Chrome: regresion-app y auditar-bundle) ──');
 await caso(async () => {
-  const { readFileSync } = await import('node:fs');
-  const panel = readFileSync(new URL('../src/ui/components/CombatPanel.js', import.meta.url), 'utf8');
-  comprobar(!/dataset:\s*\{\s*accion:\s*'atacar'\s*\}/.test(panel), 'el panel clásico no dibuja un botón «Atacar»');
-  comprobar(!/1:\s*'atacar'/.test(panel), 'ni la tecla 1 ataca');
-  comprobar(!/atacarás al más débil/.test(panel), 'ni promete «atacar al más débil»');
-  comprobar(/Juega en la versión vigente/.test(panel), 'y enlaza la versión vigente');
+  const { readFileSync, existsSync } = await import('node:fs');
+  const leer = (r) => readFileSync(new URL(`../${r}`, import.meta.url), 'utf8');
+  comprobar(!existsSync(new URL('../src/ui/components/CombatPanel.js', import.meta.url)) && !existsSync(new URL('../src/main.js', import.meta.url)) && !existsSync(new URL('../styles', import.meta.url)),
+    'su código (src/ui, src/main.js) y sus estilos (styles/) ya no están');
+  const puente = leer('clasico.html');
+  comprobar(!/<script[^>]+src=|type="module"|styles\//.test(puente) && /location\.replace\('\.\/app\/index\.html'\)/.test(puente) && /url=\.\/app\/index\.html/.test(puente),
+    'clasico.html es solo un puente a app/ (sin código del juego), con y sin JavaScript');
+  const portada = leer('index.html');
+  comprobar(!/clasico\.html/.test(portada.replace(/<!--[\s\S]*?-->/g, '')) && /\.\/app\/index\.html/.test(portada), 'la portada ya no enlaza la interfaz antigua');
+  comprobar(/const ENTRADA = 'app\/app\.js'/.test(leer('tools/bundle.mjs')) && /const HTML_BASE = 'app\/index\.html'/.test(leer('tools/bundle.mjs')), 'el archivo único parte de app/, no de la clásica');
 });
 
 console.log(`\n${casos - fallos}/${casos} comprobaciones bien.`);

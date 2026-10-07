@@ -47,18 +47,15 @@ falta el servidor estático de arriba. Para jugar sin él:
 node tools/bundle.mjs
 ```
 
-Genera `dist/arcanveil.html`: un solo archivo que se abre con doble clic, sin
-servidor y sin dependencias. Node solo hace falta para construirlo, no para
-jugarlo.
+Genera `dist/arcanveil.html`: la interfaz del juego (`app/`) en un solo archivo
+que se abre con doble clic, sin servidor y sin dependencias. Node solo hace
+falta para construirlo, no para jugarlo. `node tools/auditar-bundle.mjs` lo
+abre en Chrome desde `file://` y juega, guarda, recarga y hereda.
 
-Para empaquetar la app con interfaz gráfica:
-
-```bash
-node tools/bundle.mjs --entrada app/app.js --html app/index.html \
-     --sin-estilos --salida dist/app.html
-```
-
-El arte viaja dentro: son unos kilobytes de código, no megas de imágenes.
+Lo que el archivo único no tiene, porque `file://` no lo permite: el modo sin
+conexión instalable, las imágenes de `assets/` (se juega con marcadores) y los
+puentes locales de IA e imagen. Sus partidas viven en el almacenamiento del
+navegador para archivos locales, que NO es el del juego servido.
 
 ## Pruebas
 
@@ -77,9 +74,8 @@ El guion ampliado sigue en [TESTING.md](TESTING.md).
 arcanveil/
 ├── app/                    LA WEB QUE SE JUEGA: index.html + app.js
 ├── index.html              Portada: redirige al juego
-├── clasico.html            Shell de tres paneles (interfaz original)
+├── clasico.html            Puente a app/ (la interfaz original se retiró)
 ├── assets/                 Vacía; puerta para meter imágenes (ver su README)
-├── styles/                 CSS por capas (@layer)
 ├── tools/                  servir · bundle · lamina-arte · auditar-*
 └── src/
     ├── config/             Configuración: balance, IA, interfaz
@@ -95,8 +91,7 @@ arcanveil/
     ├── world/              Mapa, viaje, clima, eventos
     ├── npc/                Personajes, facciones, diálogo
     ├── quests/             Misiones y objetivos
-    ├── economy/            Precios y comercio
-    └── ui/                 Componentes y pantallas
+    └── economy/            Precios y comercio
 ```
 
 ## El arte

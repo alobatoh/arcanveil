@@ -1,343 +1,41 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="dark-medieval">
+<html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="color-scheme" content="dark">
-  <meta name="description" content="ARCANVEIL — Motor de rol narrativo con director de juego dirigido por IA. Ejecución 100% local.">
-  <meta name="theme-color" content="#0b0a0e">
-  <title>ARCANVEIL · Crónicas de los Reinos Quebrados</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARCANVEIL</title>
 
-  <!--
-    Favicon embebido en base64 para no depender de ficheros externos.
-    (Rombo arcano dorado sobre fondo oscuro.)
-  -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0a0e'/%3E%3Cpath d='M16 4l8 12-8 12-8-12z' fill='none' stroke='%23c9a227' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23c9a227'/%3E%3C/svg%3E">
+<!-- La interfaz original de las fases 1-3 se retiró el 7-oct-2026: el juego
+     tiene una sola interfaz, `app/`. Esta dirección se conserva SOLO como
+     puente para no romper enlaces y marcadores antiguos: no carga código del
+     juego ni lee ni toca partidas; lleva a la interfaz vigente, que lee las
+     mismas partidas guardadas (mismo origen, mismo almacenamiento).
 
-  <!-- Hoja de estilos maestra: importa el resto en orden (archivo 8/24) -->
-  <link rel="stylesheet" href="./styles/main.css">
+     Tres vías, como la portada (`index.html`): `replace` sin ensuciar el
+     historial, `meta refresh` sin JavaScript y un enlace visible. Rutas
+     relativas: GitHub Pages sirve desde un subdirectorio. -->
+<meta http-equiv="refresh" content="0; url=./app/index.html">
+<link rel="canonical" href="./app/index.html">
+
+<style>
+  html,body{height:100%}
+  body{
+    margin:0;display:grid;place-items:center;text-align:center;padding:2rem;
+    background:#11101f;color:#e8ddc6;
+    font:16px/1.6 Georgia,'Times New Roman',serif;
+  }
+  a{color:#e2bd63}
+  p{margin:.6rem 0;font-size:.9rem;color:#9b8f7a}
+</style>
 </head>
-
-<body class="app-body">
-
-<!-- Aviso (7-oct-2026): esta interfaz es la antigua y no tiene el combate
-     por menús. Se avisa y se enlaza la vigente; adaptarla o retirarla queda
-     por decidir. -->
-<p class="aviso-clasica" role="note" style="margin:0;padding:.5rem 1rem;text-align:center;font-size:.85rem;background:#2a1612;color:#f0c9b8;border-bottom:1px solid #923e35">
-  Interfaz antigua: no es compatible con el combate actual (no se puede atacar).
-  <a href="./app/index.html" style="color:#f0d58a">Juega en la versión vigente</a>.
-</p>
-
-<!-- ══════════════════════════════════════════════════════════════════════
-     SPRITE SVG EMBEBIDO
-     Se declara inline (y no como fichero externo) por dos motivos:
-       1. `<use href="archivo.svg#id">` exige petición HTTP y falla en file://
-       2. Evita una petición de red adicional en un proyecto sin build.
-     Uso desde componentes:  <svg class="icon"><use href="#ic-sword"></use></svg>
-     ══════════════════════════════════════════════════════════════════════ -->
-<svg xmlns="http://www.w3.org/2000/svg" class="svg-sprite" aria-hidden="true" focusable="false">
-  <defs>
-    <symbol id="ic-sword" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M20 3l-9.5 9.5M14 3h6v6"/><path d="M10.5 12.5l-6 6"/><path d="M3 21l3-1 1-3-2-2-3 1z"/>
-    </symbol>
-    <symbol id="ic-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/>
-    </symbol>
-    <symbol id="ic-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 20s-7-4.4-7-9.2A4 4 0 0 1 12 8a4 4 0 0 1 7 2.8C19 15.6 12 20 12 20z"/>
-    </symbol>
-    <symbol id="ic-mana" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12 3s6 6.5 6 10.5A6 6 0 0 1 6 13.5C6 9.5 12 3 12 3z"/>
-    </symbol>
-    <symbol id="ic-bag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 8h14l-1 12H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>
-    </symbol>
-    <symbol id="ic-coin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="8"/><path d="M12 8v8M9.5 10h5M9.5 14h5"/>
-    </symbol>
-    <symbol id="ic-scroll" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M6 4h11a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6"/><path d="M6 4a2 2 0 0 0 0 4h3"/><path d="M10 11h6M10 15h6"/>
-    </symbol>
-    <symbol id="ic-map" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>
-    </symbol>
-    <symbol id="ic-people" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 6a3 3 0 0 1 0 6M17 20a6 6 0 0 0-3-5"/>
-    </symbol>
-    <symbol id="ic-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/>
-    </symbol>
-    <symbol id="ic-run" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="14" cy="5" r="2"/><path d="M9 21l3-5-3-3 1-5 3 3 3 1"/><path d="M6 12l3-2"/>
-    </symbol>
-    <symbol id="ic-flask" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M10 3v6l-5 8a2.5 2.5 0 0 0 2 4h10a2.5 2.5 0 0 0 2-4l-5-8V3"/><path d="M9 3h6"/>
-    </symbol>
-    <symbol id="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 12l16-8-6 16-3-6z"/>
-    </symbol>
-    <symbol id="ic-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-      <path d="M4 7h16M4 12h16M4 17h16"/>
-    </symbol>
-    <symbol id="ic-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-      <path d="M6 6l12 12M18 6L6 18"/>
-    </symbol>
-    <symbol id="ic-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>
-    </symbol>
-    <symbol id="ic-dice" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
-      <path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 2v20M3 7l9 5 9-5"/>
-    </symbol>
-    <symbol id="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>
-    </symbol>
-    <symbol id="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M20 14a8 8 0 1 1-10-10 7 7 0 0 0 10 10z"/>
-    </symbol>
-  </defs>
-</svg>
-
-<!-- ══════════════════════════════════════════════════════════════════════
-     RAÍZ DE LA APLICACIÓN
-     UIManager (archivo de la Fase 2) controla qué pantalla está activa
-     mediante el atributo data-active-screen de #app.
-     ══════════════════════════════════════════════════════════════════════ -->
-<div id="app" class="app" data-active-screen="boot">
-
-  <!-- ─────────────── PANTALLA: ARRANQUE ─────────────── -->
-  <section id="screen-boot" class="screen screen--boot" data-screen="boot" aria-label="Cargando">
-    <div class="boot">
-      <div class="boot__sigil" aria-hidden="true">
-        <svg viewBox="0 0 100 100" class="boot__sigil-svg">
-          <path d="M50 6l38 44-38 44-38-44z" fill="none" stroke="currentColor" stroke-width="2"/>
-          <circle cx="50" cy="50" r="14" fill="none" stroke="currentColor" stroke-width="2"/>
-          <circle cx="50" cy="50" r="4" fill="currentColor"/>
-        </svg>
-      </div>
-      <h1 class="boot__title">ARCANVEIL</h1>
-      <p class="boot__subtitle">Crónicas de los Reinos Quebrados</p>
-      <p class="boot__status" id="boot-status" role="status" aria-live="polite">Encendiendo los faroles…</p>
-    </div>
-  </section>
-
-  <!-- ─────────────── PANTALLA: MENÚ PRINCIPAL ─────────────── -->
-  <!-- Punto de montaje de MainMenuScreen.js -->
-  <section id="screen-menu" class="screen screen--menu" data-screen="menu" aria-label="Menú principal" hidden></section>
-
-  <!-- ─────────────── PANTALLA: CREACIÓN DE PERSONAJE ─────────────── -->
-  <!-- Punto de montaje de CreationScreen.js -->
-  <section id="screen-creation" class="screen screen--creation" data-screen="creation" aria-label="Creación de personaje" hidden></section>
-
-  <!-- ─────────────── PANTALLA: AJUSTES ─────────────── -->
-  <!-- Punto de montaje de SettingsScreen.js -->
-  <section id="screen-settings" class="screen screen--settings" data-screen="settings" aria-label="Ajustes" hidden></section>
-
-  <!-- ─────────────── PANTALLA: JUEGO ───────────────
-       El esqueleto de los tres paneles es estático (landmarks semánticos,
-       accesibilidad y CSS Grid estables). Los componentes de /src/ui/components
-       se limitan a montar su contenido dentro de los contenedores [data-mount].
-  -->
-  <section id="screen-game" class="screen screen--game" data-screen="game" aria-label="Partida" hidden>
-
-    <!-- ─── CABECERA ─── -->
-    <header class="topbar" role="banner">
-      <button type="button" class="topbar__toggle" id="btn-toggle-left"
-              aria-controls="panel-left" aria-expanded="false" title="Personaje">
-        <svg class="icon" aria-hidden="true"><use href="#ic-menu"></use></svg>
-        <span class="sr-only">Mostrar panel de personaje</span>
-      </button>
-
-      <div class="topbar__brand">
-        <svg class="icon icon--gold" aria-hidden="true"><use href="#ic-dice"></use></svg>
-        <span class="topbar__title">ARCANVEIL</span>
-      </div>
-
-      <!-- Reloj de mundo: día, hora, clima. Lo alimenta TimeSystem/WeatherSystem. -->
-      <div class="topbar__world" data-mount="world-clock" aria-live="off">
-        <span class="worldclock" id="world-clock-text">Día 1 · Amanecer</span>
-        <svg class="icon" id="world-clock-icon" aria-hidden="true"><use href="#ic-sun"></use></svg>
-      </div>
-
-      <div class="topbar__actions">
-        <button type="button" class="btn btn--ghost btn--icon" id="btn-settings" title="Ajustes">
-          <svg class="icon" aria-hidden="true"><use href="#ic-gear"></use></svg>
-          <span class="sr-only">Ajustes</span>
-        </button>
-        <button type="button" class="topbar__toggle" id="btn-toggle-right"
-                aria-controls="panel-right" aria-expanded="false" title="Mapa y misiones">
-          <svg class="icon" aria-hidden="true"><use href="#ic-map"></use></svg>
-          <span class="sr-only">Mostrar panel de mundo</span>
-        </button>
-      </div>
-    </header>
-
-    <!-- ─── CUERPO: 3 COLUMNAS ─── -->
-    <div class="game-layout">
-
-      <!-- ░░ PANEL IZQUIERDO: PERSONAJE ░░ -->
-      <aside id="panel-left" class="panel panel--left" aria-label="Personaje e inventario">
-        <div class="panel__scroll">
-          <!-- CharacterPanel.js -->
-          <div data-mount="character" class="panel__block"></div>
-          <!-- VitalsWidget.js: vida, maná, fatiga, hambre, sed, moral -->
-          <div data-mount="vitals" class="panel__block"></div>
-          <!-- Progression: barra de experiencia y nivel -->
-          <div data-mount="progression" class="panel__block"></div>
-          <!-- EquipmentSlots.js -->
-          <div data-mount="equipment" class="panel__block"></div>
-          <!-- InventoryPanel.js -->
-          <div data-mount="inventory" class="panel__block panel__block--grow"></div>
-        </div>
-      </aside>
-
-      <!-- ░░ PANEL CENTRAL: NARRACIÓN ░░ -->
-      <main id="panel-center" class="panel panel--center" role="main" aria-label="Narración">
-        <!-- CombatPanel.js: sólo visible durante el combate -->
-        <div data-mount="combat" class="panel__combat" hidden></div>
-
-        <!-- NarrativeLog.js: bitácora de la historia -->
-        <div data-mount="narrative" class="narrative" id="narrative-log"
-             role="log" aria-live="polite" aria-relevant="additions text" tabindex="0"></div>
-
-        <!-- Indicador de "el director está pensando" -->
-        <div class="dm-thinking" id="dm-thinking" hidden aria-hidden="true">
-          <span class="dm-thinking__dot"></span>
-          <span class="dm-thinking__dot"></span>
-          <span class="dm-thinking__dot"></span>
-          <span class="dm-thinking__label">El director medita tu destino…</span>
-        </div>
-      </main>
-
-      <!-- ░░ PANEL DERECHO: MUNDO ░░ -->
-      <aside id="panel-right" class="panel panel--right" aria-label="Mapa, misiones y personajes">
-        <div class="panel__scroll">
-          <!-- MapPanel.js -->
-          <div data-mount="map" class="panel__block"></div>
-          <!-- QuestPanel.js: misiones y objetivos -->
-          <div data-mount="quests" class="panel__block panel__block--grow"></div>
-          <!-- NPCPanel.js: presencias cercanas -->
-          <div data-mount="npcs" class="panel__block"></div>
-        </div>
-      </aside>
-
-    </div>
-
-    <!-- ─── PIE: ENTRADA DE ACCIONES ─── -->
-    <footer class="actionbar" role="contentinfo">
-      <!-- Accesos rápidos a las opciones sugeridas por el director -->
-      <div class="actionbar__quick" data-mount="quick-choices" aria-label="Acciones sugeridas"></div>
-
-      <!-- NOTA: se usa <div>, no <form>, para evitar recargas accidentales
-           de la página; el envío lo gestiona InputBar.js por eventos. -->
-      <div class="actionbar__input">
-        <label class="sr-only" for="player-input">Escribe tu acción</label>
-        <textarea id="player-input" class="input input--action"
-                  rows="1" maxlength="600" autocomplete="off" spellcheck="true"
-                  placeholder="¿Qué haces? Escribe cualquier acción…"></textarea>
-
-        <button type="button" class="btn btn--primary btn--send" id="btn-send" title="Enviar (Intro)">
-          <svg class="icon" aria-hidden="true"><use href="#ic-send"></use></svg>
-          <span class="btn__label">Enviar</span>
-        </button>
-      </div>
-
-      <p class="actionbar__hint">
-        <kbd>Intro</kbd> envía · <kbd>Mayús</kbd>+<kbd>Intro</kbd> salto de línea · <kbd>1</kbd>–<kbd>9</kbd> elige opción
-      </p>
-    </footer>
-
-  </section>
-
-  <!-- ══════════ CAPAS FLOTANTES (siempre por encima de las pantallas) ══════════ -->
-
-  <!-- ChoicePopup.js: popup elegante de opciones (Atacar, Hablar, Huir…) -->
-  <div id="popup-root" class="overlay-root" data-layer="popup"></div>
-  <!-- Modal.js: subida de nivel, árbol de talentos, comercio, confirmaciones -->
-  <div id="modal-root" class="overlay-root" data-layer="modal"></div>
-  <!-- ItemTooltip.js: descripciones al vuelo -->
-  <div id="tooltip-root" class="overlay-root" data-layer="tooltip" aria-hidden="true"></div>
-  <!-- Toast.js: avisos efímeros -->
-  <div id="toast-root" class="overlay-root" data-layer="toast" role="status" aria-live="polite"></div>
-
-</div>
-
-<!-- ══════════════════════════════════════════════════════════════════════
-     RED DE SEGURIDAD DE ARRANQUE
-     Bloque visible sólo si el arranque falla. Cubre los dos fallos reales:
-       · protocolo file:// → los módulos ES6 se bloquean por CORS
-       · error de sintaxis o import roto en cualquier módulo
-     ══════════════════════════════════════════════════════════════════════ -->
-<div id="fatal-error" class="fatal" hidden>
-  <div class="fatal__box" role="alert">
-    <h2 class="fatal__title">El portal no ha podido abrirse</h2>
-    <p class="fatal__msg" id="fatal-msg"></p>
-    <pre class="fatal__detail" id="fatal-detail"></pre>
+<body>
+  <div>
+    <p>La interfaz antigua se ha retirado. Tus partidas siguen en la vigente.</p>
+    <p><a href="./app/index.html">Entrar al juego</a></p>
   </div>
-</div>
 
-<noscript>
-  <div class="fatal">
-    <div class="fatal__box">
-      <h2 class="fatal__title">JavaScript desactivado</h2>
-      <p class="fatal__msg">ARCANVEIL es un motor de juego que se ejecuta por completo en tu navegador. Actívalo para continuar.</p>
-    </div>
-  </div>
-</noscript>
-
-<!--
-  Comprobación previa al arranque. Es JS clásico a propósito (sin type="module"),
-  porque debe ejecutarse aunque los módulos estén bloqueados.
--->
-<script>
-  (function () {
-    'use strict';
-
-    /** Muestra el panel de error fatal con un mensaje y un detalle opcional. */
-    function mostrarFatal(mensaje, detalle) {
-      var caja = document.getElementById('fatal-error');
-      var msg = document.getElementById('fatal-msg');
-      var det = document.getElementById('fatal-detail');
-      if (!caja) { alert(mensaje); return; }
-      msg.textContent = mensaje;
-      if (detalle) { det.textContent = detalle; det.hidden = false; } else { det.hidden = true; }
-      caja.hidden = false;
-    }
-    window.__ARCANVEIL_FATAL__ = mostrarFatal;
-
-    // 1. El navegador debe soportar módulos ES6.
-    var soportaModulos = 'noModule' in HTMLScriptElement.prototype;
-    if (!soportaModulos) {
-      mostrarFatal('Tu navegador no admite módulos de JavaScript modernos. Usa una versión reciente de Firefox, Chrome, Edge o Safari.');
-      return;
-    }
-
-    // 2. Bajo file:// los imports se bloquean por CORS. Avisamos con la solución exacta.
-    if (window.location.protocol === 'file:') {
-      mostrarFatal(
-        'Estás abriendo el juego con doble clic (file://) y el navegador bloquea los módulos por seguridad. ' +
-        'Sirve la carpeta con un servidor estático sencillo y entra por http://localhost:8080',
-        'Desde la carpeta del proyecto:\n\n' +
-        '  python -m http.server 8080\n' +
-        '  npx serve -l 8080\n\n' +
-        'Ninguno instala nada permanente ni guarda datos.'
-      );
-      return;
-    }
-
-    // 3. Cualquier error no capturado durante el arranque se muestra en pantalla.
-    window.addEventListener('error', function (e) {
-      if (document.getElementById('app').dataset.activeScreen !== 'boot') return;
-      mostrarFatal('Se ha roto un conjuro durante el arranque.', (e.message || '') + '\n' + (e.filename || ''));
-    });
-    window.addEventListener('unhandledrejection', function (e) {
-      if (document.getElementById('app').dataset.activeScreen !== 'boot') return;
-      mostrarFatal('Se ha roto un conjuro durante el arranque.', String(e.reason));
-    });
-  })();
-</script>
-
-<!-- Punto de entrada real del motor (archivo 24/24 de esta fase) -->
-<script type="module" src="./src/main.js"></script>
-
+  <script>
+    location.replace('./app/index.html');
+  </script>
 </body>
 </html>
