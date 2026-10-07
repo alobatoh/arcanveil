@@ -277,9 +277,11 @@ console.log('\n── Salir del pueblo no es un viaje a la fuerza ──');
   const donde = p.m.ver('world.ubicacion');
   let r = await p.turno('salgo del pueblo');
   const destinos = p.m.sistema('world').destinos().map((d) => d.nombre.replace(/^(El|La|Los|Las)\s/, ''));
-  comprobar(p.m.ver('world.ubicacion') === donde && /afueras/.test(r.texto) && destinos.every((d) => r.texto.includes(d)) && /¿Hacia dónde\?/.test(r.texto),
-    '«salgo del pueblo»: sigue en el pueblo, en las afueras, con los caminos que hay y la pregunta de adónde', r.texto);
-  comprobar(!/Calles de tierra/.test(r.texto) && quieto(r), '  sin describir las calles del centro como si no se hubiera movido', r.texto);
+  // Contrato del encargo #4 (7-oct-2026): sin destino es una aclaración, no
+  // un turno narrado («Llegas a las afueras…») que cobra diez minutos.
+  comprobar(p.m.ver('world.ubicacion') === donde && destinos.every((d) => r.texto.includes(d)) && /^¿Adónde\?/.test(r.texto),
+    '«salgo del pueblo»: sigue en el pueblo, con los caminos que hay y la pregunta de adónde', r.texto);
+  comprobar(!/Calles de tierra/.test(r.texto) && quieto(r, { gastaTurno: false }), '  sin describir las calles del centro ni gastar tiempo', r.texto);
   r = await p.turno('salgo de la posada');
   comprobar(/^No estás dentro de la posada/.test(r.texto) && quieto(r, { gastaTurno: false }), '«salgo de la posada» estando fuera: se dice, sin narrar la posada ni gastar turno', r.texto);
   r = await p.turno('me voy del pueblo por el camino del norte');

@@ -798,6 +798,7 @@ export class ActionRouter extends SystemBase {
 
     // Salir: solo si está dentro de algo.
     if (this.leer('world.sublugar') && /\b(salgo|salir|me voy)\b.{0,20}\b(fuera|de aqui|a la calle|del local|de la taberna|de la posada|de la fragua)\b|\bsalgo fuera\b/.test(texto)) {
+      intencion.sublugarSalido = this.leer('world.sublugar');
       world.entrarEn(null);
       return;
     }
@@ -821,7 +822,11 @@ export class ActionRouter extends SystemBase {
       return (ALIAS[s.tipo] ?? [s.tipo]).some((a) => new RegExp(`\\b${a}`).test(texto));
     });
 
-    if (destino) world.entrarEn(destino.refId);
+    if (destino) {
+      world.entrarEn(destino.refId);
+      // Para `_viajar`: «voy a la posada» es entrar, no un destino del mapa.
+      intencion.sublugarEntrado = destino;
+    }
   }
 
   /**
@@ -988,7 +993,17 @@ export class ActionRouter extends SystemBase {
     const travel = this.sistema('travel');
 
     // ─── Viaje en curso: reanudar ───────────────────────────────────────
+    // Solo hacia el mismo sitio: a medio camino no se puede salir hacia otro
+    // como si se estuviera en el origen. Se reanuda lo que queda, no entero.
     if (travel?.interrumpido) {
+      const enCurso = travel.paraInterfaz?.()?.destino ?? null;
+      // «Sigo el camino» no nombra un sitio (el Camino del Norte), nombra el viaje.
+      const generico = /^(?:el |la |mi )?(?:camino|senda|sendero|ruta|viaje|marcha)$/i.test(String(intencion.objetivo ?? '').trim());
+      const pedido = intencion.objetivo && !generico ? world?.buscarDestino(intencion.objetivo) : null;
+      if (pedido && enCurso && pedido.refId !== enCurso) {
+        const nombre = obtenerLugar(enCurso)?.nombre ?? 'tu destino';
+        return this._rechazar(`Vas camino de ${nombre} y te has parado a medias: primero sigue hacia ${nombre} («sigo el camino»). No ha pasado el tiempo.`);
+      }
       travel.reanudar();
 
       return {
@@ -1006,7 +1021,7 @@ export class ActionRouter extends SystemBase {
     const llano = sinAcentos(String(intencion.texto ?? '').toLowerCase());
     const saleDe = llano.match(/\b(?:salgo|me salgo|salir|me voy)\s+(?:de |del )(?:la |el |los |las )?([a-zñ]+)/)?.[1] ?? null;
     const SITIOS_DE_DENTRO = /^(?:posada|taberna|meson|fragua|herreria|templo|santuario|capilla|tienda|casa|local)$/;
-    if (saleDe && SITIOS_DE_DENTRO.test(saleDe) && !this.leer('world.sublugar')) {
+    if (saleDe && SITIOS_DE_DENTRO.test(saleDe) && !this.leer('world.sublugar') && !intencion.sublugarSalido) {
       const aqui = obtenerLugar(this.leer('world.ubicacion'))?.nombre;
       return this._rechazar(`No estás dentro de ${articulo(saleDe, /^(?:posada|taberna|fragua|herreria|capilla|tienda|casa)$/.test(saleDe) ? 'f' : 'm')} ${saleDe}: estás en la calle${aqui ? `, en ${aqui}` : ''}.`);
     }
@@ -1015,35 +1030,50 @@ export class ActionRouter extends SystemBase {
     const PUEBLO = /^(?:(?:el|la) )?(?:pueblo|aldea|villa|ciudad|lugar|sitio)$/;
     const dejaElPueblo = Boolean(saleDe && PUEBLO.test(saleDe) && PUEBLO.test(sinAcentos(String(intencion.objetivo ?? 'pueblo').toLowerCase())));
 
-    // ─── Sin destino: se ofrecen los disponibles ────────────────────────
-    // No es un viaje: no cambia `world.ubicacion` hasta que diga adónde.
-    if (!intencion.objetivo || dejaElPueblo) {
-      const destinos = world?.destinos() ?? [];
+    // ─── Salir a la calle («salgo de la posada» estando dentro) ──────────
+    // `_ajustarSublugar` ya lo ha sacado; antes se respondía «No estás dentro
+    // de la posada» porque esa comprobación miraba después de salir.
+    if (intencion.sublugarSalido && !world?.buscarDestino(intencion.objetivo ?? '')) {
+      const aqui = obtenerLugar(this.leer('world.ubicacion'))?.nombre;
+      return {
+        ruta: RUTA.LOCAL, motivo: null, voz: VOCES.DM, pistaDirector: null,
+        narracion: `Sales a la calle${aqui ? `, en ${aqui}` : ''}.`,
+        resultado: { tipo: 'salir', sublugar: intencion.sublugarSalido },
+      };
+    }
 
-      if (!destinos.length) {
-        return this._rechazar('No hay ningún sitio conocido al que ir desde aquí.');
-      }
-
+    // ─── Entrar en un sitio del pueblo («voy a la posada») ───────────────
+    // Ya se ha entrado (`_ajustarSublugar`); lo cuenta el narrador.
+    if (intencion.sublugarEntrado && !world?.buscarDestino(intencion.objetivo ?? '')) {
       return {
         ruta: RUTA.DIRECTOR,
         motivo: null,
         narracion: null,
-        pistaDirector: `El personaje quiere irse pero no ha dicho adónde. Desde aquí puede ir a: ${destinos.map((d) => d.nombre).join(', ')}. Pregúntale.`,
-        resultado: { tipo: 'salida_sin_destino', destinos: destinos.map((d) => ({ nombre: d.nombre, horas: d.distancia })) },
+        pistaDirector: `El personaje entra en ${intencion.sublugarEntrado.nombre}. Narra lo que encuentra dentro.`,
+        resultado: { tipo: 'entrar', sublugar: intencion.sublugarEntrado.refId },
       };
+    }
+
+    // ─── Sin destino o desconocido: se dice adónde se puede ir ───────────
+    // Una aclaración, no un viaje: ni se mueve `world.ubicacion` ni pasa el
+    // tiempo. Antes iba al narrador («Llegas a las afueras… ¿Hacia dónde?»)
+    // y cobraba diez minutos.
+    const destinos = world?.destinos() ?? [];
+    const opciones = destinos.length
+      ? ` Desde aquí puedes ir a ${destinos.map((d) => d.nombre).join(', ').replace(/, ([^,]*)$/, ' o $1')}.`
+      : ' No hay ningún sitio conocido al que ir desde aquí.';
+    if (!intencion.objetivo || dejaElPueblo) {
+      return this._rechazar(`¿Adónde?${opciones}`);
     }
 
     // ─── Destino reconocido ─────────────────────────────────────────────
     const destino = world?.buscarDestino(intencion.objetivo);
 
     if (!destino) {
-      return {
-        ruta: RUTA.DIRECTOR,
-        motivo: null,
-        narracion: null,
-        pistaDirector: `El personaje habla de ir a «${intencion.objetivo}», que no está en el mapa. Puede ser un sitio del que ha oído hablar o una confusión.`,
-        resultado: null,
-      };
+      return this._rechazar(`No conoces ningún sitio llamado «${intencion.objetivo}».${opciones}`);
+    }
+    if (destino.refId === this.leer('world.ubicacion')) {
+      return this._rechazar(`Ya estás en ${destino.nombre}.`);
     }
 
     if (!destino.conocido) {

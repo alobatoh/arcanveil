@@ -176,6 +176,12 @@ export class Travel extends SystemBase {
 
     const plan = this.planificar(destino, opciones);
 
+    // Ir adonde ya se está no es un viaje: sin tramos, sin narrar «Emprendes
+    // el camino… Ya estás ahí» ni volver a llegar (repetía la escena).
+    if (plan.viable && (plan.ruta?.ruta?.length ?? 0) <= 1) {
+      return { exito: false, motivo: 'Ya estás ahí.' };
+    }
+
     if (!plan.viable) {
       this.emitir('narrative:direct', { texto: plan.motivo, voz: 'system' });
       return { exito: false, motivo: plan.motivo };

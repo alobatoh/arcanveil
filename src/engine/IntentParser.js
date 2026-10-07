@@ -256,7 +256,7 @@ export const INTENCIONES = Object.freeze({
     verbos: {
       viajar: 10, viajo: 10, ir: 6, voy: 6, dirigirme: 8,
       partir: 8, parto: 8, marchar: 8, caminar: 7, volver: 7, regresar: 8,
-      encaminarme: 8,
+      encaminarme: 8, dirijo: 8, encamino: 8, marcho: 8,
       // Como se dice de verdad al irse de un sitio. «Salgo del pueblo por el
       // camino del norte» se quedaba en `custom` y el personaje no se movía:
       // la narración decía que salías y el rótulo seguía en el mismo pueblo.
@@ -328,7 +328,7 @@ const RUMBO = /\b(camino|senda|sendero|ruta|calzada|vereda|carretera|rumbo)\b|\b
 
 /** Un verbo en plural seguido de un destino, no de un infinitivo. */
 function DESTINO_PLURAL(verbo) {
-  return new RegExp(`\\b${verbo}\\s+(?:hacia|para|rumbo|de vuelta|al\\b|a\\s+(?![a-zñ]+(?:ar|er|ir)\\b)[a-zñ])`);
+  return new RegExp(`\\b${verbo}\\s+(?:hacia|para|rumbo|de vuelta|al\\b|a\\s+(?![a-zñ]+(?:ar|er|ir)(?:me|te|le|lo|la|nos|os|les|los|las|se)?\\b)[a-zñ])`);
 }
 
 const AMBIGUOS = Object.freeze({
@@ -338,6 +338,9 @@ const AMBIGUOS = Object.freeze({
   // «Vamos a Saucedo» es un viaje; «vamos a hablar con él», no: tras «a»
   // no puede venir un infinitivo.
   vamos: { tipo: 'travel', confirma: DESTINO_PLURAL('vamos') },
+  // Igual en singular: «voy a darte mis monedas» es futuro, no un viaje a
+  // «darte mis». «Voy» a secas sí (se pregunta adónde).
+  voy: { tipo: 'travel', confirma: new RegExp(`${DESTINO_PLURAL('voy').source}|\\bvoy\\s*[.!]?$|\\bme voy\\s*(?:[.!]?$|de\\b|del\\b)`) },
   vayamos: { tipo: 'travel', confirma: DESTINO_PLURAL('vayamos') },
   partimos: { tipo: 'travel', confirma: /\bpartimos\s+(hacia|para|rumbo|de vuelta|al\b|a\s+\w|ya\b)|\bpartimos\s*$/ },
   marchamos: { tipo: 'travel', confirma: DESTINO_PLURAL('marchamos') },
@@ -705,7 +708,10 @@ function extraerDestino(texto) {
 
 export function extraerObjetivo(texto) {
   const patrones = [
-    /\b(?:a|al|a la|a los|a las)\s+([a-záéíóúñü]+(?:\s+[a-záéíóúñü]+)?)/i,
+    // Lo más largo primero: con «a» delante de «a la», «voy a la Linde del
+    // Cenizo» capturaba «la Linde», el artículo cortaba la captura y el
+    // destino se perdía (el viaje acababa en «las afueras… ¿Hacia dónde?»).
+    /\b(?:a las|a los|a la|al|a)\s+([a-záéíóúñü]+(?:\s+[a-záéíóúñü]+)?)/i,
     /\b(?:con|contra|hacia)\s+(?:el |la |los |las |un |una )?([a-záéíóúñü]+(?:\s+[a-záéíóúñü]+)?)/i,
     /\b(?:en|sobre|dentro de)\s+(?:el |la |los |las |un |una )?([a-záéíóúñü]+(?:\s+[a-záéíóúñü]+)?)/i,
     /\b(?:el|la|los|las|un|una)\s+([a-záéíóúñü]+)$/i,
