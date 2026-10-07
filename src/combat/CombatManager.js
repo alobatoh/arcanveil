@@ -127,6 +127,7 @@ export class CombatManager extends SystemBase {
     CombatManager._contador = (CombatManager._contador ?? 0) + 1;
     this._combateId = `cmb-${Date.now().toString(36)}-${CombatManager._contador}`;
     this._turnoJugador = 0;
+    this._ataquesVistos = new Map();
 
     const flujo = this.rng.combate;
 
@@ -994,6 +995,7 @@ export class CombatManager extends SystemBase {
     this._combatientes = datos.combatientes;
     this._combateId = datos.combateId ?? `cmb-restaurado-${Date.now().toString(36)}`;
     this._turnoJugador = (datos.turnoJugador ?? 0) + 1;
+    this._ataquesVistos = new Map();
     this._ordenes = datos.ordenes ?? {};
     this._registro = [];
     this.store.fijar('combat', { ...datos.estado, activo: true });
@@ -1039,8 +1041,11 @@ export class CombatManager extends SystemBase {
       return null;
     };
     // Lo que se tenía y ya no vale se enseña con su motivo (no desaparece sin
-    // explicación); no se puede elegir.
-    const perdidos = (jugador?.ataques ?? []).filter((a) => a.itemId && !actuales.some((b) => b.id === a.id));
+    // explicación); no se puede elegir. Se recuerda lo visto en ESTA pelea:
+    // si no, tras la primera consulta el arma rota desaparecía sin más.
+    this._ataquesVistos ??= new Map();
+    for (const a of [...(jugador?.ataques ?? []), ...actuales]) if (a.itemId) this._ataquesVistos.set(a.id, a);
+    const perdidos = [...this._ataquesVistos.values()].filter((a) => !actuales.some((b) => b.id === a.id));
     if (jugador) jugador.ataques = actuales;
     const ataques = [...actuales, ...perdidos].map((a) => {
       const motivo = motivoDe(a) ?? (actuales.includes(a) ? null : 'no está en la mano');
