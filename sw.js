@@ -1,6 +1,6 @@
 // Generado por tools/generar-sw.mjs. No editar a mano.
 // La lista se recorre del disco: un archivo nuevo entra solo al regenerar.
-const CACHE = 'arcanveil-1jr1avt';
+const CACHE = 'arcanveil-1n5wq27';
 const SHELL = [
   './manifest.webmanifest',
   './app/app.js',
@@ -93,6 +93,7 @@ const SHELL = [
   './src/engine/Ambicion.js',
   './src/engine/ArmaPedida.js',
   './src/engine/ConsequenceEngine.js',
+  './src/engine/Destinatario.js',
   './src/engine/DifficultyDirector.js',
   './src/engine/EffectApplier.js',
   './src/engine/Espera.js',
@@ -106,6 +107,7 @@ const SHELL = [
   './src/inventory/Durability.js',
   './src/inventory/Encumbrance.js',
   './src/inventory/Equipment.js',
+  './src/inventory/IndiceObjetos.js',
   './src/inventory/Inventory.js',
   './src/inventory/Item.js',
   './src/inventory/ItemFactory.js',
@@ -123,6 +125,7 @@ const SHELL = [
   './src/npc/ReputationSystem.js',
   './src/persistence/CharacterRoster.js',
   './src/persistence/Migrations.js',
+  './src/persistence/RegistroRuns.js',
   './src/persistence/SaveManager.js',
   './src/persistence/Serializer.js',
   './src/player/Alignment.js',
@@ -134,6 +137,8 @@ const SHELL = [
   './src/player/Correccion.js',
   './src/player/creation/CharacterInterview.js',
   './src/player/Curacion.js',
+  './src/player/Legado.js',
+  './src/player/Muerte.js',
   './src/player/Player.js',
   './src/player/Progression.js',
   './src/player/SkillSystem.js',
