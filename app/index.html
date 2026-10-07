@@ -1271,6 +1271,14 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 <!-- ═══ has caído ═════════════════════════════════════════════════════
      Sin botón de cerrar a propósito: caer no es un aviso que se descarta,
      es una bifurcación. Se sale por una de las tres salidas. -->
+<div class="modal" id="salida-modal" data-fijo hidden>
+  <section class="modal__panel" role="alertdialog" aria-modal="true" aria-labelledby="salida-titulo" aria-describedby="salida-nota">
+    <header class="modal__cab"><h2 id="salida-titulo">Salir</h2></header>
+    <p class="modal__nota" id="salida-nota"></p>
+    <div class="modal__acciones" id="salida-acciones"></div>
+  </section>
+</div>
+
 <div class="modal" id="caida-modal" data-fijo hidden>
   <section class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="caida-titulo">
     <header class="modal__cab"><h2 id="caida-titulo">Has caído</h2></header>

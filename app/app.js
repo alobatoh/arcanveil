@@ -355,6 +355,115 @@ function guardarPartidaActual({ silencioso = true } = {}) {
   return sistema('saves')?.guardar(ranura, { silencioso, nota: 'crónica' }) ?? null;
 }
 
+/**
+ * ¿Se ha escrito de verdad? Lee la ranura y compara con la partida en curso
+ * (run, turno y vida). Que `guardar` diga «éxito» no basta para salir: la
+ * salida recarga la página y, si lo escrito no es lo jugado, se pierde.
+ * @returns {{ok: boolean, motivo?: string}}
+ */
+function guardarYComprobar() {
+  const r = guardarPartidaActual({ silencioso: true });
+  if (!r) return { ok: false, motivo: 'No hay partida que guardar.' };
+  if (!r.exito) return { ok: false, motivo: r.motivo ?? 'No se ha podido guardar.' };
+  try {
+    const escrito = JSON.parse(localStorage.getItem(`arcanveil:partida:${ver('meta.ranura')}`) ?? 'null');
+    const m = escrito?.estado?.meta ?? {};
+    const igual = m.runId === ver('meta.runId') && m.turno === ver('meta.turno')
+      && escrito?.estado?.player?.vida?.actual === ver('player.vida.actual');
+    return igual ? { ok: true } : { ok: false, motivo: 'Lo guardado no coincide con la partida: no se ha podido comprobar la escritura.' };
+  } catch (e) {
+    return { ok: false, motivo: `No se ha podido leer lo guardado (${e?.message ?? 'error'}).` };
+  }
+}
+
+/**
+ * Salir de la partida (al menú, a otra partida, tras morir) SIN perder lo
+ * jugado. Antes, «Menú» llamaba a guardar, no miraba el resultado y recargaba:
+ * si no se podía guardar (el enemigo actuando, almacenamiento lleno,
+ * persistencia apagada) se perdía todo desde el último guardado sin decirlo.
+ *
+ * Ahora:
+ *   · Solo se recarga tras un guardado COMPROBADO (relectura de la ranura).
+ *   · Con el enemigo actuando, se espera a la frontera segura (el turno del
+ *     jugador o el fin de la pelea) y se sale entonces; se puede cancelar y
+ *     la partida sigue viva. Nada se congela ni se fuerza.
+ *   · Si muere entretanto, manda la pantalla de muerte (ya guarda el final).
+ *   · Si no se puede guardar: la causa y «Reintentar», «Quedarme» o «Salir
+ *     sin guardar» (con confirmación que dice qué se pierde).
+ *   · Una sola salida a la vez: el doble clic no guarda ni recarga dos veces.
+ *
+ * @param {() => void} irse Lo que se hace al salir (recargar, etc.).
+ */
+const salida = { pendiente: null, saliendo: false };
+
+function salirConGuardado(irse) {
+  // Ya saliendo (la recarga está en marcha): nada más, ni otro guardado.
+  if (salida.saliendo) return;
+  if (salida.pendiente) { $('#salida-acciones button')?.focus(); return; }
+  if (!ver('player.raza')) { irse(); return; }
+  const runId = ver('meta.runId');
+  const quitar = [];
+  salida.pendiente = { runId, irse, quitar };
+
+  const terminar = () => {
+    quitar.forEach((f) => { try { f(); } catch { /* ya fuera */ } });
+    salida.pendiente = null;
+    $('#salida-modal').hidden = true;
+  };
+  const cancelar = () => { terminar(); bloquear(false); refrescarTodo(); };
+
+  const intentar = () => {
+    if (!salida.pendiente) return;
+    // La partida ha cambiado (otra cargada): esta salida ya no vale.
+    if (ver('meta.runId') !== runId) { cancelar(); return; }
+    const manager = sistema('combat');
+    if (ver('combat.activo', false) && !manager?.esperandoJugador) {
+      mostrarSalida('Esperando para salir', 'El combate se está resolviendo. En cuanto termine la acción se guarda y se sale; si prefieres, sigue jugando.', [
+        ['Cancelar y seguir jugando', cancelar, 'btn'],
+      ]);
+      return;
+    }
+    const r = guardarYComprobar();
+    if (r.ok) { terminar(); salida.saliendo = true; irse(); return; }
+    mostrarSalida('No se ha podido guardar', `${r.motivo} Si sales ahora, pierdes lo jugado desde el último guardado.`, [
+      ['Reintentar', intentar, 'btn btn--grande'],
+      ['Quedarme', cancelar, 'btn'],
+      ['Salir sin guardar…', () => confirmarSinGuardar(), 'btn btn--fantasma'],
+    ]);
+  };
+
+  const confirmarSinGuardar = () => {
+    const t = ver('world.tiempo', {}) ?? {};
+    mostrarSalida('Salir sin guardar', `Se perderá todo lo jugado desde el último guardado que funcionó (ahora es el día ${t.dia ?? '?'}, ${String(t.hora ?? 0).padStart(2, '0')}:${String(t.minuto ?? 0).padStart(2, '0')}). Esto no se puede deshacer.`, [
+      ['Salir sin guardar', () => { terminar(); salida.saliendo = true; irse(); }, 'btn btn--peligro'],
+      ['Volver', intentar, 'btn'],
+    ]);
+  };
+
+  // Frontera segura: el turno del jugador, el fin de la pelea. Si muere,
+  // manda la pantalla de muerte (que guarda el final): la salida se retira.
+  quitar.push(bus.on('combat:awaiting', () => setTimeout(intentar, 0)));
+  quitar.push(bus.on('combat:end', () => setTimeout(intentar, 0)));
+  quitar.push(bus.on('run:ended', () => { quitar.forEach((f) => f()); salida.pendiente = null; $('#salida-modal').hidden = true; }));
+  quitar.push(bus.on('save:loaded', () => cancelar()));
+  intentar();
+}
+
+/** Pinta el aviso de salida con sus botones. */
+function mostrarSalida(titulo, nota, botones) {
+  const modal = $('#salida-modal');
+  if (!modal) return;
+  $('#salida-titulo').textContent = titulo;
+  $('#salida-nota').textContent = nota;
+  const acciones = $('#salida-acciones');
+  vaciar(acciones);
+  for (const [texto, accion, clase] of botones) {
+    acciones.append(el('button', { class: clase, onClick: protegido('salir', accion) }, texto));
+  }
+  modal.hidden = false;
+  acciones.querySelector('button')?.focus();
+}
+
 function cargarRanura(ranura) {
   const r = sistema('saves').cargar(ranura);
   if (!r.exito) {
@@ -866,9 +975,11 @@ function corregirPersonaje(p, texto) {
 
 async function comenzarPartida(p) {
   if (ver('player.raza')) {
-    try { sessionStorage.setItem('arcanveil:comenzar', p.id); } catch { /* sin sesión */ }
-    guardarPartidaActual();
-    location.reload();
+    // Con otra partida cargada: se guarda (comprobado) antes de recargar.
+    salirConGuardado(() => {
+      try { sessionStorage.setItem('arcanveil:comenzar', p.id); } catch { /* sin sesión */ }
+      location.reload();
+    });
     return;
   }
 
@@ -1568,10 +1679,10 @@ function abrirMuerte(muerte) {
   vaciar(acciones);
   acciones.append(
     el('button', { class: 'btn btn--grande', onClick: protegido('nueva partida', irANuevaPartida) }, 'Nueva partida'),
-    el('button', { class: 'btn btn--fantasma', onClick: protegido('volver al menú', () => {
+    el('button', { class: 'btn btn--fantasma', onClick: protegido('volver al menú', () => salirConGuardado(() => {
       try { sessionStorage.setItem('arcanveil:abrir-menu', '1'); } catch { /* sin sesión, portada */ }
       location.reload();
-    }) }, 'Volver al menú'),
+    })) }, 'Volver al menú'),
   );
 
   modal.hidden = false;
@@ -1584,8 +1695,11 @@ function abrirMuerte(muerte) {
  * mundo anterior no se toca ni se repone.
  */
 function irANuevaPartida() {
-  try { sessionStorage.setItem('arcanveil:nueva-partida', '1'); } catch { /* sin sesión */ }
-  location.reload();
+  // El final ya se guarda al morir; aquí se comprueba antes de recargar.
+  salirConGuardado(() => {
+    try { sessionStorage.setItem('arcanveil:nueva-partida', '1'); } catch { /* sin sesión */ }
+    location.reload();
+  });
 }
 
 /* ── traer una historia de fuera ───────────────────────────────────────── */
@@ -3011,23 +3125,28 @@ function conectarEventos() {
     if (seccion && !seccion.hidden && seccion.dataset.estado === 'menu') cerrarMenuInicio();
   });
   $('#ajustes-cerrar')?.addEventListener('click', () => { $('#ajustes-modal').hidden = true; });
-  $('#menu')?.addEventListener('click', protegido('menú', () => {
-    guardarPartidaActual();
+  $('#menu')?.addEventListener('click', protegido('menú', () => salirConGuardado(() => {
     // Tras recargar, directamente al menú: quien pulsa «Menú» no quiere ver
     // otra vez la portada.
     try { sessionStorage.setItem('arcanveil:abrir-menu', '1'); } catch { /* sin sesión, portada */ }
     // Volver al título recargando deja el motor limpio para la próxima partida.
     location.reload();
-  }));
+  })));
+  // Escape en el aviso de salida: quedarse (nunca salir sin guardar).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || $('#salida-modal')?.hidden !== false) return;
+    const quedarme = [...document.querySelectorAll('#salida-acciones button')].find((b) => /Quedarme|Cancelar|Volver/.test(b.textContent));
+    quedarme?.click();
+  });
 
   $('#guardar')?.addEventListener('click', protegido('guardar', () => {
     const saves = sistema('saves');
     store.fijar('settings.persistencia', true);
     bus.emit('settings:change', { id: 'persistencia', valor: true });
 
-    const r = guardarPartidaActual({ silencioso: true });
-    avisar(r?.exito ? 'Partida guardada' : (r?.motivo ?? 'No se pudo guardar'),
-      r?.exito ? 'exito' : 'aviso');
+    // Se dice lo que ha pasado de verdad (relectura de la ranura).
+    const r = guardarYComprobar();
+    avisar(r.ok ? 'Partida guardada' : (r.motivo ?? 'No se pudo guardar'), r.ok ? 'exito' : 'aviso');
   }));
 
   // El motor avisa; la interfaz lo muestra.
