@@ -461,7 +461,9 @@ function mostrarSalida(titulo, nota, botones) {
     acciones.append(el('button', { class: clase, onClick: protegido('salir', accion) }, texto));
   }
   modal.hidden = false;
-  acciones.querySelector('button')?.focus();
+  // El foco, en lo que no hace perder nada: un Enter despistado no confirma
+  // «Salir sin guardar».
+  (acciones.querySelector('button:not(.btn--peligro)') ?? acciones.querySelector('button'))?.focus();
 }
 
 function cargarRanura(ranura) {
