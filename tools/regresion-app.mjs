@@ -624,13 +624,49 @@ try {
     throw new Error(`el motor dejó al jugador atacar a su compañero: ${golpeAlAliado}`);
   }
 
-  const peleaGrupo = await evaluate(`(async () => {
-    const espera = (ms) => new Promise((r) => setTimeout(r, ms));
-    for (let i = 0; i < 25 && ARCANVEIL.ver('combat.activo', false); i += 1) {
-      for (let k = 0; k < 40 && ARCANVEIL.ver('combat.activo', false) && !ARCANVEIL.sistema('combat').esperandoJugador; k += 1) await espera(100);
-      if (!ARCANVEIL.ver('combat.activo', false)) break;
-      await ARCANVEIL.jugar('le golpeo');
+  // Combate por menús (decisión del 7-oct-2026): Atacar → ataque → enemigo
+  // → confirmar, y en cada turno se vuelve a elegir. Las etapas se
+  // fotografían en el primer turno; el doble clic en «Confirmar» no puede
+  // golpear dos veces.
+  const etapaMenu = () => evaluate(`({
+    etapa: document.querySelector('.combate__menu')?.dataset.etapa ?? null,
+    elegibles: [...document.querySelectorAll('.luchador--elegible')].map((b) => b.dataset.luchador),
+    marcado: document.querySelector('.luchador.es-objetivo')?.dataset.luchador ?? null,
+    estado: document.querySelector('.combate__etapa')?.textContent ?? '',
+    botones: [...document.querySelectorAll('.combate__menu button')].map((b) => b.textContent.trim() + (b.disabled ? ' [no]' : '')),
+  })`);
+  async function pelearPorMenu({ fotos = null, maximo = 25 } = {}) {
+    let primera = Boolean(fotos);
+    for (let i = 0; i < maximo; i += 1) {
+      await until('!ARCANVEIL.ver("combat.activo", false) || (ARCANVEIL.sistema("combat").esperandoJugador && document.querySelector(".combate__menu[data-etapa=principal]"))', 10000);
+      if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) return;
+      const e0 = await etapaMenu();
+      if (e0.elegibles.length || e0.marcado) throw new Error(`turno nuevo con un enemigo elegible o elegido antes de pulsar Atacar: ${JSON.stringify(e0)}`);
+      if (primera) await shot(`07a-menu-principal-${fotos}.png`);
+      await evaluate(`document.querySelector('.combate__menu .btn--peligro').click()`);
+      const e1 = await etapaMenu();
+      if (e1.etapa !== 'ataque') throw new Error(`Atacar no lleva a elegir ataque: ${JSON.stringify(e1)}`);
+      if (primera) await shot(`07b-menu-ataque-${fotos}.png`);
+      await evaluate(`document.querySelector('.combate__menu .combate__opcion:not([disabled])').click()`);
+      const e2 = await etapaMenu();
+      if (e2.etapa !== 'objetivo' || !e2.elegibles.length || e2.elegibles.some((id) => id.startsWith('companero_'))) throw new Error(`elegir ataque no lleva a elegir enemigo (o deja elegir al compañero): ${JSON.stringify(e2)}`);
+      if (primera) await shot(`07c-menu-objetivo-${fotos}.png`);
+      await evaluate(`document.querySelector('.luchador--elegible').click()`);
+      const e3 = await etapaMenu();
+      if (e3.etapa !== 'confirmar' || !e3.marcado) throw new Error(`elegir enemigo no lleva a confirmar: ${JSON.stringify(e3)}`);
+      if (primera) await shot(`07d-menu-confirmar-${fotos}.png`);
+      const antes = await evaluate('window.__ataquesGrupo.filter((e) => e.atacante?.esJugador).length');
+      await evaluate(`(() => { const b = document.querySelector('.combate__confirmar'); b.click(); b.click(); b.click(); })()`);
+      await until('!ARCANVEIL.ver("combat.activo", false) || !ARCANVEIL.sistema("combat").esperandoJugador || window.__ataquesGrupo.filter((e) => e.atacante?.esJugador).length > ' + antes, 8000);
+      await wait(150);
+      const golpes = (await evaluate('window.__ataquesGrupo.filter((e) => e.atacante?.esJugador).map((e) => e.objetivo?.id ?? e.objetivo)')).slice(antes);
+      if (golpes.length !== 1 || golpes[0] !== e3.marcado) throw new Error(`confirmar (pulsado tres veces) dio ${golpes.length} golpes, contra ${golpes}; elegido ${e3.marcado}`);
+      if (primera) await shot(`07e-menu-tras-golpe-${fotos}.png`);
+      primera = false;
     }
+  }
+  await pelearPorMenu({ fotos: viewport.label });
+  const peleaGrupo = await evaluate(`(async () => {
     const { paraJugador } = await import('/src/combat/CombatLog.js');
     const suyos = window.__ataquesGrupo.filter((e) => e.atacante?.nombre === ${JSON.stringify(reclutado.nombre)});
     return { lineas: suyos.map(paraJugador), activo: ARCANVEIL.ver('combat.activo', false) };
@@ -690,6 +726,21 @@ try {
   if (/intentas\s+anoto/i.test(libre.texto)) throw new Error('acción libre mal integrada');
   if (!libre.marcador && !libre.aprobado) throw new Error('en la partida no hay ni retrato elegido ni marcador');
 
+  // En combate, el texto libre no ataca: los ataques van por el menú (la
+  // caja no puede golpear al primero de la lista). El rival enseña su ficha.
+  await evaluate(`ARCANVEIL.store.dispatch('player/curar', { cantidad: 99, origen: 'regresion' })`);
+  await evaluate(`ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'saqueador', count: 1 }], playerAmbush: true })`);
+  await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 8000);
+  const fichaRival = await evaluate(`document.querySelector('#combate-habilidades')?.textContent ?? ''`);
+  if (!/Machete/.test(fichaRival)) throw new Error(`la ficha del enemigo no enseña sus armas: «${fichaRival}»`);
+  const textoEnCombate = await evaluate(`(async () => {
+    const antes = window.__ataquesGrupo.filter((e) => e.atacante?.esJugador).length;
+    await ARCANVEIL.jugar('le golpeo');
+    return { golpes: window.__ataquesGrupo.filter((e) => e.atacante?.esJugador).length - antes, ultima: ARCANVEIL.ver('narrative.entradas', []).slice(-1)[0]?.texto ?? '', esperando: ARCANVEIL.sistema('combat').esperandoJugador };
+  })()`);
+  if (textoEnCombate.golpes || !/menú/.test(textoEnCombate.ultima) || !textoEnCombate.esperando) throw new Error(`«le golpeo» en combate no fue al menú: ${JSON.stringify(textoEnCombate)}`);
+  await pelearPorMenu();
+
   // ─── Caer detiene la partida de verdad ──────────────────────────────
   //
   // El fallo que esto sujeta: la caída pintaba «la crónica termina aquí» y la
@@ -746,76 +797,37 @@ try {
     throw new Error('caído, un turno terminado volvió a abrir la caja de texto');
   }
 
-  await evaluate(`[...document.querySelectorAll('#caida-acciones button')].find(b => /volver/i.test(b.textContent))?.click()`);
-  await wait(1200);
-
-  const revivido = await evaluate(`({
-    fase: ARCANVEIL.store.select('meta.fase'),
-    vida: ARCANVEIL.store.select('player.vida.actual'),
-    entrada: document.getElementById('entrada').disabled,
+  // Muerte permanente (7-oct-2026): pantalla final con la causa, la herencia
+  // pendiente dicha sin prometerla, y «Nueva partida». Ni «Volver en ti» ni
+  // ninguna forma de curar la derrota.
+  const final = await evaluate(`({
+    titulo: document.getElementById('caida-titulo')?.textContent ?? '',
+    nota: document.getElementById('caida-nota')?.textContent ?? '',
+    botones: [...document.querySelectorAll('#caida-acciones button')].map((b) => b.textContent.trim()),
+    foco: document.activeElement?.textContent?.trim() ?? '',
+    muerte: ARCANVEIL.store.select('meta.muerte'),
   })`);
+  if (!/ha muerto/.test(final.titulo) || !/35 %/.test(final.nota) || !/Todavía no se aplica/.test(final.nota)) throw new Error(`la pantalla de muerte no dice lo que pasa: ${JSON.stringify(final)}`);
+  if (!final.botones.includes('Nueva partida') || final.botones.some((t) => /volver en ti/i.test(t))) throw new Error(`salidas de la muerte: ${final.botones}`);
+  if (!final.muerte?.runId) throw new Error('la muerte no quedó registrada en el estado');
+  await shot(`08-muerte-${viewport.label}.png`);
+  const ranuras = await evaluate(`ARCANVEIL.sistema('saves').listar().filter((r) => !r.vacia).map((r) => ({ ranura: r.ranura, muerto: r.muerto, run: r.cabecera?.runId }))`);
+  if (!ranuras.some((r) => r.muerto && r.run === final.muerte.runId)) throw new Error(`el final no se guardó como muerto: ${JSON.stringify(ranuras)}`);
 
-  if (revivido.fase !== 'exploracion' || revivido.vida !== 1 || revivido.entrada) {
-    throw new Error(`«Volver en ti» dejó ${JSON.stringify(revivido)}`);
-  }
-
-  // La segunda caída de la sesión también detiene la partida. El aviso se
-  // guardaba con una marca que solo se rearmaba al crear personaje: tras
-  // volver en ti, caer otra vez dejaba la fase en `fin` sin pantalla y con
-  // la caja abierta.
-  for (let golpe = 0; golpe < 3; golpe += 1) {
-    await evaluate(`ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' })`);
-    await wait(300);
-    if (await evaluate(`ARCANVEIL.store.select('meta.fase')`) === 'fin') break;
-  }
-  await wait(400);
-  const segunda = await evaluate(`({
-    fase: ARCANVEIL.store.select('meta.fase'),
-    modal: !document.getElementById('caida-modal').hidden,
-    entrada: document.getElementById('entrada').disabled,
+  await evaluate(`[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida').click()`);
+  await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo") && ["personajes", "creacion"].includes(document.body.dataset.activeScreen)', 15000);
+  await shot(`09-nueva-partida-${viewport.label}.png`);
+  const trasMorir = await evaluate(`({
+    pantalla: document.body.dataset.activeScreen,
+    jugador: ARCANVEIL.store.select('player.nombre'),
+    muerte: ARCANVEIL.store.select('meta.muerte'),
+    cargar: (() => { const r = ARCANVEIL.sistema('saves').listar().find((x) => !x.vacia && x.muerto); return r ? ARCANVEIL.sistema('saves').cargar(r.ranura) : null; })(),
   })`);
-  if (segunda.fase !== 'fin' || !segunda.modal || !segunda.entrada) {
-    throw new Error(`la segunda caída no detuvo la partida: ${JSON.stringify(segunda)}`);
+  if (trasMorir.muerte || (trasMorir.jugador && trasMorir.jugador !== 'Sin nombre' && trasMorir.jugador !== null && trasMorir.jugador !== '')) {
+    // El motor nuevo no trae al muerto.
+    if (trasMorir.muerte) throw new Error(`la partida nueva arrastra la muerte anterior: ${JSON.stringify(trasMorir)}`);
   }
-  await evaluate(`[...document.querySelectorAll('#caida-acciones button')].find(b => /volver/i.test(b.textContent))?.click()`);
-  await wait(1200);
-
-  // La jugada escrita cuenta en combate: «le lanzo arena a los ojos y le
-  // golpeo» es un ataque con +1 por usar la escena, y el enemigo enseña su
-  // ficha. Va al final porque el combate se queda abierto: la recarga sin red
-  // de después lo descarta, que no se guarda.
-  // Si el saqueador esquiva, no hay tirada donde se vea el +1 (y, cobarde,
-  // huye después): no es un fallo de la jugada, es el dado. Pasaba en 2 de
-  // cada 40 combates y tumbaba la regresión. Se repite con otro combate.
-  let jugada = null;
-  for (let intento = 0; intento < 4; intento += 1) {
-    await evaluate(`ARCANVEIL.store.dispatch('player/curar', { cantidad: 99, origen: 'regresion' })`);
-    await evaluate(`ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'saqueador', count: 1 }], playerAmbush: true })`);
-    await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 8000);
-    const fichaRival = await evaluate(`document.querySelector('#combate-habilidades')?.textContent ?? ''`);
-    if (!/Machete/.test(fichaRival)) throw new Error(`la ficha del enemigo no enseña sus armas: «${fichaRival}»`);
-
-    // Se escucha el ataque al vuelo: si el saqueador huye tras el golpe (es
-    // cobarde), el combate termina y su registro se vacía antes de poder leerlo.
-    await evaluate(`window.__ataques = []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataques.push(e))`);
-    await evaluate(`ARCANVEIL.jugar('le lanzo arena a los ojos y le golpeo')`);
-    jugada = await evaluate(`(() => {
-      const e = window.__ataques.find((x) => x.atacante?.esJugador);
-      return e ? { creativo: e.tirada?.creativo ?? null, resultado: e.resultado } : null;
-    })()`);
-    if (!(jugada?.resultado === 'esquivado' && jugada.creativo === null)) break;
-    await until('!ARCANVEIL.ver("combat.activo", false)', 8000).catch(() => {});
-  }
-  if (!jugada) {
-    const diag = await evaluate(`(() => { const cm = ARCANVEIL.sistema('combat'); return {
-      activo: ARCANVEIL.ver('combat.activo', false), esperando: cm.esperandoJugador,
-      registro: cm._registro.map((x) => x.tipo + ':' + (x.atacante?.nombre ?? x.nombre ?? '')),
-      entrada: document.getElementById('entrada').disabled, fase: ARCANVEIL.ver('meta.fase'),
-      ultimas: ARCANVEIL.ver('narrative.entradas', []).slice(-4).map((e) => e.voz + ': ' + e.texto),
-    }; })()`);
-    throw new Error(`la jugada escrita no llegó a atacar: ${JSON.stringify(diag)}`);
-  }
-  if (jugada.creativo !== 1) throw new Error(`«le lanzo arena a los ojos y le golpeo» dio ${jugada.creativo} en vez de +1`);
+  if (!trasMorir.cargar || trasMorir.cargar.exito || trasMorir.cargar.motivo !== 'muerto') throw new Error(`la ranura del muerto se dejó cargar: ${JSON.stringify(trasMorir.cargar)}`);
 
   const beforeOffline = await evaluate(`navigator.serviceWorker.ready.then(()=>({controlled:Boolean(navigator.serviceWorker.controller),lines:ARCANVEIL.ver('narrative.entradas',[]).length}))`);
   await wait(700);
