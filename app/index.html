@@ -794,6 +794,19 @@ body::before{content:'';position:fixed;inset:-12%;z-index:-1;pointer-events:none
 .tarjeta-pj__lore{font-size:.85rem;line-height:1.5;color:#D9CDB4;margin-top:.3rem}
 .cargar .tarjetas-pj{grid-template-columns:1fr;max-width:42rem;margin-left:auto;margin-right:auto}
 .cargar__vacio{color:var(--texto-3);font-style:italic}
+/* ── herencia ───────────────────────────────────────────────────────── */
+.herencia .tarjetas-pj{grid-template-columns:1fr;max-width:42rem;margin-left:auto;margin-right:auto}
+.tarjeta-herencia{padding:.8rem 1rem}
+.tarjeta-herencia.es-reciente{border-color:#E2C06C;box-shadow:0 0 22px rgba(218,171,70,.25),inset 0 0 14px rgba(0,0,0,.5)}
+.tarjeta-herencia:disabled{cursor:not-allowed;opacity:.62;transform:none}
+.tarjeta-herencia__cuenta{color:#E8D9B5;font-size:.76rem}
+.tarjeta-herencia:focus-visible{outline:2px solid var(--oro);outline-offset:3px}
+.aviso-herencia{grid-column:1/-1;max-width:34rem;margin:.4rem auto 0;padding:.75rem 1rem;background:#1b140e;border:1px solid #9D793D;border-radius:3px 12px 3px 12px;color:#E8D9B5;font-size:.88rem;line-height:1.5}
+.aviso-herencia p{margin:0 0 .4rem}
+.aviso-herencia__estimacion{color:var(--texto-2);font-size:.8rem}
+.revelacion .aviso-herencia,#creacion-cuerpo>.aviso-herencia{margin:1rem auto}
+.xp-pj{margin-top:.35rem}
+.xp-pj__procedencia{margin:.25rem 0 0;font:.66rem/1.35 var(--mono);color:var(--texto-2)}
 /* ── ficha aleatoria ────────────────────────────────────────────────── */
 .aleatoria{margin:0 0 1.3rem;padding:.9rem 1rem;background:linear-gradient(145deg,#2C2018,#100C0B 72%);border:1px solid #8C6A33;border-radius:3px 14px 3px 14px;box-shadow:inset 0 0 16px rgba(0,0,0,.55)}
 .aleatoria.se-tira .aleatoria__rasgos{animation:fichaTirada .42s cubic-bezier(.2,.8,.2,1) both}
@@ -1169,6 +1182,14 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
   <div id="creacion-cuerpo"></div>
 
   <div class="creacion__pie" id="creacion-pie"></div>
+</section>
+
+<!-- ═══ nueva partida: herencia ══════════════════════════════════════ -->
+<section data-pantalla="herencia" class="creacion herencia" hidden>
+  <h2 class="creacion__titulo">Herencia</h2>
+  <p class="creacion__nota" id="herencia-nota">Tu nuevo personaje puede heredar el 35 % de la experiencia de un personaje caído, redondeado hacia abajo. Cada herencia se entrega una sola vez, al confirmar la creación. Elige una, o empieza sin herencia.</p>
+  <div class="tarjetas-pj" id="herencia-lista"></div>
+  <div class="creacion__pie" id="herencia-pie"></div>
 </section>
 
 <!-- ═══ nueva partida: personajes ════════════════════════════════════ -->

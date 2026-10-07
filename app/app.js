@@ -4,8 +4,9 @@
  * ---------------------------------------------------------------------------
  * La aplicación de juego.
  *
- * Arranca el motor directamente —sin pasar por main.js ni UIManager— y dibuja
- * su propia interfaz. Tres pantallas: inicio, creación y partida.
+ * Arranca el motor directamente y dibuja su propia interfaz: es la ÚNICA del
+ * juego (la original de las fases 1-3 se retiró el 7-oct-2026). Pantallas:
+ * inicio, herencia, personajes, creación, cargar y partida.
  *
  * Todo lo que se ve sale del motor real: las tiradas, el mundo, el combate y
  * la narración del director interno.
@@ -64,6 +65,10 @@ import { aplicarCorreccion, resumenPersonaje, sexoDescrito, PREGUNTA_CREACION } 
 import {
   listarPersonajes, obtenerPersonaje, guardarPersonaje,
 } from '../src/persistence/CharacterRoster.js';
+import * as Entrega from '../src/persistence/EntregaLegado.js';
+import { explicarLegado, procedenciaXP } from '../src/player/Legado.js';
+import { nuevoRunId } from '../src/player/Muerte.js';
+import { nivelParaXP } from '../src/player/Progression.js';
 import { RAZAS } from '../src/data/races.data.js';
 import { CLASES } from '../src/data/classes.data.js';
 import { TRASFONDOS } from '../src/data/backgrounds.data.js';
@@ -534,17 +539,105 @@ function pintarCargar() {
 
 /* ── nueva partida: personajes ────────────────────────────────────────── */
 
+/* ── nueva partida: herencia ──────────────────────────────────────────── */
+
 /**
- * Si ya existe algún personaje, «Nueva partida» lo ofrece a nivel 1 con un
- * botón para crear otro. Si no, va directo al generador.
+ * La herencia elegida para la partida que se va a crear. Elegirla no gasta
+ * nada: se entrega al confirmar la creación (`comenzarPartida`), con una
+ * transacción que se conserva en cada reintento de ESTA creación.
  */
-function abrirNuevaPartida() {
+const herencia = { elegida: null, transaccion: null };
+
+/**
+ * «Nueva partida». Si hay herencias pendientes (o se viene de una muerte),
+ * primero se elige de quién hereda el nuevo personaje, o ninguna: no se
+ * suman ni se toma la primera por su cuenta.
+ *
+ * @param {{origen?: string|null}} [opciones] El run que acaba de morir.
+ */
+function abrirNuevaPartida({ origen = null } = {}) {
+  herencia.elegida = null;
+  herencia.transaccion = null;
+  const todas = Entrega.listarLegados();
+  const hay = todas.some((v) => v.estado === 'pendiente' && v.muerto && v.cantidad !== null) || todas.some((v) => v.runOrigen === origen);
+  if (hay) {
+    mostrar('herencia');
+    pintarHerencia(todas, origen);
+    return;
+  }
+  seguirNuevaPartida();
+}
+
+/**
+ * Si ya existe algún personaje, se ofrece a nivel 1 con un botón para crear
+ * otro. Si no, va directo al generador.
+ */
+function seguirNuevaPartida() {
   if (!listarPersonajes().length) {
     abrirCreacion();
     return;
   }
   mostrar('personajes');
   pintarPersonajes(null);
+}
+
+function elegirHerencia(v) {
+  herencia.elegida = v;
+  herencia.transaccion = v ? Entrega.nuevaTransaccion() : null;
+  seguirNuevaPartida();
+}
+
+/** Qué pasa con cada herencia, en una línea. */
+function detalleHerencia(v) {
+  if (v.estado === 'pendiente' && v.muerto && v.cantidad !== null) {
+    return `Hereda ${explicarLegado(v)}. Estimación: empezaría en el nivel ${nivelParaXP(v.cantidad)} (vida, maná y puntos, según su clase).`;
+  }
+  if (v.estado === 'aplicado') return 'Esta herencia ya la recibió otro personaje.';
+  if (v.estado === 'reservado') return 'Se está creando un sucesor con esta herencia (en otra pestaña).';
+  if (!v.muerto) return 'No consta su muerte en este navegador: no se puede heredar.';
+  return v.motivo ?? 'No se puede heredar.';
+}
+
+function pintarHerencia(todas, origen) {
+  const caja = $('#herencia-lista');
+  const pie = $('#herencia-pie');
+  vaciar(caja);
+  vaciar(pie);
+  // El que acaba de caer, primero; las ya entregadas de otros no se enseñan.
+  const lista = todas
+    .filter((v) => v.estado !== 'aplicado' || v.runOrigen === origen)
+    .sort((a, b) => Number(b.runOrigen === origen) - Number(a.runOrigen === origen));
+  for (const v of lista) {
+    const usable = v.estado === 'pendiente' && v.muerto && v.cantidad !== null;
+    const reciente = v.runOrigen === origen;
+    caja.append(el('button', {
+      class: `tarjeta-pj tarjeta-herencia${reciente ? ' es-reciente' : ''}`,
+      dataset: { origen: v.runOrigen }, disabled: usable ? undefined : true,
+      onClick: protegido('elegir herencia', () => elegirHerencia(v)),
+    },
+      el('span', { class: 'tarjeta-pj__texto' },
+        el('strong', { class: 'tarjeta-pj__nombre', text: `${v.origen.nombre ?? 'Sin nombre'}${reciente ? ' · acaba de caer' : ''}` }),
+        el('span', { class: 'tarjeta-pj__dato', text: `Nivel ${v.origen.nivel ?? '?'} · ${CLASES[v.origen.clase]?.nombre ?? ''} · ${v.xpAcumulada ?? '?'} XP acumulada${v.xpHeredada ? ` (${v.xpHeredada} heredada)` : ''}` }),
+        el('span', { class: 'tarjeta-pj__dato tarjeta-herencia__cuenta', text: detalleHerencia(v) }),
+      ),
+    ));
+  }
+  pie.append(
+    el('button', { class: 'btn btn--fantasma', id: 'herencia-atras', onClick: () => mostrar('inicio') }, 'Atrás'),
+    el('button', { class: 'btn', id: 'herencia-sin', onClick: protegido('sin herencia', () => elegirHerencia(null)) }, 'Empezar sin herencia'),
+  );
+  (caja.querySelector('button:not([disabled])') ?? $('#herencia-sin'))?.focus();
+}
+
+/** El aviso de la herencia elegida, antes de confirmar. Sin mutar nada. */
+function avisoHerencia() {
+  const v = herencia.elegida;
+  if (!v) return null;
+  return el('div', { class: 'aviso-herencia', id: 'aviso-herencia', role: 'note' },
+    el('p', { text: `Hereda de ${v.origen.nombre ?? 'tu personaje anterior'}: ${explicarLegado(v)}. Se entrega al pulsar «Comenzar partida»; hasta entonces no se gasta.` }),
+    el('p', { class: 'aviso-herencia__estimacion', text: `Estimación: empezará en el nivel ${nivelParaXP(v.cantidad)}. Vida, maná y puntos salen de su clase, no de la del caído.` }),
+    el('button', { class: 'btn btn--pequeno btn--fantasma', id: 'herencia-cambiar', type: 'button', onClick: protegido('cambiar herencia', () => abrirNuevaPartida({ origen: v.runOrigen })) }, 'Cambiar herencia'),
+  );
 }
 
 function pintarPersonajes(elegidoId) {
@@ -575,6 +668,8 @@ function pintarPersonajes(elegidoId) {
   }
 
   if (elegido) {
+    const aviso = avisoHerencia();
+    if (aviso) caja.append(aviso);
     pie.append(
       el('button', { class: 'btn btn--fantasma', id: 'personajes-otro', onClick: () => pintarPersonajes(null) }, 'Elegir otro'),
       el('button', {
@@ -907,6 +1002,7 @@ function pintarRevelacion(p, eco = null) {
   });
 
   caja.append(
+    avisoHerencia() ?? '',
     el('div', { class: 'revelacion__narrador', id: 'revelacion-resumen', 'aria-live': 'polite' },
       eco ? el('p', { class: 'revelacion__eco', text: eco }) : null,
       el('p', { text: resumenPersonaje(p) }),
@@ -975,32 +1071,57 @@ function corregirPersonaje(p, texto) {
   $('#revelacion-cambio')?.focus();
 }
 
+/**
+ * Una creación a la vez en esta pestaña: el doble clic o un Enter repetido
+ * no crean dos personajes. (Entre pestañas manda el candado de la entrega.)
+ * Si una entrega con herencia falla después de crear en memoria, se queda
+ * puesto: ese personaje no se puede jugar ni guardar, solo recargar.
+ */
+let creandoPartida = false;
+
+/** Lo que hay que recordar para reintentar ESTA creación tras recargar. */
+function recordarCreacion(p) {
+  try {
+    sessionStorage.setItem('arcanveil:comenzar', p.id);
+    if (herencia.elegida) sessionStorage.setItem('arcanveil:comenzar-legado', JSON.stringify({ runOrigen: herencia.elegida.runOrigen, transaccion: herencia.transaccion }));
+    else sessionStorage.removeItem('arcanveil:comenzar-legado');
+  } catch { /* sin sesión: se vuelve al menú */ }
+}
+
 async function comenzarPartida(p) {
+  if (creandoPartida) return;
   if (ver('player.raza')) {
     // Con otra partida cargada: se guarda (comprobado) antes de recargar.
     salirConGuardado(() => {
-      try { sessionStorage.setItem('arcanveil:comenzar', p.id); } catch { /* sin sesión */ }
+      recordarCreacion(p);
       location.reload();
     });
     return;
   }
+  creandoPartida = true;
 
   activarPersistencia();
-  store.fijar('meta.ranura', ranuraParaPartidaNueva());
+  const ranura = ranuraParaPartidaNueva();
+  store.fijar('meta.ranura', ranura);
   store.fijar('meta.personajeId', p.id);
   // La intensidad elegida al crear es de esta partida: la leen los encuentros,
   // el tamaño de los grupos, la caída y el tono del narrador.
   store.fijar('settings.dificultad', p.intensidad ?? 'equilibrado');
 
-  store.dispatch('player/crear', {
-    borrador: {
-      nombre: p.nombre, raza: p.raza, clase: p.clase, trasfondo: p.trasfondo,
-      retrato: p.retrato ?? '', lore: p.lore ?? '',
-      genero: p.genero, semillaRetrato: p.semillaRetrato,
-    },
-  });
+  const borrador = {
+    nombre: p.nombre, raza: p.raza, clase: p.clase, trasfondo: p.trasfondo,
+    retrato: p.retrato ?? '', lore: p.lore ?? '',
+    genero: p.genero, semillaRetrato: p.semillaRetrato,
+  };
 
-  await new Promise((r) => setTimeout(r, 0));
+  let entregada = null;
+  if (herencia.elegida) {
+    entregada = await comenzarConHerencia(p, borrador, ranura);
+    if (!entregada) return;  // el aviso ya está en pantalla; `creandoPartida` sigue puesto
+  } else {
+    store.dispatch('player/crear', { borrador });
+    await new Promise((r) => setTimeout(r, 0));
+  }
 
   mostrar('juego');
   refrescarTodo();
@@ -1011,14 +1132,86 @@ async function comenzarPartida(p) {
   refrescarTodo();
   guardarPartidaActual();
   programarSugerencias();
+  if (entregada) {
+    avisar(`Has heredado ${entregada.cantidad} XP de ${herencia.elegida.origen.nombre ?? 'tu personaje anterior'}: empiezas en el nivel ${ver('player.nivel') ?? 1}.`, 'exito');
+  }
+  herencia.elegida = null;
+  herencia.transaccion = null;
+  creandoPartida = false;
+}
+
+/**
+ * Crea el sucesor con la herencia elegida, con el protocolo de entrega
+ * (`persistence/EntregaLegado.js`): reserva, creación por el flujo normal,
+ * guardado RELEÍDO y confirmación. Si algo falla, el personaje en memoria no
+ * se da por bueno: se explica y se ofrece reintentar (misma transacción) o
+ * volver al menú, recargando en ambos casos.
+ *
+ * @returns {Promise<Object|null>} El resultado, o null si no se ha entregado.
+ */
+async function comenzarConHerencia(p, borrador, ranura) {
+  const v = herencia.elegida;
+  const runDestino = nuevoRunId();
+  const r = await Entrega.entregarLegado({
+    runOrigen: v.runOrigen,
+    transaccion: herencia.transaccion,
+    runDestino,
+    ranura,
+    crear: ({ cantidad, legado }) => Entrega.crearEnMotor(store, { borrador, runDestino, cantidad, legado }),
+    guardar: () => {
+      const g = guardarPartidaActual({ silencioso: true });
+      return { ok: Boolean(g?.exito), motivo: g?.motivo ?? 'no hay partida que guardar' };
+    },
+  });
+  if (r.ok && r.yaHecho) {
+    // Esta misma creación ya se entregó antes (recarga tras guardarse): se
+    // abre ese personaje, no se crea otro.
+    creandoPartida = false;
+    herencia.elegida = null;
+    herencia.transaccion = null;
+    cargarRanura(r.ranura);
+    return null;
+  }
+  if (r.ok) return r;
+
+  const nombre = v.origen.nombre ?? 'tu personaje anterior';
+  const recargar = (conCreacion) => {
+    if (conCreacion) recordarCreacion(p);
+    else { try { sessionStorage.setItem('arcanveil:abrir-menu', '1'); } catch { /* portada */ } }
+    location.reload();
+  };
+  const botones = [];
+  if (r.codigo === 'entregado' && r.ranura) {
+    botones.push(['Continuar con ese personaje', () => { try { sessionStorage.setItem('arcanveil:cargar', r.ranura); } catch { /* menú */ } location.reload(); }, 'btn btn--grande']);
+  }
+  if (['ocupado', 'guardado', 'almacenamiento', 'conflicto'].includes(r.codigo)) botones.push(['Reintentar', () => recargar(true), 'btn btn--grande']);
+  if (['sin-exclusion', 'bloqueado', 'no-muerto', 'sin-legado', 'entregado'].includes(r.codigo)) {
+    botones.push(['Empezar sin herencia', () => { herencia.elegida = null; herencia.transaccion = null; recargar(true); }, 'btn']);
+  }
+  botones.push(['Volver al menú', () => recargar(false), 'btn btn--fantasma']);
+  const estado = r.codigo === 'guardado'
+    ? ` ${r.nota ?? ''} ${nombre} no ha perdido nada: el personaje nuevo no se ha creado.`
+    : '';
+  mostrarSalida('No se ha podido empezar con la herencia', `${r.motivo}${estado}`.trim(), botones);
+  return null;
 }
 
 /** Tras la recarga de `comenzarPartida`, arranca directamente la crónica. */
 function comenzarPendiente() {
   let id = null;
-  try { id = sessionStorage.getItem('arcanveil:comenzar'); sessionStorage.removeItem('arcanveil:comenzar'); } catch { /* sin sesión */ }
+  let legado = null;
+  try {
+    id = sessionStorage.getItem('arcanveil:comenzar'); sessionStorage.removeItem('arcanveil:comenzar');
+    legado = JSON.parse(sessionStorage.getItem('arcanveil:comenzar-legado') ?? 'null'); sessionStorage.removeItem('arcanveil:comenzar-legado');
+  } catch { /* sin sesión */ }
   const p = id ? obtenerPersonaje(id) : null;
   if (!p) return false;
+  if (legado?.runOrigen && legado.transaccion) {
+    const v = Entrega.listarLegados().find((x) => x.runOrigen === legado.runOrigen);
+    // La misma transacción: si la entrega anterior llegó a guardarse, se
+    // reconoce como hecha; si no, se intenta de nuevo, una vez.
+    if (v) { herencia.elegida = v; herencia.transaccion = legado.transaccion; }
+  }
   comenzarPartida(p);
   return true;
 }
@@ -1671,7 +1864,7 @@ function abrirMuerte(muerte) {
   nota.append(
     el('p', { text: `${muerte.causa ?? ''} ${cuando}`.trim() }),
     el('p', { class: 'caida__resumen', text: `Nivel ${muerte.nivel ?? 1} · ${muerte.resumen?.turnos ?? muerte.turno ?? 0} turnos. La crónica termina aquí.` }),
-    el('p', { class: 'caida__legado', text: 'Tu próximo personaje heredará el 35 % de lo que deja: queda guardado, a falta de decidir si es experiencia o puntos de habilidad. Todavía no se aplica.' }),
+    el('p', { class: 'caida__legado', id: 'caida-legado', text: textoLegadoMuerte(muerte) }),
   );
   if (muerte.guardado && !muerte.guardado.marca) {
     nota.append(el('p', { class: 'caida__aviso', text: `No se ha podido guardar la marca de esta muerte en el navegador (${muerte.guardado.error ?? 'error'}).` }));
@@ -1692,14 +1885,33 @@ function abrirMuerte(muerte) {
 }
 
 /**
+ * Lo que deja el caído, dicho con la cifra real. Solo se promete si la
+ * herencia quedó escrita; si no, se dice que no.
+ */
+function textoLegadoMuerte(muerte) {
+  if (muerte.guardado && !muerte.guardado.legado) {
+    return `No se ha podido guardar su herencia en este navegador (${muerte.guardado.error ?? 'error'}): tu próximo personaje no heredará su experiencia.`;
+  }
+  const v = Entrega.listarLegados().find((x) => x.runOrigen === muerte.runId);
+  if (!v) return 'No ha quedado herencia guardada de este personaje.';
+  if (v.estado === 'aplicado') return 'Su herencia ya la recibió otro personaje.';
+  if (v.cantidad === null) return `Su herencia no se puede calcular: ${v.motivo ?? 'la experiencia guardada no es válida'}.`;
+  return `Deja ${explicarLegado(v)}. Tu próximo personaje puede heredarla: se entrega al confirmar su creación, una sola vez.`;
+}
+
+/**
  * Partida nueva tras morir: se recarga para tener un motor limpio (la forma
- * establecida de volver a empezar) y se abre la elección de personaje. El
- * mundo anterior no se toca ni se repone.
+ * establecida de volver a empezar) y se abre la elección de herencia y de
+ * personaje, con el caído primero. El mundo anterior no se toca ni se repone.
  */
 function irANuevaPartida() {
+  const origen = ver('meta.muerte.runId') ?? ver('meta.runId');
   // El final ya se guarda al morir; aquí se comprueba antes de recargar.
   salirConGuardado(() => {
-    try { sessionStorage.setItem('arcanveil:nueva-partida', '1'); } catch { /* sin sesión */ }
+    try {
+      sessionStorage.setItem('arcanveil:nueva-partida', '1');
+      if (origen) sessionStorage.setItem('arcanveil:legado-origen', origen);
+    } catch { /* sin sesión */ }
     location.reload();
   });
 }
@@ -2206,6 +2418,16 @@ function pintarPersonaje() {
     el('span', { text: 'Oro' }),
     el('span', { class: 'oro__cifra', text: String(j.oro ?? 0) }),
   ));
+
+  // La experiencia, con lo heredado aparte: no se presenta como jugado.
+  const px = procedenciaXP(j);
+  caja.append(el('div', { class: 'oro xp-pj', id: 'pj-xp' },
+    el('span', { text: 'Experiencia' }),
+    el('span', { class: 'oro__cifra', text: String(px.total) }),
+  ));
+  if (px.heredada > 0 || j.legadoRecibido) {
+    caja.append(el('p', { class: 'xp-pj__procedencia', id: 'pj-xp-procedencia', text: `${px.heredada} heredada de ${j.legadoRecibido?.nombreOrigen ?? 'tu personaje anterior'} · ${px.ganada} ganada jugando` }));
+  }
 
   // Estados alterados.
   const estados = j.estados ?? [];
@@ -3320,6 +3542,9 @@ async function arrancar() {
 
   try {
     recuperarPersistencia();
+    // Una entrega de herencia que se cortó a medias (pestaña cerrada,
+    // corte de luz) se termina o se devuelve ANTES de enseñar nada.
+    try { await Entrega.recuperarLegados(); } catch (e) { console.warn('[arcanveil] no se ha podido revisar las herencias', e); }
     conectarEventos();
     pintarInicio();
     mostrar('inicio');
@@ -3328,7 +3553,12 @@ async function arrancar() {
     if (alMenu) abrirMenuInicio({ foco: false });
     let nueva = false;
     try { nueva = sessionStorage.getItem('arcanveil:nueva-partida') === '1'; sessionStorage.removeItem('arcanveil:nueva-partida'); } catch { /* sin sesión */ }
-    if (nueva) abrirNuevaPartida();
+    let origen = null;
+    try { origen = sessionStorage.getItem('arcanveil:legado-origen'); sessionStorage.removeItem('arcanveil:legado-origen'); } catch { /* sin sesión */ }
+    if (nueva) abrirNuevaPartida({ origen });
+    let cargarTras = null;
+    try { cargarTras = sessionStorage.getItem('arcanveil:cargar'); sessionStorage.removeItem('arcanveil:cargar'); } catch { /* sin sesión */ }
+    if (cargarTras) cargarRanura(cargarTras);
     menuTrasArrancar = true;
     arranqueListo();
     comenzarPendiente();
