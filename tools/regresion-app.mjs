@@ -819,6 +819,103 @@ try {
   if (textoEnCombate.golpes || !/menú/.test(textoEnCombate.ultima) || !textoEnCombate.esperando) throw new Error(`«le golpeo» en combate no fue al menú: ${JSON.stringify(textoEnCombate)}`);
   await pelearPorMenu();
 
+  etapa('salida segura: Menú con doble clic (guardado comprobado, una sola navegación)');
+  const antesSalir = await evaluate(`({ turno: ARCANVEIL.ver('meta.turno'), run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), vida: ARCANVEIL.ver('player.vida.actual') })`);
+  await evaluate(`sessionStorage.setItem('reg:guardados', '0'); ARCANVEIL.bus.on('save:done', () => sessionStorage.setItem('reg:guardados', String(Number(sessionStorage.getItem('reg:guardados')) + 1))); true`);
+  await pulsarYNavegar(`(() => { const b = document.querySelector('#menu'); return { click: () => { b.click(); b.click(); } }; })()`,
+    'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
+  const trasSalir = await evaluate(`(() => { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + ${JSON.stringify(antesSalir.ranura)}) ?? 'null'); return { guardados: sessionStorage.getItem('reg:guardados'), turno: g?.estado?.meta?.turno, run: g?.estado?.meta?.runId, vida: g?.estado?.player?.vida?.actual }; })()`);
+  if (trasSalir.guardados !== '1' || trasSalir.turno !== antesSalir.turno || trasSalir.run !== antesSalir.run || trasSalir.vida !== antesSalir.vida) {
+    throw new Error(`Menú (doble clic): ${JSON.stringify({ antesSalir, trasSalir })}`);
+  }
+  await shot(`10-menu-tras-salir-${viewport.label}.png`);
+  await continuarPartida(antesSalir.run);
+
+  etapa('salida segura: persistencia apagada (no se recarga; Escape = quedarse)');
+  await evaluate(`window.__sigo = 1; ARCANVEIL.bus.emit('settings:change', { id: 'persistencia', valor: false }); document.querySelector('#menu').click(); true`);
+  await wait(400);
+  const apagada = await evaluate(`({ sigo: window.__sigo, visible: !document.getElementById('salida-modal').hidden, titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()), foco: document.activeElement?.textContent?.trim() })`);
+  if (apagada.sigo !== 1 || !apagada.visible || apagada.titulo !== 'No se ha podido guardar' || !/desactivada/.test(apagada.nota) || !apagada.botones.includes('Salir sin guardar…')) throw new Error(`persistencia apagada: ${JSON.stringify(apagada)}`);
+  await shot(`11-salida-error-${viewport.label}.png`);
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  await wait(200);
+  const quedado = await evaluate(`({ sigo: window.__sigo, oculto: document.getElementById('salida-modal').hidden, pantalla: document.body.dataset.activeScreen, entrada: document.getElementById('entrada').disabled })`);
+  if (quedado.sigo !== 1 || !quedado.oculto || quedado.pantalla !== 'juego' || quedado.entrada) throw new Error(`Escape no deja quedarse: ${JSON.stringify(quedado)}`);
+  await evaluate(`ARCANVEIL.bus.emit('settings:change', { id: 'persistencia', valor: true }); true`);
+
+  etapa('salida segura: almacenamiento lleno (reintentar, «Salir sin guardar» con confirmación, reintento con éxito)');
+  await evaluate(`window.__setItem = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (String(k).startsWith('arcanveil:partida:')) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } return window.__setItem.call(this, k, v); }; document.querySelector('#menu').click(); true`);
+  await wait(300);
+  const lleno = await evaluate(`({ sigo: window.__sigo, nota: document.getElementById('salida-nota').textContent })`);
+  if (lleno.sigo !== 1 || !/espacio/.test(lleno.nota)) throw new Error(`almacenamiento lleno: ${JSON.stringify(lleno)}`);
+  await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Salir sin guardar…').click(); true`);
+  const confirma = await evaluate(`({ sigo: window.__sigo, titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()) })`);
+  if (confirma.sigo !== 1 || confirma.titulo !== 'Salir sin guardar' || !/Se perderá/.test(confirma.nota) || !confirma.botones.includes('Volver')) throw new Error(`salir sin guardar sin confirmación clara: ${JSON.stringify(confirma)}`);
+  await shot(`12-salir-sin-guardar-${viewport.label}.png`);
+  await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Volver').click(); true`);
+  await wait(200);
+  if (await evaluate(`document.getElementById('salida-titulo').textContent`) !== 'No se ha podido guardar') throw new Error('«Volver» no vuelve al error');
+  const antesReintento = await evaluate(`({ turno: ARCANVEIL.ver('meta.turno'), run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura') })`);
+  await evaluate(`Storage.prototype.setItem = window.__setItem; true`);
+  await pulsarYNavegar(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Reintentar')`,
+    'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
+  const reintento = await evaluate(`(() => { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + ${JSON.stringify(antesReintento.ranura)}) ?? 'null'); return { turno: g?.estado?.meta?.turno, run: g?.estado?.meta?.runId }; })()`);
+  if (reintento.turno !== antesReintento.turno || reintento.run !== antesReintento.run) throw new Error(`reintento: ${JSON.stringify({ antesReintento, reintento })}`);
+  await continuarPartida(antesReintento.run);
+
+  etapa('salida segura: con el enemigo actuando (esperar, cancelar, salir en la frontera)');
+  // FIXTURE: vida llena para que el enemigo no lo mate en mitad de la prueba,
+  // y un rival que no huye (el saqueador es cobarde: huía, la pelea acababa y
+  // la salida, bien hecha, salía en ESA frontera; aquí se quiere la del turno).
+  await evaluate(`ARCANVEIL.store.dispatch('player/curar', { cantidad: 99, origen: 'regresion' }); ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'guardia_corrupto', count: 1 }], playerAmbush: true }); true`);
+  await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 8000);
+  const enVuelo = `(() => { const c = ARCANVEIL.sistema('combat'); const m = c.accionesDelJugador(); c.ejecutar({ tipo: 'defender', token: m.token }); document.querySelector('#menu').click(); return { esperando: c.esperandoJugador, titulo: document.getElementById('salida-titulo').textContent, visible: !document.getElementById('salida-modal').hidden }; })()`;
+  // FIXTURE de cadencia (no de reglas): la pausa del turno enemigo espera a
+  // que la prueba la suelte. El turno enemigo dura ~750 ms y la captura de la
+  // espera tardaba más: la salida (correctamente) ocurría en mitad de la foto.
+  await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); window.__pausaReal = c._pausa; window.__soltar = null; c._pausa = (ms) => new Promise((ok) => { window.__soltar = ok; }); return true; })()`);
+  const espera1 = await evaluate(`window.__sigo = 1; ${enVuelo}`);
+  if (espera1.esperando || !espera1.visible || espera1.titulo !== 'Esperando para salir') throw new Error(`Menú con el enemigo actuando: ${JSON.stringify(espera1)}`);
+  await until('typeof window.__soltar === "function"', 8000);
+  await shot(`13-salida-esperando-${viewport.label}.png`);
+  await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => /Cancelar/.test(b.textContent)).click(); ARCANVEIL.sistema('combat')._pausa = window.__pausaReal; window.__soltar?.(); true`);
+  await until('ARCANVEIL.sistema("combat").esperandoJugador || !ARCANVEIL.ver("combat.activo", false)', 8000);
+  await wait(800);
+  const cancelado = await evaluate(`({ sigo: window.__sigo, oculto: document.getElementById('salida-modal').hidden, pantalla: document.body.dataset.activeScreen })`);
+  if (cancelado.sigo !== 1 || !cancelado.oculto || cancelado.pantalla !== 'juego') throw new Error(`cancelar la salida no deja la partida viva: ${JSON.stringify(cancelado)}`);
+  // Sin un `if` que se salte la prueba en silencio: si la pelea acabó, se dice.
+  if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) throw new Error(`la pelea de prueba terminó antes de probar la salida en la frontera: ${JSON.stringify(await evaluate(DIAGNOSTICO))}`);
+  etapa('salida segura: salir en la frontera (turno del jugador) y cargar sin repetir nada');
+  {
+    // Ahora sí: se pide salir con el enemigo actuando y se sale en la frontera
+    // (su turno), con lo que haya pasado guardado. Se apunta el estado en la
+    // frontera para compararlo tras cargar (sin golpes repetidos).
+    await evaluate(`ARCANVEIL.bus.on('combat:awaiting', () => { const c = ARCANVEIL.sistema('combat'); sessionStorage.setItem('reg:frontera', JSON.stringify({ vida: ARCANVEIL.ver('player.vida.actual'), enemigos: Object.values(c._combatientes).filter((x) => x.bando === 'enemigo').map((x) => [x.nombre, x.vida.actual]), ronda: ARCANVEIL.ver('combat.ronda') })); }); true`);
+    const run = await evaluate('ARCANVEIL.ver("meta.runId")');
+    await evaluate(`setTimeout(() => ${enVuelo}, 30); true`);
+    const inicio = Date.now();
+    while (Date.now() - inicio < 15000) { await wait(150); let sigue; try { sigue = await evaluate('window.__sigo === 1'); } catch { sigue = true; } if (!sigue) break; }
+    await until('window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"', 15000);
+    const frontera = JSON.parse(await evaluate(`sessionStorage.getItem('reg:frontera') ?? 'null'`));
+    await continuarPartida(run);
+    await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 8000);
+    const cargado = await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); return { vida: ARCANVEIL.ver('player.vida.actual'), enemigos: Object.values(c._combatientes).filter((x) => x.bando === 'enemigo').map((x) => [x.nombre, x.vida.actual]), ronda: ARCANVEIL.ver('combat.ronda') }; })()`);
+    if (JSON.stringify(cargado) !== JSON.stringify(frontera)) throw new Error(`la salida en la frontera no guardó el estado exacto (o se repitió algo al cargar): ${JSON.stringify({ frontera, cargado })}`);
+  }
+
+  etapa('muerte entre el clic y la frontera');
+  if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) throw new Error(`no hay pelea para probar la muerte con la salida pendiente: ${JSON.stringify(await evaluate(DIAGNOSTICO))}`);
+  {
+    await evaluate(`window.__sigo = 1; ${enVuelo}`);
+    // FIXTURE: el daño que lo mata llega mientras la salida espera.
+    await evaluate(`ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' }); true`);
+    await until('!document.getElementById("caida-modal").hidden', 8000);
+    await wait(500);
+    const muertoEsperando = await evaluate(`({ sigo: window.__sigo, salida: document.getElementById('salida-modal').hidden, fase: ARCANVEIL.ver('meta.fase') })`);
+    if (muertoEsperando.sigo !== 1 || !muertoEsperando.salida || muertoEsperando.fase !== 'fin') throw new Error(`morir con la salida pendiente: ${JSON.stringify(muertoEsperando)}`);
+  }
+
+  etapa('muerte');
   // ─── Caer detiene la partida de verdad ──────────────────────────────
   //
   // El fallo que esto sujeta: la caída pintaba «la crónica termina aquí» y la
@@ -949,6 +1046,18 @@ try {
     if (recargado.galeria.length || recargado.ajeno !== 'sigue' || recargado.otraBase !== 'sigue' || recargado.personajes) throw new Error(`tras borrar y recargar: ${JSON.stringify(recargado)}`);
     borrado = 'galería y candidatas vacías tras recargar; lo ajeno intacto';
   }
+
+  // ─── Interfaz clásica (antigua): aviso, sin un «Atacar» que no funciona ──
+  // Tratamiento reversible mientras no se decida adaptarla o retirarla.
+  etapa('interfaz clásica: aviso y enlace a la vigente');
+  await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  const portada = await (await fetch(`http://127.0.0.1:${PORT}/index.html`)).text();
+  if (!/href="\.\/app\/index\.html"/.test(portada) || !/Interfaz original \(antigua: sin el combate actual\)/.test(portada)) throw new Error('la portada no enlaza la vigente o no avisa de la clásica');
+  await cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/clasico.html` });
+  await until('document.readyState === "complete" && document.querySelector(".aviso-clasica")', 15000);
+  const clasica = await evaluate(`(() => { const a = document.querySelector('.aviso-clasica'); const r = a.getBoundingClientRect(); const enlace = a.querySelector('a'); return { visible: r.height > 0 && r.top >= 0 && r.top < innerHeight, texto: a.textContent.replace(/\\s+/g, ' ').trim(), enlace: enlace?.href ?? null, atacar: [...document.querySelectorAll('[data-accion="atacar"]')].length }; })()`);
+  if (!clasica.visible || !/no es compatible con el combate actual/.test(clasica.texto) || !/\/app\/index\.html$/.test(clasica.enlace ?? '') || clasica.atacar) throw new Error(`clásica sin aviso claro: ${JSON.stringify(clasica)}`);
+  await shot(`14-clasica-${viewport.label}.png`);
 
   if (externos.length) throw new Error(`la página pidió cosas fuera de este equipo: ${[...new Set(externos)].slice(0, 5).join(' · ')}`);
 

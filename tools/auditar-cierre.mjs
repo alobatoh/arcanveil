@@ -199,5 +199,17 @@ await caso(async () => {
   }
 });
 
+/* ── 4. Interfaz clásica: sin «Atacar» que el motor rechazaría ───────────── */
+
+console.log('\n── 4 · Interfaz clásica (comprobación del código; en Chrome: regresion-app) ──');
+await caso(async () => {
+  const { readFileSync } = await import('node:fs');
+  const panel = readFileSync(new URL('../src/ui/components/CombatPanel.js', import.meta.url), 'utf8');
+  comprobar(!/dataset:\s*\{\s*accion:\s*'atacar'\s*\}/.test(panel), 'el panel clásico no dibuja un botón «Atacar»');
+  comprobar(!/1:\s*'atacar'/.test(panel), 'ni la tecla 1 ataca');
+  comprobar(!/atacarás al más débil/.test(panel), 'ni promete «atacar al más débil»');
+  comprobar(/Juega en la versión vigente/.test(panel), 'y enlaza la versión vigente');
+});
+
 console.log(`\n${casos - fallos}/${casos} comprobaciones bien.`);
 process.exit(fallos ? 1 : 0);
