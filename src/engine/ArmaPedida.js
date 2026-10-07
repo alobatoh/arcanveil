@@ -32,6 +32,7 @@
 import { sinAcentos, articulo, capitalizar } from '../utils/text.js';
 import { ARMAS } from './IntentParser.js';
 import { obtenerPlantilla } from '../data/items.data.js';
+import { resolver } from '../inventory/IndiceObjetos.js';
 
 const llano = (t) => sinAcentos(String(t ?? '').toLowerCase());
 
@@ -49,8 +50,12 @@ const ATACA = /\b(?:ataco|atacamos|golpeo|pego|apunalo|acuchillo|disparo|ensarto
 /** Sacar o empuñar algo: prepara un ataque. Se lee el sintagma entero. */
 const DESENVAINA = /\b(?:desenvaino|desenfundo|saco|empuno|blando|enarbolo|tenso|alzo|levanto|preparo|cargo)\s+(.+)$/;
 
-/** Lo que va tras «con», hasta donde empieza otra cosa (el blanco, una coma…). */
-const INSTRUMENTO = /\bcon\s+(.+)$/;
+/**
+ * Lo que va tras «con», «usando», «utilizando», «empleando»…, hasta donde
+ * empieza otra cosa (el blanco, una coma…). «Usando la katana» abría pelea:
+ * solo se miraba «con».
+ */
+const INSTRUMENTO = /\b(?:con|usando|utilizando|empleando|mediante|valiendome de|sirviendome de|ayudandome de)\s+(.+)$/;
 
 /** Hacerse con algo antes («primero cojo el hacha y luego ataco»). */
 const ADQUIERE = /\b(?:cojo|tomo|agarro|compro|recojo|consigo|pillo|robo|le quito)\s+(.+)$/;
@@ -72,6 +77,21 @@ const CUERPO = new Set(['mano', 'manos', 'puno', 'punos', 'pie', 'pies', 'rodill
 /** Lo que es magia la resuelve su propia regla (`Jugada.js`: se dice y no se concede). */
 const MAGIA = new Set(['magia', 'hechizo', 'hechizos', 'conjuro', 'conjuros', 'poder', 'poderes', 'runa', 'runas', 'sortilegio']);
 const VACIA = new Set(['de', 'del', 'y', 'e']);
+/**
+ * Modos y maniobras: cómo se ataca, no con qué. Lista CERRADA a propósito:
+ * «con katana» (sin artículo) se tomaba por un modo como «con calma» porque
+ * valía cualquier palabra desconocida. Ahora lo que no está aquí, en el
+ * cuerpo o en la magia es un objeto pedido, y tiene que estar en el
+ * inventario.
+ */
+const MODOS = new Set([
+  'calma', 'cuidado', 'sigilo', 'fuerza', 'fuerzas', 'rabia', 'furia', 'ira', 'sana', 'precision', 'rapidez', 'prisa', 'velocidad',
+  'cautela', 'tiento', 'mana', 'destreza', 'habilidad', 'astucia', 'decision', 'determinacion', 'valor', 'coraje', 'miedo', 'odio',
+  'energia', 'violencia', 'brutalidad', 'contundencia', 'firmeza', 'suavidad', 'tranquilidad', 'serenidad', 'frialdad', 'sangre',
+  'ganas', 'empeno', 'intencion', 'alevosia', 'ventaja', 'sorpresa', 'agilidad', 'elegancia', 'torpeza', 'esfuerzo', 'estilo', 'arte',
+  'tecnica', 'disimulo', 'discrecion', 'decoro', 'grito', 'gritos', 'rugido', 'alarido', 'golpe', 'golpes', 'tajo', 'tajos',
+  'estocada', 'estocadas', 'embestida', 'carga', 'salto', 'finta', 'amago', 'barrido', 'impulso', 'carrerilla', 'impetu',
+]);
 
 /** ¿Este trozo ataca? */
 export function ataca(texto) {
@@ -115,7 +135,7 @@ export function desenvaina(texto, objetos = []) {
   const m = t.match(DESENVAINA);
   if (!m) return false;
   if (DESENVAINA_SIEMPRE.test(llano(t))) return sintagmas(m[1]).length > 0;
-  return sintagmas(m[1]).some((s) => ARMAS[s.palabras[0]] || candidatos(s.palabras, objetos).some((o) => o.categoria === 'arma'));
+  return sintagmas(m[1]).some((s) => ARMAS[s.palabras[0]] || candidatos(s, objetos).some((o) => o.categoria === 'arma'));
 }
 
 /**
@@ -137,23 +157,26 @@ function herramientas(texto) {
 }
 
 /**
- * Los objetos del inventario que encajan con TODO lo dicho, no con una
- * palabra suelta: «cuchillo» encaja con «Cuchillo de caza» (alias), «cuchillo
- * de caza» también, «cuchillo mágico» no (sobra «mágico»).
+ * Los objetos del inventario que nombra lo dicho, por identidad (ver
+ * `inventory/IndiceObjetos.js`): una clave entera, no una palabra suelta.
+ * «cuchillo» = el único cuchillo; «cuchillo de caza» también; «cuchillo
+ * mágico» no es ninguno. Vacío si no hay; varios si es ambiguo.
  */
-function candidatos(palabras, objetos) {
-  return objetos.filter((o) => {
-    const nombre = llano(o.nombre).split(/[^a-zñ0-9]+/).filter((p) => p && !VACIA.has(p));
-    return palabras.every((p) => nombre.some((n) => n === p || (p.length >= 5 && n.startsWith(p.slice(0, -1))) || (n.length >= 5 && p.startsWith(n.slice(0, -1)))));
-  });
+function candidatos(s, objetos, equipado = {}) {
+  const r = resolver(s.dicho, objetos, { equipado });
+  if (r.estado === 'unico') return [r.objeto];
+  if (r.estado === 'ambiguo') return r.objetos;
+  return [];
 }
 
-/** ¿Es un modo («con calma», «con toda mi fuerza»), el cuerpo o magia, y no un objeto? */
-function noEsObjeto(s, objetos) {
-  if (CUERPO.has(s.palabras[0]) || MAGIA.has(s.palabras[0])) return true;
+/**
+ * ¿Es un modo («con calma», «con toda mi fuerza»), el cuerpo, magia o una
+ * persona («con Korsa mirando»), y no un objeto?
+ */
+function noEsObjeto(s, nombres = []) {
+  if (CUERPO.has(s.palabras[0]) || MAGIA.has(s.palabras[0]) || MODOS.has(s.palabras[0])) return true;
   if (s.intensifica) return true;
-  // Sin determinante y sin ser un arma ni algo que lleve: un modo.
-  if (!s.determinado && !ARMAS[s.palabras[0]] && !candidatos(s.palabras, objetos).length) return true;
+  if (nombres.some((n) => s.palabras[0] === llano(n).split(/\s+/)[0])) return true;
   return false;
 }
 
@@ -165,9 +188,10 @@ function noEsObjeto(s, objetos) {
  *   ni condiciones; ver `Segmentos.ordenar`).
  * @param {Array<Object>} entrada.objetos Inventario (`inventory.objetos.porId`).
  * @param {{armaPrincipal?: string, armaSecundaria?: string}} entrada.equipado
+ * @param {string[]} [entrada.nombres] Gente conocida: «con Korsa mirando» no pide un objeto.
  * @returns {null|{motivo: string, arma: string, texto: string}}
  */
-export function aclararArma({ segmentos = [], objetos = [], equipado = {} } = {}) {
+export function aclararArma({ segmentos = [], objetos = [], equipado = {}, nombres = [] } = {}) {
   const trozos = segmentos.map(String).filter(Boolean);
   const hayAtaque = trozos.some(ataca);
   const hostiles = trozos.filter((s) => ataca(s) || desenvaina(s, objetos));
@@ -189,7 +213,7 @@ export function aclararArma({ segmentos = [], objetos = [], equipado = {} } = {}
 
   // «Primero cojo el hacha y luego ataco»: el arma va en el trozo de coger.
   if (hayAtaque) {
-    const falta = adquiridas.filter((s) => (ARMAS[s.palabras[0]] || s.determinado) && !candidatos(s.palabras, objetos).length);
+    const falta = adquiridas.filter((s) => (ARMAS[s.palabras[0]] || s.determinado) && !candidatos(s, objetos, equipado).length);
     if (falta.length) {
       return { motivo: 'adquisicion', arma: falta[0].palabras.join(' '), texto: `Todavía no llevas ${lista(falta.map((s) => s.dicho))}: hazte con ello en un turno y ataca en el siguiente. ${final}` };
     }
@@ -200,8 +224,8 @@ export function aclararArma({ segmentos = [], objetos = [], equipado = {} } = {}
   const ausentes = [];
   const problemas = [];
   for (const s of hostiles.flatMap(herramientas)) {
-    if (noEsObjeto(s, objetos)) continue;
-    const encajan = candidatos(s.palabras, objetos);
+    if (noEsObjeto(s, nombres)) continue;
+    const encajan = candidatos(s, objetos, equipado);
     if (!encajan.length) {
       if (seAdquiere(s)) continue; // ya se ha pedido arriba
       ausentes.push(s.dicho);

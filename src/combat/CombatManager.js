@@ -573,6 +573,7 @@ export class CombatManager extends SystemBase {
       segmentos: segmentar(texto).filter((s) => s.tipo === 'accion').map((s) => s.texto),
       objetos: Object.values(objetos ?? {}),
       equipado: this.leer('inventory.equipado', {}) ?? {},
+      nombres: Object.values(this._combatientes ?? {}).map((c) => c?.nombre).filter(Boolean),
     });
     if (arma) return { motivo: arma.motivo, texto: arma.texto };
 

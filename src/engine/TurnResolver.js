@@ -633,6 +633,7 @@ export class TurnResolver extends SystemBase {
       segmentos: (plan.hechos ?? []).filter((s) => s.tipo === 'accion').map((s) => s.texto),
       objetos: Object.values(this.leer('inventory.objetos.porId', {}) ?? {}),
       equipado: this.leer('inventory.equipado', {}) ?? {},
+      nombres: Object.values(this.leer('npcs.conocidos.porId', {}) ?? {}).map((n) => n?.nombre).filter(Boolean),
     });
     if (armaMal) {
       this._anadirEntrada(VOCES.JUGADOR, escrito);

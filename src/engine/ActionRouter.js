@@ -588,14 +588,26 @@ export class ActionRouter extends SystemBase {
    * gasta nada. El mismo `puedeComer` que el botón «Usar» del inventario.
    * @private
    */
-  _comer({ objeto }) {
+  _comer({ objeto, dicho, ausente, opciones }) {
+    // Primero QUÉ: lo nombrado tiene que ser algo que se lleva, y con dos
+    // comidas distintas se pregunta. Nada se gasta ni se cura hasta saberlo.
+    if (ausente) return this._rechazar(`No llevas ${dicho}. No has gastado nada.`);
+    if (opciones?.length) {
+      const nombres = opciones.map((o) => `${articulo(o.nombre.toLowerCase(), obtenerPlantilla(o.refId)?.genero ?? 'f')} ${o.nombre.toLowerCase()}`);
+      return this._rechazar(`¿Cuál: ${nombres.join(' o ')}? No has gastado nada.`);
+    }
     const regla = puedeComer({
       objeto,
       vida: this.leer('player.vida'),
       enCampamento: campamentoValido({ campamento: this.leer('world.campamento', null), ubicacion: this.leer('world.ubicacion'), sublugar: this.leer('world.sublugar') }),
     });
     if (!regla.ok) return this._rechazar(regla.texto);
+    // Se narra lo que ha pasado en el inventario, no lo que se pidió: si no
+    // se ha gastado (el objeto no se consume), no hay cura que contar.
+    const antes = this.leer(`inventory.objetos.porId.${objeto.id}.cantidad`, 0) ?? 0;
     this.despachar('inventory/consumir', { idObjeto: objeto.id });
+    const despues = this.leer(`inventory.objetos.porId.${objeto.id}.cantidad`, 0) ?? 0;
+    if (despues >= antes) return this._rechazar(`${capitalizar(objeto.nombre)} no se puede comer. No has gastado nada.`);
     const nombre = objeto.nombre.charAt(0).toLowerCase() + objeto.nombre.slice(1);
     return {
       ruta: RUTA.LOCAL, motivo: null, voz: VOCES.DM, pistaDirector: null,

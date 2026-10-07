@@ -22,6 +22,7 @@
 
 import { sinAcentos } from '../utils/text.js';
 import { COMIDA } from '../config/balance.config.js';
+import { resolver } from '../inventory/IndiceObjetos.js';
 
 const llano = (t) => sinAcentos(String(t ?? '').toLowerCase()).replace(/[¿?¡!.,;:«»"]/g, ' ').replace(/\s+/g, ' ').trim();
 const INICIO = '^(?:y |luego |entonces |ahora |primero )?';
@@ -34,7 +35,7 @@ const DESMONTA = new RegExp(`${INICIO}(?:levanto|levantamos|recojo|recogemos|des
 /** Comer algo. */
 const COME = new RegExp(`${INICIO}(?:como|me como|nos comemos|comemos|ceno|cenamos|almuerzo|desayuno|meriendo|pico)\\s+(.+)$`);
 /** Lo que se come sin nombrar un objeto concreto. */
-const GENERICO = /^(?:algo|un poco|un bocado|un trozo|lo que (?:llevo|tengo)|de lo que (?:llevo|tengo)|unas? (?:raciones?|provisiones?)|las? (?:raciones?|provisiones?)|mis? (?:raciones?|provisiones?))\b/;
+const GENERICO = /^(?:algo|algo de comer|un poco|un bocado|un trozo|lo que (?:llevo|tengo)|de lo que (?:llevo|tengo)|(?:(?:unas?|las?|mis?) )?(?:provisiones?|comida))$/;
 
 /** ¿Monta o desmonta el campamento? */
 export function leerCampamento(texto) {
@@ -51,25 +52,43 @@ export function esComida(objeto) {
 
 /**
  * ¿Quiere comer, y qué? Sin efectos.
+ *
+ * Por identidad (`inventory/IndiceObjetos.js`), no por cómo empieza la
+ * palabra: «como raciones mágicas» se comía una ración normal porque bastaba
+ * con empezar por «racion». Ahora:
+ *   · lo nombrado tiene que ser un objeto que se lleva («ración», «ración de
+ *     viaje», «el pan»); si no, se dice que no se lleva (`ausente`);
+ *   · lo genérico («algo», «un bocado») vale si solo hay una comida; con dos
+ *     distintas, se pregunta cuál (`opciones`), no se coge la primera.
+ *
  * @param {string} texto
- * @param {Array<Object>} objetos Inventario.
- * @returns {null|{objeto: Object|null, dicho: string}} null: no habla de comer.
+ * @param {Array<Object>} objetos Inventario vigente.
+ * @returns {null|{objeto: Object|null, dicho: string, ausente?: boolean, opciones?: Object[]}}
+ *   null: no habla de comer.
  */
 export function leerComer(texto, objetos = []) {
   const t = llano(texto);
   const m = t.match(COME);
   if (!m) return null;
-  const resto = m[1].replace(/^(?:el |la |los |las |un |una |mi |mis |algo de |un poco de |un trozo de )/, '');
+  const dicho = m[1];
   const comidas = objetos.filter((o) => esComida(o) && (o.cantidad ?? 1) > 0);
-  const nombrada = comidas.find((o) => {
-    const palabras = llano(o.nombre).split(/\s+/).filter((p) => p.length > 2 && p !== 'de');
-    return palabras.some((p) => resto.startsWith(p.slice(0, Math.max(4, p.length - 2))));
-  });
-  if (nombrada) return { objeto: nombrada, dicho: m[1] };
-  // «como algo», «como un bocado»: lo primero que sea comida.
-  if (GENERICO.test(m[1])) return { objeto: comidas[0] ?? null, dicho: m[1] };
-  // Nombra algo que no lleva («como queso»): se dice, sin crear nada.
-  return { objeto: null, dicho: m[1] };
+
+  if (GENERICO.test(dicho)) {
+    const distintas = [...new Map(comidas.map((o) => [`${o.refId}|${o.nombre}`, o])).values()];
+    if (distintas.length > 1) return { objeto: null, dicho, opciones: distintas };
+    return { objeto: distintas[0] ?? null, dicho };
+  }
+
+  const r = resolver(dicho, objetos);
+  if (r.estado === 'ambiguo') {
+    const deComer = r.objetos.filter(esComida);
+    if (deComer.length === 1) return { objeto: deComer[0], dicho };
+    return { objeto: null, dicho, opciones: deComer.length ? deComer : r.objetos };
+  }
+  if (r.estado === 'unico') return { objeto: r.objeto, dicho };
+  // Nombra algo que no lleva («como queso», «raciones mágicas»): se dice,
+  // sin coger otra cosa en su lugar.
+  return { objeto: null, dicho, ausente: true };
 }
 
 /** ¿Hay un campamento válido aquí? */
