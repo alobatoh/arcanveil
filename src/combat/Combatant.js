@@ -172,30 +172,37 @@ export function desdeCompanero(ficha, miembro = {}) {
  * @private
  */
 function _ataquesDelJugador(bonificadores) {
-  const arma = bonificadores.armaPrincipal;
+  // Cada arma empuñada con daño da su ataque: la de la mano principal y la de
+  // la secundaria (la rastreadora lleva el cuchillo ahí y peleaba a puñetazos:
+  // solo se miraba la principal). Un escudo no tiene daño y no cuenta. Sin
+  // ninguna, el golpe sin arma.
+  const ataques = [bonificadores.armaPrincipal, bonificadores.armaSecundaria]
+    .filter((arma) => arma?.objeto && arma.stats?.dano?.notacion)
+    .map(_ataqueDeArma);
+  if (ataques.length) return ataques;
 
-  if (!arma) {
-    // Sin arma se pelea igual, solo que peor.
-    return [{
-      // Identidad del ataque para el menú: «golpe» sin arma, «arma:<id del
-      // objeto>» con arma. El motor la comprueba antes de resolver.
-      id: 'golpe',
-      itemId: null,
-      nombre: 'Golpe',
-      dano: '1d3',
-      tipo: 'contundente',
-      bonoAtaque: 0,
-      bonoDano: 0,
-      alcance: 'cuerpo',
-    }];
-  }
-
-  const stats = arma.stats ?? {};
-
+  // Sin arma se pelea igual, solo que peor.
   return [{
-    id: arma.objeto?.id ? `arma:${arma.objeto.id}` : 'arma',
-    itemId: arma.objeto?.id ?? null,
-    nombre: arma.objeto?.nombre ?? 'Arma',
+    // Identidad del ataque para el menú: «golpe» sin arma, «arma:<id del
+    // objeto>» con arma. El motor la comprueba antes de resolver.
+    id: 'golpe',
+    itemId: null,
+    nombre: 'Golpe',
+    dano: '1d3',
+    tipo: 'contundente',
+    bonoAtaque: 0,
+    bonoDano: 0,
+    alcance: 'cuerpo',
+  }];
+}
+
+/** El ataque de un arma empuñada. @private */
+function _ataqueDeArma(arma) {
+  const stats = arma.stats ?? {};
+  return {
+    id: `arma:${arma.objeto.id}`,
+    itemId: arma.objeto.id,
+    nombre: arma.objeto.nombre ?? 'Arma',
     dano: stats.dano?.notacion ?? '1d6',
     tipo: stats.dano?.tipo ?? 'contundente',
     bonoAtaque: stats.bonoAtaque ?? 0,
@@ -206,7 +213,7 @@ function _ataquesDelJugador(bonificadores) {
     robarVida: stats.robarVida ?? 0,
     estadosAlImpactar: stats.estadosAlImpactar ?? [],
     municion: stats.municion ?? null,
-  }];
+  };
 }
 
 /**
