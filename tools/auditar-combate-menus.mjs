@@ -195,5 +195,47 @@ await caso(async () => {
   comprobar(!r.ok && r.motivo === 'ataque' && foto() === antes, 'vía antigua sin ataque elegido: rechazada (ya no hay «el primer ataque»)', JSON.stringify(r));
 });
 
+console.log('\n── Guardar y cargar en mitad de la pelea ──');
+await caso(async () => {
+  const { m, c, turno } = await pelea();
+  const menu = c.accionesDelJugador();
+  const vidas = () => JSON.stringify(Object.values(m.sistema('combat')._combatientes).map((x) => [x.nombre, x.vida.actual]));
+  const antes = { vidas: vidas(), ronda: m.ver('combat.ronda') };
+  const g = m.sistema('saves').guardar('6', { silencioso: true });
+  const r = m.sistema('saves').cargar('6');
+  await espera(20);
+  const c2 = m.sistema('combat');
+  const menu2 = c2.accionesDelJugador();
+  comprobar(g.exito && r.exito && m.ver('combat.activo') && c2.esperandoJugador && vidas() === antes.vidas && m.ver('combat.ronda') === antes.ronda,
+    'guardar en tu turno y cargar: la misma pelea (participantes, vida, ronda) y sigue siendo tu turno', JSON.stringify({ g, r }));
+  comprobar(menu2?.token && menu2.token !== menu.token, `  con ficha nueva (${menu2?.token}): lo elegido a medias se descarta`);
+  const viejo = await c2.ejecutar({ tipo: 'atacar', token: menu.token, ataqueId: menu.ataques[0].id, objetivoId: menu.enemigos[0].id });
+  comprobar(!viejo.ok && viejo.motivo === 'turno' && vidas() === antes.vidas, '  una orden de antes de guardar no actúa (ni turno extra ni daño repetido)', JSON.stringify(viejo));
+  const golpes = [];
+  m.bus.on('combat:attack', (d) => { if (d?.atacante?.esJugador) golpes.push(d.objetivo?.nombre); });
+  const berlo = menu2.enemigos.find((e) => e.nombre === 'Berlo');
+  const nuevo = await c2.ejecutar({ tipo: 'atacar', token: menu2.token, ataqueId: menu2.ataques[0].id, objetivoId: berlo.id });
+  await turno();
+  comprobar(nuevo.ok && golpes.length === 1 && golpes[0] === 'Berlo', '  la orden nueva: un golpe, al elegido', JSON.stringify(golpes));
+  // FIXTURE: el enemigo está actuando (no es el turno del jugador).
+  if (m.ver('combat.activo')) {
+    c2._esperando = false;
+    const r2 = m.sistema('saves').guardar('6', { silencioso: true });
+    c2._esperando = true;
+    comprobar(!r2.exito && /tu turno/.test(r2.motivo), 'FIXTURE resolviendo: no se guarda a medias; se dice cuándo', JSON.stringify(r2));
+  }
+});
+await caso(async () => {
+  // Un guardado de antes: fase «combate» sin el combate (no se guardaba).
+  const m = await crearMotor({ semilla: 9505 });
+  await m.empezar({ nombre: 'Sive', raza: 'valdes', clase: 'baluarte', trasfondo: 'errante', genero: 'f' });
+  m.store.fijar('meta.fase', 'combate');
+  const saves = m.sistema('saves');
+  const g = saves._construir('prueba');
+  delete g.sistemas.combat;
+  const r = saves.cargarDesde(g);
+  comprobar(r.exito && m.ver('meta.fase') === 'exploracion' && !m.ver('combat.activo'), 'guardado viejo con fase «combate» y sin pelea: se sigue explorando (no queda atascado)', JSON.stringify({ r, fase: m.ver('meta.fase') }));
+});
+
 console.log(`\n${casos - fallos}/${casos} comprobaciones bien.`);
 process.exit(fallos ? 1 : 0);
