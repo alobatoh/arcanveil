@@ -185,9 +185,11 @@ await caso(async () => {
   comprobar(danos >= 1 && d === 0, `la espada llega a 0 (no a ${d}, ni negativa ni NaN)`);
   if (p.m.ver('combat.activo', false)) {
     for (let k = 0; k < 400 && !c.esperandoJugador && p.m.ver('combat.activo', false); k++) await espera(5);
+    c.accionesDelJugador(); // una primera consulta (la interfaz consulta en cada repintado)
     const menu = c.accionesDelJugador();
     const suya = menu?.ataques.find((a) => a.itemId === espada);
-    comprobar(menu && (!suya || !suya.disponible) && (suya ? /roto/.test(suya.motivo) : true), `  el menú ya no la ofrece como válida (${JSON.stringify(menu?.ataques.map((a) => [a.nombre, a.disponible, a.motivo]))})`);
+    comprobar(menu && suya && !suya.disponible && /roto/.test(suya.motivo) && menu.ataques.some((a) => a.id === 'golpe' && a.disponible),
+      `  el menú la sigue enseñando, «está roto» y sin poder elegirla, consulta tras consulta; y ofrece el golpe sin arma (${JSON.stringify(menu?.ataques.map((a) => [a.nombre, a.disponible, a.motivo]))})`);
     const r = await c.ejecutar({ tipo: 'atacar', token: menu.token, ataqueId: `arma:${espada}`, objetivoId: menu.enemigos[0].id });
     comprobar(!r.ok && durab(p, espada) === 0, '  y no se puede atacar con ella (sin caer a otra arma)', JSON.stringify(r));
     p.m.sistema('saves').guardar('6', { silencioso: true });

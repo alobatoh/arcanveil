@@ -869,7 +869,16 @@ try {
   // la salida, bien hecha, salía en ESA frontera; aquí se quiere la del turno).
   await evaluate(`ARCANVEIL.store.dispatch('player/curar', { cantidad: 99, origen: 'regresion' }); ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'guardia_corrupto', count: 1 }], playerAmbush: true }); true`);
   await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 8000);
-  const enVuelo = `(() => { const c = ARCANVEIL.sistema('combat'); const m = c.accionesDelJugador(); c.ejecutar({ tipo: 'defender', token: m.token }); document.querySelector('#menu').click(); return { esperando: c.esperandoJugador, titulo: document.getElementById('salida-titulo').textContent, visible: !document.getElementById('salida-modal').hidden }; })()`;
+
+  // Arma rota (FIXTURE: durabilidad 0 en la que se empuña): en la etapa de
+  // ataque sale «está roto» y no se puede elegir. Se deja como estaba.
+  {
+    const rota = await evaluate(`(() => { const id = ARCANVEIL.sistema('combat').accionesDelJugador()?.ataques.find((x) => x.itemId)?.itemId; window.__rota = { id, antes: ARCANVEIL.ver('inventory.objetos.porId.' + id + '.durabilidad') }; ARCANVEIL.store.fijar('inventory.objetos.porId.' + id + '.durabilidad', 0); ARCANVEIL.bus.emit('combat:awaiting', {}); document.querySelector('.combate__menu .btn--peligro').click(); const b = [...document.querySelectorAll('.combate__menu .combate__opcion')].find((x) => /roto/.test(x.textContent)); return { id, boton: b ? b.textContent.trim() : null, deshabilitado: b?.disabled ?? null, etapa: document.querySelector('.combate__menu')?.dataset.etapa, opciones: [...document.querySelectorAll('.combate__menu button')].map((x) => x.textContent.trim() + (x.disabled ? '[no]' : '')), motor: ARCANVEIL.sistema('combat').accionesDelJugador()?.ataques.map((x) => [x.nombre, x.disponible, x.motivo]) }; })()`);
+    if (!rota.id || !rota.boton || !rota.deshabilitado) throw new Error(`arma rota en el menú: ${JSON.stringify(rota)}`);
+    await shot(`15-arma-rota-${viewport.label}.png`);
+    await evaluate(`ARCANVEIL.store.fijar('inventory.objetos.porId.' + window.__rota.id + '.durabilidad', window.__rota.antes); [...document.querySelectorAll('.combate__menu button')].find((b) => b.textContent.trim() === 'Volver').click(); true`);
+  }
+  const enVuelo =`(() => { const c = ARCANVEIL.sistema('combat'); const m = c.accionesDelJugador(); c.ejecutar({ tipo: 'defender', token: m.token }); document.querySelector('#menu').click(); return { esperando: c.esperandoJugador, titulo: document.getElementById('salida-titulo').textContent, visible: !document.getElementById('salida-modal').hidden }; })()`;
   // FIXTURE de cadencia (no de reglas): la pausa del turno enemigo espera a
   // que la prueba la suelte. El turno enemigo dura ~750 ms y la captura de la
   // espera tardaba más: la salida (correctamente) ocurría en mitad de la foto.
