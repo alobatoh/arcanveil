@@ -32,10 +32,15 @@ const RAIZ = join(dirname(fileURLToPath(import.meta.url)), '..');
  * nuevo (un `.woff2`, un `.ogg`) entre solo. Lo que no está aquí es porque no
  * lo pide el juego al arrancar.
  */
-const CARPETAS = ['app', 'src', 'assets', 'styles'];
+const CARPETAS = ['app', 'src', 'assets'];
 
-/** Archivos sueltos de la raíz. */
-const SUELTOS = ['./manifest.webmanifest'];
+/**
+ * Archivos sueltos de la raíz. La portada y el puente de la interfaz retirada
+ * (`clasico.html`) van dentro: sin red, un enlace antiguo tiene que llegar al
+ * juego. Sin ellos, el respaldo de navegación servía `app/index.html` en la
+ * URL de la raíz y sus rutas relativas no resolvían.
+ */
+const SUELTOS = ['./manifest.webmanifest', './index.html', './clasico.html'];
 
 /**
  * Lo que NO se guarda.
@@ -108,7 +113,11 @@ const SHELL = [
 ${lista}
 ];
 self.addEventListener('install', (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())));
-self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
+// Al activarse solo se borran las versiones anteriores DE ESTE JUEGO: el
+// origen puede ser compartido (GitHub Pages sirve varios proyectos desde el
+// mismo dominio) y sus cachés no son nuestras. Ni partidas ni galería viven
+// en cachés: este trabajador no las toca.
+self.addEventListener('activate', (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('arcanveil-') && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
 // Solo lo propio pasa por la caché: los puentes locales (Groq, imágenes) y
 // cualquier otro origen van directos, o su estado se quedaba congelado en la
 // primera respuesta. La página del juego, de respaldo, solo al navegar.
