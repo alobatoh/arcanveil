@@ -132,6 +132,7 @@ export class SaveManager extends SystemBase {
    * @private
    */
   _comprobarDisponibilidad() {
+    this._sinAlmacenamiento = null;
     if (!this.leer('settings.persistencia', false)) return false;
 
     try {
@@ -139,7 +140,13 @@ export class SaveManager extends SystemBase {
       localStorage.setItem(prueba, '1');
       localStorage.removeItem(prueba);
       return true;
-    } catch {
+    } catch (e) {
+      // Pedida pero imposible: se recuerda POR QUÉ. Con el almacenamiento
+      // lleno, «actívala en Ajustes» mandaba al jugador a un sitio que no
+      // arregla nada.
+      this._sinAlmacenamiento = /quota|exceeded/i.test(`${e?.name ?? ''} ${e?.message ?? ''}`)
+        ? 'No queda espacio en el navegador. Borra alguna partida antigua.'
+        : 'El navegador no deja guardar (modo privado o datos del sitio bloqueados).';
       this.log.aviso('LocalStorage no está disponible: la partida no se guardará');
       return false;
     }
@@ -230,7 +237,7 @@ export class SaveManager extends SystemBase {
    */
   guardar(ranura = '1', opciones = {}) {
     if (!this._disponible) {
-      const motivo = 'La persistencia está desactivada. Actívala en Ajustes o exporta a archivo.';
+      const motivo = this._sinAlmacenamiento ?? 'La persistencia está desactivada. Actívala en Ajustes o exporta a archivo.';
 
       if (!opciones.silencioso) {
         this.emitir('ui:notice', { mensaje: motivo, tipo: 'aviso' });
