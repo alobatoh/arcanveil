@@ -906,9 +906,14 @@ try {
   etapa('muerte entre el clic y la frontera');
   if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) throw new Error(`no hay pelea para probar la muerte con la salida pendiente: ${JSON.stringify(await evaluate(DIAGNOSTICO))}`);
   {
+    // FIXTURE de cadencia: el turno enemigo no termina hasta que la prueba
+    // lo suelta. Sin esto, si el turno acababa antes de llegar el daño, la
+    // salida se hacía (bien) y la prueba fallaba según el reloj.
+    await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); window.__soltar = null; c._pausa = (ms) => new Promise((ok) => { window.__soltar = ok; }); return true; })()`);
     await evaluate(`window.__sigo = 1; ${enVuelo}`);
     // FIXTURE: el daño que lo mata llega mientras la salida espera.
     await evaluate(`ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' }); true`);
+    await evaluate(`ARCANVEIL.sistema('combat')._pausa = window.__pausaReal ?? ARCANVEIL.sistema('combat')._pausa; window.__soltar?.(); true`);
     await until('!document.getElementById("caida-modal").hidden', 8000);
     await wait(500);
     const muertoEsperando = await evaluate(`({ sigo: window.__sigo, salida: document.getElementById('salida-modal').hidden, fase: ARCANVEIL.ver('meta.fase') })`);
