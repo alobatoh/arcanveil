@@ -491,6 +491,10 @@ function salirConGuardado(irse) {
       return;
     }
     salida.pendiente.guardando = true;
+    // Mientras guarda se dice (otra pestaña puede tener el candado un rato);
+    // otro clic en «Menú» no pide nada más (ver la guarda de arriba).
+    $('#menu')?.setAttribute('aria-busy', 'true');
+    mostrarSalida('Guardando antes de salir', 'Un momento: se guarda la partida y se comprueba antes de salir.', []);
     let r;
     try {
       // Muerto: manda el registro de la muerte (y su final), no otro guardado.
@@ -498,6 +502,7 @@ function salirConGuardado(irse) {
       r = await guardarYComprobar();
     } finally {
       if (salida.pendiente) salida.pendiente.guardando = false;
+      $('#menu')?.removeAttribute('aria-busy');
     }
     if (!salida.pendiente || ver('meta.runId') !== runId) return;
     if (r.ok) { terminar(); salida.saliendo = true; irse(); return; }
