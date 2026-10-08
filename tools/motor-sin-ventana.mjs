@@ -36,6 +36,13 @@ globalThis.location ??= { hostname: 'sin-ventana', protocol: 'node:', href: 'nod
 globalThis.localStorage ??= almacen();
 globalThis.sessionStorage ??= almacen();
 
+// El estado compartido entre pestañas (IndexedDB en el navegador), en
+// memoria: misma semántica de comparar y cambiar, un solo proceso.
+{
+  const C = await import('../src/persistence/Coordinacion.js');
+  if (!globalThis.indexedDB) C.usarCoordinacion(C.crearEnMemoria());
+}
+
 const { store } = await import('../src/core/Store.js');
 const { bus } = await import('../src/core/EventBus.js');
 const { GestorRNG } = await import('../src/core/RNG.js');
@@ -142,8 +149,14 @@ export async function crearMotor({ semilla = 20260925, silencio = true } = {}) {
       return textoDesde(antes);
     },
 
-    /** Guarda y vuelve a cargar la partida, como al cerrar y abrir. */
-    guardarYCargar(ranura = '9') {
+    /**
+     * Guarda y vuelve a cargar la partida, como al cerrar y abrir.
+     *
+     * Cada campaña, en SU ranura de prueba (por run). Antes todas las
+     * partidas de un proceso compartían la «9»; desde el #7 el guardado no
+     * escribe encima de otra campaña, y esto simulaba justo eso.
+     */
+    guardarYCargar(ranura = `prueba-${store.select('meta.runId') ?? 'sin-run'}`) {
       const g = sistema('saves').guardar(ranura, { silencioso: true });
       if (!g.exito) throw new Error(`no se pudo guardar: ${g.motivo}`);
       store.reiniciar();
