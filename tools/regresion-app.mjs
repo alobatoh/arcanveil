@@ -158,6 +158,12 @@ const exceptions = [];
  * Pollinations en cada escena). Tiene que quedar vacío.
  */
 const externos = [];
+/**
+ * Eventos de navegación de la pestaña principal (marco, carga, contexto,
+ * cierre), para no evaluar en un documento provisional (ver `navegarHasta`).
+ */
+const EVENTOS_NAVEGACION = new Set(['Page.frameNavigated', 'Page.loadEventFired', 'Runtime.executionContextCreated', 'Inspector.detached', 'Target.detachedFromTarget']);
+const eventosPrincipal = [];
 function cdp(method, params = {}) {
   const id = ++seq;
   ws.send(JSON.stringify({ id, method, params }));
@@ -247,15 +253,59 @@ async function abrirPestana(url) {
   await new Promise((ok, mal) => { socket.onopen = ok; socket.onerror = mal; });
   let n = 0;
   const esperan = new Map();
-  socket.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); } };
+  const eventos = [];
+  socket.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); } else if (EVENTOS_NAVEGACION.has(m.method)) eventos.push({ method: m.method, params: m.params, t: Date.now() }); };
+  socket.addEventListener('close', () => eventos.push({ method: 'Inspector.detached', params: { reason: 'canal cerrado' }, t: Date.now() }));
   const enviar = (method, params = {}) => new Promise((resolve, reject) => { const id = ++n; esperan.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
   const ev = async (expression) => { const r = await enviar('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(`pestaña 2: ${r.exceptionDetails.text}`); return r.result?.value; };
   const hasta = async (expression, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await ev(`Boolean(${expression})`)) return; } catch { /* navegando */ } await wait(120); } let diag = null; try { diag = await ev(`({ ...${DIAGNOSTICO}, avisos: [...document.querySelectorAll('#avisos .aviso')].map((n) => n.textContent), fallos: document.querySelector('#fallos')?.textContent ?? null, salida: document.getElementById('salida-modal')?.hidden === false ? document.getElementById('salida-nota')?.textContent : null })`); } catch (e) { diag = { sinDiagnostico: e.message }; } throw new Error(`pestaña 2: tiempo agotado esperando ${expression}\n  estado: ${JSON.stringify(diag)}`); };
-  await enviar('Runtime.enable');
+  await enviar('Runtime.enable'); await enviar('Page.enable'); await enviar('Inspector.enable');
   // Mismo tamaño que la principal (en «headless» una pestaña nueva nace con otro).
   await enviar('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: !desktop });
-  return { ev, hasta, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
+  return { ev, hasta, enviar, eventos, id: t.id, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
 }
+
+/**
+ * Navegar (`Page.navigate`, `Page.reload` o un clic que navega) y esperar
+ * al documento FINAL: la última navegación del marco principal va a uno de
+ * `finales`, ese documento ha cargado y su contexto de ejecución existe.
+ * Hasta entonces NO se evalúa nada (un `Runtime.evaluate` en el documento
+ * provisional de una redirección muere con «Inspected target navigated or
+ * closed»). Las redirecciones esperadas pasan por `permitidas`; una
+ * navegación a otro sitio, o que la pestaña se cierre, es un error con su
+ * diagnóstico, no un reintento.
+ *
+ * @param {() => Promise<any>} accion
+ * @param {{eventos: Array, finales: string[], permitidas?: string[], tope?: number, quien?: string}} o
+ */
+async function navegarHasta(accion, { eventos = eventosPrincipal, finales, permitidas = finales, tope = 15000, quien = 'pestaña principal' }) {
+  const desde = eventos.length;
+  const ruta = (u) => { try { return new URL(u).pathname; } catch { return String(u); } };
+  const acaba = (u, lista) => lista.some((p) => ruta(u).endsWith(p));
+  const t0 = Date.now();
+  let accionHecha = false;
+  const promesa = Promise.resolve().then(accion).then(() => { accionHecha = true; }, (e) => { accionHecha = e; });
+  while (Date.now() - t0 < tope) {
+    await wait(40);
+    if (accionHecha instanceof Error && !/navigated|closed/i.test(accionHecha.message)) throw new Error(`${quien}: la navegación no se pudo pedir: ${accionHecha.message}`);
+    const ev = eventos.slice(desde);
+    const cierre = ev.find((e) => e.method === 'Inspector.detached' || e.method === 'Target.detachedFromTarget');
+    if (cierre) throw new Error(`${quien}: la pestaña se cerró durante la navegación (${cierre.params?.reason ?? cierre.method})`);
+    const navs = ev.filter((e) => e.method === 'Page.frameNavigated' && !e.params.frame.parentId);
+    const inesperada = navs.find((e) => !acaba(e.params.frame.url, permitidas));
+    if (inesperada) throw new Error(`${quien}: navegación inesperada a ${inesperada.params.frame.url} (se esperaba ${finales.join(' o ')}); navegaciones: ${navs.map((e) => ruta(e.params.frame.url)).join(' → ')}`);
+    const ultima = navs.at(-1);
+    if (!ultima || !acaba(ultima.params.frame.url, finales)) continue;
+    const despues = ev.slice(ev.indexOf(ultima));
+    const cargada = despues.some((e) => e.method === 'Page.loadEventFired');
+    const contexto = despues.some((e) => e.method === 'Runtime.executionContextCreated' && e.params.context?.auxData?.isDefault && e.params.context?.auxData?.frameId === ultima.params.frame.id);
+    if (cargada && contexto) { await promesa; return { url: ultima.params.frame.url, navegaciones: navs.map((e) => ruta(e.params.frame.url)) }; }
+  }
+  const navs = eventos.slice(desde).filter((e) => e.method === 'Page.frameNavigated' && !e.params.frame.parentId).map((e) => ruta(e.params.frame.url));
+  throw new Error(`${quien}: no se llegó a un documento final (${finales.join(' o ')}) en ${tope} ms; navegaciones: ${navs.join(' → ') || 'ninguna'}`);
+}
+const RECARGAR = () => cdp('Page.reload', { ignoreCache: false });
+const APP = ['/app/index.html'];
 
 /** Un toque de verdad (eventos táctiles), para el móvil. */
 async function tocar(selector) {
@@ -373,6 +423,92 @@ async function navegarEn(p, accionExpr, listo) {
   await p.hasta(listo, 20000);
 }
 const LISTA_APP = 'window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")';
+
+/**
+ * #9 · TOKEN DE GUARDADO en Chrome, con IndexedDB y Web Locks de verdad:
+ *   · el repro de la revisión (mismo token, turno +500): conflicto con el
+ *     aviso honesto, y la autoridad y el espejo siguen en el original;
+ *   · dos pestañas del MISMO perfil con la misma partida cargada guardan a
+ *     la vez con el mismo token: una operación (la otra, «repetida»);
+ *   · a la vez, mismo token y contenidos distintos: uno durable, el otro
+ *     conflicto; nunca dos éxitos.
+ * Precondición: esta pestaña juega una campaña viva y guardada.
+ */
+async function tokenEnChrome() {
+  etapa('#9 · token de guardado: repro de la revisión y dos pestañas con el mismo token');
+  await evaluate(GRABAR_AVISOS);
+  const S = await evaluate(`ARCANVEIL.ver('meta.ranura')`);
+  const g = (opciones) => `ARCANVEIL.sistema('saves').guardar(${JSON.stringify(S)}, ${JSON.stringify(opciones)}).then((r) => ({ exito: r.exito, repetido: r.repetido ?? false, codigo: r.codigo ?? null, rev: r.rev ?? null, motivo: r.motivo ?? null }))`;
+  const leer = `(async () => { const rec = await ${idbLeer('ranuras', S)}; const snap = await ${idbLeer('partidas', S)}; const ls = ${lsBytes(S)}; const t = (x) => { try { return JSON.parse(x)?.estado?.meta?.turno ?? null; } catch { return 'ILEGIBLE'; } }; return { rev: rec?.rev ?? null, run: rec?.runId ?? null, idb: snap?.texto ?? null, ls, turnoIdb: t(snap?.texto), turnoLs: t(ls) }; })()`;
+  const r1 = await evaluate(g({ token: 'T-9-repro' }));
+  const antes = await evaluate(leer);
+  const t0 = await evaluate(`ARCANVEIL.ver('meta.turno')`);
+  await evaluate(`ARCANVEIL.store.fijar('meta.turno', ${t0} + 500); true`);
+  // Sin avisos anteriores en pantalla: la captura enseña solo el de este intento.
+  await until('!document.querySelector("#avisos")?.children.length', 8000);
+  const n = await evaluate('window.__avisos.length');
+  const r2 = await evaluate(g({ token: 'T-9-repro' }));
+  await until(`window.__avisos.length > ${n}`, 5000);
+  await wait(500);
+  await fotoRapida(`17a-token-conflicto-${viewport.label}.png`);
+  const aviso = await evaluate(`window.__avisos.slice(${n})`);
+  const despues = await evaluate(leer);
+  await evaluate(`ARCANVEIL.store.fijar('meta.turno', ${t0}); true`);
+  if (!r1.exito || r2.exito || r2.codigo !== 'token-contenido' || !aviso.some((a) => /otro contenido/.test(a)) || aviso.some((a) => /Partida guardada/.test(a))
+    || despues.rev !== antes.rev || despues.idb !== antes.idb || despues.ls !== antes.ls || despues.turnoIdb !== t0 || despues.turnoLs !== t0) {
+    throw new Error(`#9 repro del token: ${JSON.stringify({ r1, r2, aviso, antes: { rev: antes.rev, t: antes.turnoIdb }, despues: { rev: despues.rev, idb: despues.turnoIdb, ls: despues.turnoLs } })}`);
+  }
+  console.log(`  #9 repro: el mismo token con el turno +500 es conflicto («${aviso[0].slice(0, 60)}…»); autoridad y espejo siguen en el turno ${t0} (rev ${despues.rev})`);
+
+  // Dos pestañas, la misma partida cargada desde la misma copia.
+  const otra = await abrirPestana(URL_APP);
+  try {
+    await otra.hasta(LISTA_APP);
+    await otra.ev(GRABAR_AVISOS);
+    await otra.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await otra.hasta('document.body.dataset.activeScreen === "cargar"');
+    await otra.ev(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${S}"]').click(); true`);
+    await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(S)}`, 15000);
+    await otra.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    await otra.ev(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
+    // Esta pestaña también abre ESA copia (misma foto en las dos).
+    await evaluate(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(S)}).then((r) => r.exito)`);
+    const canon = `(async () => (await import('/src/persistence/Ranuras.js')).contenidoCanonico(JSON.stringify(ARCANVEIL.sistema('saves')._construir('crónica'))))()`;
+    const [ca, cb] = [await evaluate(canon), await otra.ev(canon)];
+    if (ca !== cb) throw new Error('#9: las dos pestañas no tienen la misma foto tras cargar la misma copia (precondición del caso «mismo contenido»)');
+    const revAntes = (await evaluate(leer)).rev;
+    const mismo = await Promise.all([evaluate(g({ token: 'T-9-dos', nota: 'crónica' })), otra.ev(g({ token: 'T-9-dos', nota: 'crónica' }))]);
+    const trasMismo = await evaluate(leer);
+    const repetidas = mismo.filter((x) => x.exito && x.repetido).length;
+    const nuevas = mismo.filter((x) => x.exito && !x.repetido).length;
+    if (nuevas !== 1 || repetidas !== 1 || trasMismo.rev !== revAntes + 1 || trasMismo.idb !== trasMismo.ls) throw new Error(`#9 dos pestañas, mismo token y contenido: ${JSON.stringify({ mismo, revAntes, rev: trasMismo.rev })}`);
+    // Contenidos distintos a la vez con el mismo token.
+    await otra.ev(`ARCANVEIL.store.dispatch('player/xp', { cantidad: 3, motivo: 'fixture' }); true`);
+    await wait(100);
+    await until('!document.querySelector("#avisos")?.children.length', 8000);
+    await otra.hasta('!document.querySelector("#avisos")?.children.length', 8000);
+    const nOtra = await otra.ev('window.__avisos.length');
+    const distinto = await Promise.all([evaluate(g({ token: 'T-9-tres', nota: 'crónica', silencioso: false })), otra.ev(g({ token: 'T-9-tres', nota: 'crónica', silencioso: false }))]);
+    const trasDistinto = await evaluate(leer);
+    const ok = distinto.filter((x) => x.exito);
+    const conflicto = distinto.filter((x) => !x.exito && x.codigo === 'token-contenido');
+    if (ok.length !== 1 || conflicto.length !== 1 || ok[0].repetido || trasDistinto.rev !== trasMismo.rev + 1 || trasDistinto.idb !== trasDistinto.ls) throw new Error(`#9 dos pestañas, mismo token y contenidos distintos: ${JSON.stringify({ distinto, rev: trasDistinto.rev })}`);
+    if (!distinto[1].exito) {
+      await otra.hasta(`window.__avisos.length > ${nOtra}`, 5000);
+      await wait(500);
+      await otra.foto(`17b-token-dos-pestanas-conflicto-${viewport.label}.png`);
+    } else {
+      await wait(500);
+      await fotoRapida(`17b-token-dos-pestanas-conflicto-${viewport.label}.png`);
+    }
+    console.log(`  #9 dos pestañas: mismo token y contenido → 1 guardado + 1 repetido (rev ${revAntes} → ${trasMismo.rev}); contenidos distintos → 1 guardado + 1 conflicto (rev ${trasDistinto.rev}); espejo = autoridad`);
+  } finally {
+    await otra.cerrar();
+  }
+  // Esta pestaña sigue con la copia VIGENTE (la otra pudo ganar la última).
+  const recargada = await evaluate(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(S)}).then((r) => r.exito)`);
+  if (!recargada) throw new Error('#9: no se pudo volver a abrir la copia vigente tras la prueba del token');
+}
 
 /**
  * #8 · GUARDADO COORDINADO ENTRE PESTAÑAS, en Chrome real: pestañas del
@@ -581,6 +717,9 @@ try {
     if (m.id && pending.has(m.id)) {
       const p = pending.get(m.id); pending.delete(m.id);
       if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result);
+    } else if (EVENTOS_NAVEGACION.has(m.method)) {
+      eventosPrincipal.push({ method: m.method, params: m.params, t: Date.now() });
+      if (eventosPrincipal.length > 2000) eventosPrincipal.splice(0, 1000);
     } else if (m.method === 'Runtime.exceptionThrown') {
       exceptions.push(m.params.exceptionDetails?.text ?? 'excepción');
     } else if (m.method === 'Network.requestWillBeSent') {
@@ -588,7 +727,8 @@ try {
       if (/^(?:https?|wss?):/.test(url) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(url)) externos.push(url.slice(0, 120));
     }
   };
-  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable');
+  await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable'); await cdp('Inspector.enable');
+  ws.addEventListener('close', () => eventosPrincipal.push({ method: 'Inspector.detached', params: { reason: 'canal cerrado' }, t: Date.now() }));
 
   // FIXTURE de semilla (#7): el azar de la página (la ficha aleatoria, la
   // semilla maestra del motor, las variantes del narrador) sale de
@@ -602,13 +742,13 @@ try {
     const original = crypto.getRandomValues.bind(crypto);
     crypto.getRandomValues = (a) => { if (a instanceof Uint32Array) { for (let i = 0; i < a.length; i++) a[i] = (azar() * 4294967296) >>> 0; return a; } return original(a); };
   })();` });
-  await cdp('Page.reload', { ignoreCache: false });
+  await navegarHasta(RECARGAR, { finales: APP });
 
   // `--sin-ia`: sin generador de imágenes en el equipo. El juego tiene que
   // seguir igual, con marcadores, y el estudio decir por qué no pinta.
   if (sinIA) {
     await cdp('Network.setBlockedURLs', { urls: ['*127.0.0.1:11437*', '*localhost:11437*'] });
-    await cdp('Page.reload', { ignoreCache: true });
+    await navegarHasta(() => cdp('Page.reload', { ignoreCache: true }), { finales: APP });
     etapa(`arranque ${viewport.label}${sinIA ? ' sin generador' : ''}`);
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")');
   }
@@ -674,6 +814,7 @@ try {
     await evaluate(`(() => { const yo = ARCANVEIL.ver('meta.ranura'); const base = localStorage.getItem('arcanveil:partida:' + yo); let i = 0;
       for (const n of ['1','2','3','4','5','6','7','8']) { if (n === String(yo) || localStorage.getItem('arcanveil:partida:' + n) !== null) continue; const g = JSON.parse(base); i += 1; g.estado.meta.runId = 'run-relleno-' + n; g.estado.meta.muerte = null; g.estado.player.nombre = 'Relleno ' + n; g.cabecera = { ...g.cabecera, nombre: 'Relleno ' + n, runId: 'run-relleno-' + n, muerto: false }; g.guardadoEn = Date.now() - i * 60000; localStorage.setItem('arcanveil:partida:' + n, JSON.stringify(g)); } return i; })()`);
     await pestanasCoordinadas();
+    await tokenEnChrome();
     if (externos.length) throw new Error(`la página pidió cosas fuera de este equipo: ${[...new Set(externos)].slice(0, 5).join(' · ')}`);
     console.log(JSON.stringify({ viewport: viewport.label, solo: 'pestanas', semilla, exceptions: exceptions.length, externos: externos.length, sinIA }, null, 2));
     break principal;
@@ -1181,13 +1322,43 @@ try {
 
   etapa('salida segura: Menú con doble clic (guardado comprobado, una sola navegación)');
   const antesSalir = await evaluate(`({ turno: ARCANVEIL.ver('meta.turno'), run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), vida: ARCANVEIL.ver('player.vida.actual') })`);
-  await evaluate(`sessionStorage.setItem('reg:guardados', '0'); ARCANVEIL.bus.on('save:done', () => sessionStorage.setItem('reg:guardados', String(Number(sessionStorage.getItem('reg:guardados')) + 1))); true`);
-  await pulsarYNavegar(`(() => { const b = document.querySelector('#menu'); return { click: () => { b.click(); b.click(); } }; })()`,
+  // Precondición del TEST (no del producto): ningún guardado anterior en
+  // cola cuando empieza el conteo. Se provoca uno a propósito (FIXTURE: el
+  // candado global retenido) para comprobar que, sin barrera, se contaría
+  // (la discrepancia 2 ≠ 1 de la revisión externa), y se vacía con la
+  // barrera REAL `drenar`, que falla con error si no termina.
+  const previo = await evaluate(`(async () => {
+    window.__soltarPrevio = null;
+    navigator.locks.request('arcanveil:ranuras', () => new Promise((r) => { window.__soltarPrevio = r; }));
+    for (let i = 0; i < 100 && !window.__soltarPrevio; i++) await new Promise((r) => setTimeout(r, 20));
+    window.__previo = ARCANVEIL.sistema('saves').guardar(ARCANVEIL.ver('meta.ranura'), { silencioso: true });
+    window.__contados = 0; window.__quitarConteo = ARCANVEIL.bus.on('save:done', () => { window.__contados += 1; });
+    const enCola = ARCANVEIL.sistema('saves').inspeccionar().guardadosPendientes;
+    window.__soltarPrevio();
+    const barrera = await ARCANVEIL.sistema('saves').drenar(15000).then(() => 'vacía', (e) => 'ERROR: ' + e.message);
+    window.__quitarConteo?.();
+    return { enCola, barrera, contadosSinBarrera: window.__contados, quedan: ARCANVEIL.sistema('saves').inspeccionar().guardadosPendientes, previo: (await window.__previo).exito };
+  })()`);
+  if (previo.enCola < 1 || previo.barrera !== 'vacía' || previo.quedan !== 0 || previo.contadosSinBarrera !== 1 || !previo.previo) throw new Error(`salida: la barrera antes del conteo no se cumplió: ${JSON.stringify(previo)}`);
+  // El conteo de ESTA salida (por ranura y run), y la navegación por CDP.
+  await evaluate(`sessionStorage.setItem('reg:guardados', '[]'); ARCANVEIL.bus.on('save:done', (d) => { const l = JSON.parse(sessionStorage.getItem('reg:guardados') ?? '[]'); l.push({ ranura: d.ranura, run: d.runId, rev: d.rev, repetido: d.repetido ?? false }); sessionStorage.setItem('reg:guardados', JSON.stringify(l)); }); true`);
+  // FIXTURE: candado retenido para que la salida quede guardando; el doble
+  // clic llega en ese momento (no debe pedir otra operación).
+  await evaluate(`(async () => { window.__soltarSalida = null; navigator.locks.request('arcanveil:ranuras', () => new Promise((r) => { window.__soltarSalida = r; })); for (let i = 0; i < 100 && !window.__soltarSalida; i++) await new Promise((r) => setTimeout(r, 20)); const b = document.querySelector('#menu'); b.click(); await new Promise((r) => setTimeout(r, 120)); b.click(); return true; })()`);
+  await until('!document.getElementById("salida-modal").hidden && /Guardando antes de salir/.test(document.getElementById("salida-titulo").textContent)', 5000);
+  const guardando = await evaluate(`({ titulo: document.getElementById('salida-titulo').textContent, botones: document.querySelectorAll('#salida-acciones button').length, guardados: JSON.parse(sessionStorage.getItem('reg:guardados')).length, enCola: ARCANVEIL.sistema('saves').inspeccionar().guardadosPendientes, ocupado: document.querySelector('#menu').getAttribute('aria-busy') })`);
+  if (guardando.guardados !== 0 || guardando.enCola !== 1 || guardando.ocupado !== 'true') throw new Error(`salida: con el guardado pendiente, el doble clic pidió otra cosa: ${JSON.stringify(guardando)}`);
+  await fotoRapida(`10a-salida-guardando-${viewport.label}.png`);
+  const navAntes = eventosPrincipal.length;
+  await pulsarYNavegar(`({ click: () => window.__soltarSalida() })`,
     'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
-  const trasSalir = await evaluate(`(() => { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + ${JSON.stringify(antesSalir.ranura)}) ?? 'null'); return { guardados: sessionStorage.getItem('reg:guardados'), turno: g?.estado?.meta?.turno, run: g?.estado?.meta?.runId, vida: g?.estado?.player?.vida?.actual }; })()`);
-  if (trasSalir.guardados !== '1' || trasSalir.turno !== antesSalir.turno || trasSalir.run !== antesSalir.run || trasSalir.vida !== antesSalir.vida) {
-    throw new Error(`Menú (doble clic): ${JSON.stringify({ antesSalir, trasSalir })}`);
+  const navegaciones = eventosPrincipal.slice(navAntes).filter((e) => e.method === 'Page.frameNavigated' && !e.params.frame.parentId).length;
+  const trasSalir = await evaluate(`(() => { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + ${JSON.stringify(antesSalir.ranura)}) ?? 'null'); return { guardados: JSON.parse(sessionStorage.getItem('reg:guardados') ?? '[]'), turno: g?.estado?.meta?.turno, run: g?.estado?.meta?.runId, vida: g?.estado?.player?.vida?.actual }; })()`);
+  const propios = trasSalir.guardados.filter((x) => x.ranura === String(antesSalir.ranura) && x.run === antesSalir.run && !x.repetido);
+  if (trasSalir.guardados.length !== 1 || propios.length !== 1 || navegaciones !== 1 || trasSalir.turno !== antesSalir.turno || trasSalir.run !== antesSalir.run || trasSalir.vida !== antesSalir.vida) {
+    throw new Error(`Menú (doble clic): ${JSON.stringify({ antesSalir, trasSalir, navegaciones })}`);
   }
+  console.log(`  salida: guardado previo en cola drenado antes de contar (sin barrera habría contado 1 de más); doble clic mientras guarda = 1 guardado (rev ${propios[0].rev}) y 1 navegación`);
   await shot(`10-menu-tras-salir-${viewport.label}.png`);
   await continuarPartida(antesSalir.run);
 
@@ -1485,7 +1656,7 @@ try {
     await shot(`09c-sucesor-${viewport.label}.png`);
 
     // Recargar de verdad y continuar: misma experiencia, mismo nivel, nada otra vez.
-    await cdp('Page.reload', { ignoreCache: false });
+    await navegarHasta(RECARGAR, { finales: APP });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
     await evaluate(`document.querySelector('#inicio-jugar')?.click(); true`);
     await continuarPartida(sucesor.run);
@@ -1565,7 +1736,7 @@ try {
     if (await evaluate(`document.body.dataset.activeScreen === 'juego'`)) {
       await pulsarYNavegar(`document.querySelector('#menu')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
     } else {
-      await cdp('Page.reload', { ignoreCache: false });
+      await navegarHasta(RECARGAR, { finales: APP });
       await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
     }
   };
@@ -1614,7 +1785,7 @@ try {
     }
     const r = await evaluate(`(async () => { const out = []; for (const n of ['1','2','3','4','5','6','7','8']) { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + n) ?? 'null'); const o = g?.estado?.player?.legadoRecibido?.runOrigen; if (o === ${JSON.stringify(x)} || o === ${JSON.stringify(y)}) { const c = await ARCANVEIL.sistema('saves').cargar(n); out.push({ n, ok: c.exito, xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), origen: ARCANVEIL.ver('player.legadoRecibido.runOrigen'), token: ARCANVEIL.ver('player.legadoRecibido.transaccion') }); } } return out; })()`);
     if (r.length !== 2 || !r.every((s) => s.ok && s.xp === s.heredada && s.token)) throw new Error(`abrir los dos sucesores tras recargar: ${JSON.stringify(r)}`);
-    await cdp('Page.reload', { ignoreCache: false });
+    await navegarHasta(RECARGAR, { finales: APP });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
   }
 
@@ -1629,7 +1800,7 @@ try {
       const l = JSON.parse(localStorage.getItem('arcanveil:legados')); l[${JSON.stringify(z)}] = { ...l[${JSON.stringify(z)}], estado: 'reservado', transaccion: 'leg-fixture-z', reserva: { runDestino: 'run-z-sucesor', ranura: n, cantidad: 350, momento: Date.now() } };
       localStorage.setItem('arcanveil:legados', JSON.stringify(l)); localStorage.setItem('arcanveil:partida:' + n, '{"version":'); return n; })()`);
     if (!ranuraDanada) throw new Error('no quedaba ranura libre para el fixture de recuperación');
-    await cdp('Page.reload', { ignoreCache: false });
+    await navegarHasta(RECARGAR, { finales: APP });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
     await until('/no se (puede|pueden) comprobar/.test(document.getElementById("avisos")?.textContent ?? "")', 8000);
     await evaluate(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); true`);
@@ -1699,6 +1870,7 @@ try {
   }
 
   await pestanasCoordinadas();
+  await tokenEnChrome();
 
   etapa('muerte con la salida pendiente, caso A (sin protección)');
   {
@@ -1718,18 +1890,33 @@ try {
     if (r.status !== 404) throw new Error(`la interfaz retirada se sigue sirviendo: ${viejo} → ${r.status}`);
   }
   const conPartida = await evaluate(`ARCANVEIL.sistema('saves').listar().filter((r) => !r.vacia && !r.muerto).length`);
-  await cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/clasico.html` });
-  await until('location.pathname.endsWith("/app/index.html") && window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
+  // El ayudante de navegación, primero contra lo que NO debe dar verde: un
+  // destino equivocado y una pestaña que se cierra a mitad (otra pestaña del
+  // mismo perfil, para no perder la principal).
+  {
+    const aux = await abrirPestana(`http://127.0.0.1:${PORT}/app/index.html`);
+    await aux.hasta('window.ARCANVEIL?.motor?.listo');
+    const mal = await navegarHasta(() => aux.enviar('Page.navigate', { url: `http://127.0.0.1:${PORT}/ATTRIBUTION.md` }), { eventos: aux.eventos, finales: APP, permitidas: ['/clasico.html', ...APP], tope: 8000, quien: 'pestaña auxiliar' }).then(() => 'VERDE', (e) => e.message);
+    const t0 = Date.now();
+    const cerrada = await navegarHasta(() => fetch(`http://127.0.0.1:${DEBUG}/json/close/${aux.id}`), { eventos: aux.eventos, finales: APP, permitidas: ['/clasico.html', ...APP], tope: 8000, quien: 'pestaña auxiliar' }).then(() => 'VERDE', (e) => e.message);
+    await aux.cerrar();
+    if (!/navegación inesperada a .*ATTRIBUTION\.md/.test(mal) || !/se cerró|no se llegó/.test(cerrada) || Date.now() - t0 > 9000) throw new Error(`el ayudante de navegación dio por buena una navegación mala: ${JSON.stringify({ mal, cerrada })}`);
+    console.log(`  ayudante de navegación: destino equivocado → «${mal.slice(0, 60)}…»; pestaña cerrada → «${cerrada.slice(0, 50)}…»`);
+  }
+  const puenteNav = await navegarHasta(() => cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/clasico.html` }), { finales: APP, permitidas: ['/clasico.html', ...APP] });
+  if (puenteNav.navegaciones[0] !== '/clasico.html' || !puenteNav.navegaciones.at(-1).endsWith('/app/index.html')) throw new Error(`el puente no pasó por la clásica hasta app/: ${JSON.stringify(puenteNav)}`);
+  await until(`location.pathname.endsWith('/app/index.html') && location.origin === ${JSON.stringify(`http://127.0.0.1:${PORT}`)} && window.ARCANVEIL?.motor?.listo && document.body.classList.contains('esta-listo')`, 15000);
   await evaluate(`document.querySelector('#inicio-jugar')?.click(); true`);
   const puente = await evaluate(`({ ruta: location.pathname, continuar: !document.querySelector('#menu-continuar')?.disabled, atacarViejo: document.querySelectorAll('[data-accion="atacar"]').length, partidas: ARCANVEIL.sistema('saves').listar().filter((r) => !r.vacia && !r.muerto).length })`);
   if (!puente.continuar || puente.atacarViejo || puente.partidas !== conPartida) throw new Error(`el puente de la clásica no lleva a la vigente con las mismas partidas: ${JSON.stringify({ puente, conPartida })}`);
+  console.log(`  puente clásico: ${puenteNav.navegaciones.join(' → ')}; ${puente.partidas} partidas vivas, las mismas que antes`);
   await shot(`14-clasica-puente-${viewport.label}.png`);
 
   etapa('sin red');
   const beforeOffline = await evaluate(`navigator.serviceWorker.ready.then(()=>({controlled:Boolean(navigator.serviceWorker.controller),lines:ARCANVEIL.ver('narrative.entradas',[]).length}))`);
   await wait(700);
   await cdp('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
-  await cdp('Page.reload', { ignoreCache: false });
+  await navegarHasta(RECARGAR, { finales: APP });
   await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
   const offline = await evaluate(`({screen:document.body.dataset.activeScreen, title:document.title, failures:document.querySelectorAll('#fallos .fallos__linea').length})`);
   await shot(`04-offline-${viewport.label}.png`);
@@ -1754,7 +1941,7 @@ try {
     await cdp('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     await evaluate(`localStorage.setItem('otro-juego:dato', 'sigue'); new Promise((ok) => { const p = indexedDB.open('otra-base', 1); p.onupgradeneeded = () => p.result.createObjectStore('x'); p.onsuccess = () => { const t = p.result.transaction('x', 'readwrite'); t.objectStore('x').put('sigue', 'k'); t.oncomplete = () => { p.result.close(); ok(true); }; }; })`);
     escribirSync(join(cacheImagen, 'pnj_npc_x__prueba.img'), 'candidata de prueba');
-    await cdp('Page.reload', { ignoreCache: false });
+    await navegarHasta(RECARGAR, { finales: APP });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
     await evaluate(`window.confirm = () => true; document.querySelector('#inicio-jugar')?.click()`);
     await until('document.querySelector("#menu-ajustes") && !document.querySelector("#menu-ajustes").closest("[hidden]")', 5000);
@@ -1764,7 +1951,7 @@ try {
     await until('/Borrados partidas/.test(document.body.textContent)', 8000);
     const tras = { galeria: await evaluate(GALERIA), candidatas: enCache() };
     if (tras.galeria.length || tras.candidatas.length) throw new Error(`«Borrar partidas y personajes» dejó imágenes: ${JSON.stringify(tras)}`);
-    await cdp('Page.reload', { ignoreCache: false });
+    await navegarHasta(RECARGAR, { finales: APP });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
     const recargado = await evaluate(`(async () => ({ galeria: await ${GALERIA}, ajeno: localStorage.getItem('otro-juego:dato'), otraBase: await new Promise((ok) => { const p = indexedDB.open('otra-base', 1); p.onsuccess = () => { const q = p.result.transaction('x').objectStore('x').get('k'); q.onsuccess = () => { p.result.close(); ok(q.result); }; }; }), personajes: localStorage.getItem('arcanveil:personajes') }))()`);
     if (recargado.galeria.length || recargado.ajeno !== 'sigue' || recargado.otraBase !== 'sigue' || recargado.personajes) throw new Error(`tras borrar y recargar: ${JSON.stringify(recargado)}`);
