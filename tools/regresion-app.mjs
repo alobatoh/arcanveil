@@ -26,6 +26,12 @@ const desktop = process.argv.includes('--desktop');
  * en pie y con cara, el respaldo funciona de verdad y no de palabra.
  */
 const sinIA = process.argv.includes('--sin-ia');
+/**
+ * `--solo-pestanas`: solo la etapa #8 (guardado coordinado entre pestañas)
+ * tras preparar una campaña real y llenar las demás ranuras (FIXTURE). Sirve
+ * para comparar la base y el HEAD en Chrome real sin la regresión entera.
+ */
+const soloPestanas = process.argv.includes('--solo-pestanas');
 /** `--semilla N`: la semilla del azar de la página (FIXTURE; ver más abajo). */
 const semilla = Number(process.argv[process.argv.indexOf('--semilla') + 1]) || (process.argv.includes('--semilla') ? 0 : 20261008);
 console.log(`semilla de la partida: ${semilla}`);
@@ -246,7 +252,9 @@ async function abrirPestana(url) {
   const ev = async (expression) => { const r = await enviar('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(`pestaña 2: ${r.exceptionDetails.text}`); return r.result?.value; };
   const hasta = async (expression, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await ev(`Boolean(${expression})`)) return; } catch { /* navegando */ } await wait(120); } throw new Error(`pestaña 2: tiempo agotado esperando ${expression}`); };
   await enviar('Runtime.enable');
-  return { ev, hasta, cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
+  // Mismo tamaño que la principal (en «headless» una pestaña nueva nace con otro).
+  await enviar('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: !desktop });
+  return { ev, hasta, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
 }
 
 /** Un toque de verdad (eventos táctiles), para el móvil. */
@@ -315,6 +323,241 @@ async function shot(name) {
   if (!quieta) console.warn(`captura ${name}: la pantalla no se asentó en 8 s; se toma igual`);
   const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   await writeFile(join(out, name), Buffer.from(r.data, 'base64'));
+}
+
+/** Captura sin esperar a que la pantalla se asiente (para avisos que se van). */
+async function fotoRapida(nombre, enviar = cdp) {
+  if (!out) return;
+  await import('node:fs/promises').then((m) => m.mkdir(out, { recursive: true }));
+  // Al frente: en Chrome sin ventana, una pestaña de fondo no avanza sus
+  // animaciones y los avisos se quedaban invisibles (opacidad 0) en la foto.
+  await enviar('Page.bringToFront').catch(() => {});
+  await wait(450);
+  const r = await enviar('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  await writeFile(join(out, nombre), Buffer.from(r.data, 'base64'));
+}
+
+/* ── #8: guardado coordinado entre pestañas ──────────────────────────────
+ * Lecturas de comprobación en CRUDO (IndexedDB y localStorage), sin los
+ * módulos del juego: valen igual en la base y en el HEAD. */
+const idbLeer = (almacen, clave) => `new Promise((ok) => { const p = indexedDB.open('arcanveil-coordinacion'); p.onsuccess = () => { const db = p.result; if (!db.objectStoreNames.contains(${JSON.stringify(almacen)})) { db.close(); ok(null); return; } const q = db.transaction(${JSON.stringify(almacen)}).objectStore(${JSON.stringify(almacen)}).get(${JSON.stringify(String(clave))}); q.onsuccess = () => { db.close(); ok(q.result ?? null); }; q.onerror = () => { db.close(); ok(null); }; }; p.onerror = () => ok(null); })`;
+const lsBytes = (n) => `localStorage.getItem('arcanveil:partida:' + ${JSON.stringify(String(n))})`;
+const lsRun = (n) => `(() => { try { return JSON.parse(${lsBytes(n)})?.estado?.meta?.runId ?? null; } catch { return 'ILEGIBLE'; } })()`;
+const todasLsBytes = `Object.fromEntries(Array.from({ length: 8 }, (_, i) => [i + 1, localStorage.getItem('arcanveil:partida:' + (i + 1))]))`;
+/** Apunta los avisos que salen (se borran a los 4 s). */
+const GRABAR_AVISOS = `(() => { if (window.__avisos) return true; window.__avisos = []; const c = document.getElementById('avisos'); if (c) new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.textContent) window.__avisos.push(n.textContent); }).observe(c, { childList: true }); return true; })()`;
+/** Desde la portada hasta «Comenzar partida» sin herencia, con el primer personaje. */
+const HASTA_COMENZAR = `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); for (let i = 0; i < 100 && !['herencia', 'personajes', 'creacion'].includes(document.body.dataset.activeScreen); i++) await new Promise((r) => setTimeout(r, 50));
+  if (document.body.dataset.activeScreen === 'herencia') { document.querySelector('#herencia-sin').click(); await new Promise((r) => setTimeout(r, 200)); }
+  document.querySelector('.tarjeta-pj[data-personaje]').click(); await new Promise((r) => setTimeout(r, 200));
+  return Boolean(document.querySelector('#personajes-comenzar')); })()`;
+/** Pulsar «Guardar» y esperar al resultado (el aviso que sale y el botón libre). */
+async function guardarConBoton(ev, hasta, { doble = false } = {}) {
+  await ev(GRABAR_AVISOS);
+  const n = await ev('window.__avisos.length');
+  await ev(`(() => { const b = document.querySelector('#guardar'); b.click(); ${doble ? 'b.click();' : ''} return true; })()`);
+  await hasta(`window.__avisos.length > ${n} && document.querySelector('#guardar')?.getAttribute('aria-busy') !== 'true'`, 20000);
+  return ev(`window.__avisos.slice(${n})`);
+}
+/** Clic que NAVEGA en otra pestaña (desde un temporizador) y espera al documento nuevo. */
+async function navegarEn(p, selectorExpr, listo) {
+  await p.ev(`(() => { const b = ${selectorExpr}; if (!b) throw new Error('no está el botón'); setTimeout(() => b.click(), 30); return true; })()`);
+  await wait(600);
+  await p.hasta(listo, 20000);
+}
+const LISTA_APP = 'window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")';
+
+/**
+ * #8 · GUARDADO COORDINADO ENTRE PESTAÑAS, en Chrome real: pestañas del
+ * MISMO perfil (mismo localStorage, misma IndexedDB, mismos Web Locks).
+ * Precondición: esta pestaña juega una campaña guardada en su ranura E y
+ * las ocho ranuras están llenas. Lo que es FIXTURE se dice (caché vieja de
+ * localStorage, candado retenido, mapas viejos, XP conocida); lo demás es el
+ * flujo real de la interfaz. Que no se reproduzca una carrera NATURAL no se
+ * afirma: la caché vieja es simulada; el candado y el commit, reales.
+ */
+async function pestanasCoordinadas() {
+  etapa('#8 · otra pestaña reemplaza la ranura de esta partida; el guardado de esta se rechaza');
+  await evaluate(GRABAR_AVISOS);
+  const E = await evaluate(`ARCANVEIL.ver('meta.ranura')`);
+  const runOld = await evaluate(`ARCANVEIL.ver('meta.runId')`);
+  const g0 = await guardarConBoton(evaluate, until);
+  if (!g0.some((t) => /Partida guardada/.test(t))) throw new Error(`#8: la partida de esta pestaña no se pudo guardar al empezar: ${JSON.stringify(g0)}`);
+  const bytesOld = await evaluate(lsBytes(E));
+  const dueno = async (n) => (await evaluate(idbLeer('ranuras', n)))?.runId ?? null;
+  const otra = await abrirPestana(URL_APP);
+  let tercera = null;
+  try {
+    await otra.hasta(LISTA_APP);
+    if (!await otra.ev(HASTA_COMENZAR)) throw new Error('#8: la otra pestaña no llegó a «Comenzar partida»');
+    await otra.ev(`document.querySelector('#personajes-comenzar').click(); true`);
+    await otra.hasta('!document.getElementById("ranuras-modal").hidden', 10000);
+    await otra.ev(`document.querySelector('[data-reemplazar="${E}"]').click(); true`);
+    await otra.ev(`document.querySelector('#ranuras-confirmar').click(); true`);
+    await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(E)}`, 20000);
+    await otra.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    const runNew = await otra.ev(`ARCANVEIL.ver('meta.runId')`);
+    const bytesNew = await otra.ev(lsBytes(E));
+    if (runNew === runOld || (await evaluate(lsRun(E))) !== runNew || (await dueno(E)) !== runNew) throw new Error(`#8: el reemplazo desde la otra pestaña no dejó NEW-RUN en la ranura ${E}: ${JSON.stringify({ runOld, runNew, ls: await evaluate(lsRun(E)), idb: await dueno(E) })}`);
+
+    // (1) Sin fixture: Chrome real, mismo perfil, sin tocar la caché.
+    const natural = await guardarConBoton(evaluate, until);
+    const tras1 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, dueno: await dueno(E), avisos: natural };
+    if (natural.length !== 1 || natural.some((t) => /Partida guardada/.test(t)) || !natural.some((t) => /otra (partida|campaña)/.test(t)) || !tras1.bytes || tras1.dueno !== runNew) throw new Error(`#8 (sin fixture): la pestaña vieja guardó encima de la nueva o no lo dijo: ${JSON.stringify(tras1)}`);
+    // (2) FIXTURE: caché vieja; getItem de la ranura E devuelve los bytes de OLD-RUN.
+    await evaluate(`(() => { window.__getItemReal = Storage.prototype.getItem; const viejo = ${JSON.stringify(bytesOld)}; Storage.prototype.getItem = function (k) { return k === 'arcanveil:partida:' + ${JSON.stringify(E)} ? viejo : window.__getItemReal.call(this, k); }; return true; })()`);
+    let cache;
+    try {
+      // Sin avisos anteriores en pantalla: la captura enseña solo el de este intento.
+      await until('!document.querySelector("#avisos")?.children.length', 8000);
+      cache = await guardarConBoton(evaluate, until);
+      await wait(500);
+      await fotoRapida(`16a-guardado-bloqueado-old-new-${viewport.label}.png`);
+    } finally {
+      await evaluate(`Storage.prototype.getItem = window.__getItemReal; true`);
+    }
+    const tras2 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, dueno: await dueno(E), copia: JSON.parse((await evaluate(idbLeer('partidas', E)))?.texto ?? 'null')?.estado?.meta?.runId ?? null, avisos: cache };
+    if (cache.length !== 1 || cache.some((t) => /Partida guardada/.test(t)) || !cache.some((t) => /otra (partida|campaña)/.test(t)) || !tras2.bytes || tras2.dueno !== runNew) throw new Error(`#8 (FIXTURE caché vieja OLD-RUN): ${JSON.stringify(tras2)}`);
+    // (3) Un turno: su guardado silencioso tampoco escribe, y se dice una vez.
+    await evaluate(`ARCANVEIL.jugar('miro alrededor')`);
+    await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    await wait(800);
+    if ((await evaluate(lsRun(E))) !== runNew || (await dueno(E)) !== runNew) throw new Error('#8: el guardado de fin de turno de la pestaña vieja pisó la ranura');
+    console.log(`  #8 caché vieja: ${runOld} no pisa ${runNew} en la ranura ${E} (sin fixture y con caché vieja simulada); motivo «${cache.find((t) => /otra/.test(t))?.slice(0, 70)}…»`);
+
+    // La nueva sigue tras recargar su pestaña.
+    await otra.ev('setTimeout(() => location.reload(), 30); true');
+    await wait(600);
+    await otra.hasta(LISTA_APP, 20000);
+    await otra.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await otra.hasta('document.body.dataset.activeScreen === "cargar"');
+    await otra.ev(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${E}"]').click(); true`);
+    await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.runId") === ${JSON.stringify(runNew)}`, 15000);
+    await otra.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    await otra.foto(`16b-nueva-preservada-tras-recargar-${viewport.label}.png`);
+
+    etapa('#8 · guardado pendiente (otra pestaña retiene el candado), doble clic y éxito');
+    // FIXTURE: esta pestaña retiene el candado global de ranuras.
+    await evaluate(`navigator.locks.request('arcanveil:ranuras', () => new Promise((r) => { window.__soltarCandado = r; })); true`);
+    await until('typeof window.__soltarCandado === "function"');
+    await otra.ev(GRABAR_AVISOS);
+    await otra.hasta('!document.querySelector("#avisos")?.children.length', 8000);
+    const revAntes = (await otra.ev(idbLeer('ranuras', E)))?.rev ?? null;
+    const n0 = await otra.ev('window.__avisos.length');
+    await otra.ev(`(() => { const b = document.querySelector('#guardar'); b.click(); b.click(); return true; })()`);
+    await otra.hasta(`document.querySelector('#guardar').getAttribute('aria-busy') === 'true'`, 5000);
+    await wait(500);
+    const pend = await otra.ev(`(async () => ({ texto: document.querySelector('#guardar').textContent, avisos: window.__avisos.length - ${n0}, rev: (await ${idbLeer('ranuras', E)})?.rev ?? null }))()`);
+    if (pend.texto !== 'Guardando…' || pend.avisos !== 0 || pend.rev !== revAntes) throw new Error(`#8: guardado pendiente: ${JSON.stringify({ pend, revAntes })}`);
+    await otra.foto(`16c-guardado-pendiente-${viewport.label}.png`);
+    await evaluate('window.__soltarCandado(); true');
+    await otra.hasta(`window.__avisos.length > ${n0} && document.querySelector('#guardar').getAttribute('aria-busy') !== 'true'`, 10000);
+    await wait(500);
+    await otra.foto(`16d-guardado-exito-${viewport.label}.png`);
+    const fin = await otra.ev(`(async () => ({ avisos: window.__avisos.slice(${n0}), texto: document.querySelector('#guardar').textContent, rec: await ${idbLeer('ranuras', E)} }))()`);
+    if (fin.avisos.length !== 1 || !/Partida guardada/.test(fin.avisos[0]) || fin.texto !== 'Guardar' || fin.rec?.rev !== revAntes + 1 || fin.rec?.runId !== runNew) throw new Error(`#8: guardado tras soltar el candado (doble clic = un guardado): ${JSON.stringify({ fin, revAntes })}`);
+    console.log(`  #8 guardado pendiente: «Guardando…» sin aviso mientras otra pestaña tiene el candado; al soltarlo, un aviso y una revisión (${revAntes} → ${fin.rec.rev})`);
+
+    etapa('#8 · la pestaña vieja sale sin pisar nada');
+    await evaluate(`document.querySelector('#menu').click(); true`);
+    await until('!document.getElementById("salida-modal").hidden && /otra partida/.test(document.getElementById("salida-nota").textContent)', 15000);
+    await fotoRapida(`16e-salida-pestana-vieja-${viewport.label}.png`);
+    await evaluate(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Salir sin guardar…').click(); true`);
+    await pulsarYNavegar(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Salir sin guardar')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
+    if ((await evaluate(lsRun(E))) !== runNew || (await dueno(E)) !== runNew) throw new Error('#8: salir de la pestaña vieja tocó la ranura de la nueva');
+
+    etapa('#8 · permiso de reemplazo caducado: otra pestaña guarda esa campaña tras elegirla');
+    await evaluate(GRABAR_AVISOS);
+    if (!await evaluate(HASTA_COMENZAR)) throw new Error('#8: no se llegó a «Comenzar partida»');
+    await evaluate(`document.querySelector('#personajes-comenzar').click(); true`);
+    await until('!document.getElementById("ranuras-modal").hidden', 10000);
+    const filas = await evaluate(`[...document.querySelectorAll('#ranuras-lista .ranura-fila')].map((f) => ({ ranura: f.dataset.ranura, bloqueada: f.classList.contains('ranura-fila--bloqueada'), texto: f.textContent }))`);
+    const T = filas.find((x) => !x.bloqueada && x.ranura !== E && /· vivo ·/.test(x.texto))?.ranura;
+    if (!T) throw new Error(`#8: no hay otra campaña viva para el permiso caducado: ${JSON.stringify(filas)}`);
+    await evaluate(`document.querySelector('[data-reemplazar="${T}"]').click(); true`);
+    // La otra pestaña: sale (guardando la suya), abre la campaña T y la guarda.
+    await navegarEn(otra, `document.querySelector('#menu')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
+    await otra.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await otra.hasta('document.body.dataset.activeScreen === "cargar"');
+    await otra.ev(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${T}"]').click(); true`);
+    await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(T)}`, 15000);
+    await otra.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    const runT = await otra.ev(`ARCANVEIL.ver('meta.runId')`);
+    const gT = await guardarConBoton(otra.ev, otra.hasta);
+    if (!gT.some((t) => /Partida guardada/.test(t))) throw new Error(`#8: la otra pestaña no pudo guardar la campaña ${T}: ${JSON.stringify(gT)}`);
+    const bytesT = await evaluate(lsBytes(T));
+    const recT = await evaluate(idbLeer('ranuras', T));
+    const nAv = await evaluate('window.__avisos.length');
+    await evaluate(`document.querySelector('#ranuras-confirmar').click(); true`);
+    await until('!document.getElementById("ranuras-modal").hidden && document.getElementById("ranuras-modal").dataset.etapa === "lista"', 10000);
+    const caducado = await evaluate(`(async () => ({ avisos: window.__avisos.slice(${nAv}), bytes: ${lsBytes(T)}, rec: await ${idbLeer('ranuras', T)}, jugador: ARCANVEIL.ver('player.raza') ?? null }))()`);
+    await fotoRapida(`16f-permiso-caducado-${viewport.label}.png`);
+    if (!caducado.avisos.some((t) => /ha cambiado/.test(t)) || caducado.bytes !== bytesT || caducado.rec?.runId !== runT || caducado.rec?.rev !== recT?.rev || caducado.jugador) throw new Error(`#8: permiso caducado: ${JSON.stringify({ ...caducado, bytes: caducado.bytes === bytesT, recT })}`);
+    // Con el permiso leído de nuevo: solo T.
+    const antesTodo = await evaluate(todasLsBytes);
+    await evaluate(`document.querySelector('[data-reemplazar="${T}"]').click(); true`);
+    await evaluate(`document.querySelector('#ranuras-confirmar').click(); true`);
+    await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(T)}`, 20000);
+    await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    const runM = await evaluate(`ARCANVEIL.ver('meta.runId')`);
+    const despuesTodo = await evaluate(todasLsBytes);
+    const tocadas = Object.keys(antesTodo).filter((k) => despuesTodo[k] !== antesTodo[k]);
+    if (tocadas.length !== 1 || tocadas[0] !== String(T) || (await dueno(T)) !== runM) throw new Error(`#8: el reemplazo con permiso vigente tocó otras ranuras: ${JSON.stringify({ tocadas, T })}`);
+    console.log(`  #8 permiso caducado: la ranura ${T} se guardó en otra pestaña tras elegirla (rev ${recT?.rev}); reemplazo solo con el permiso releído`);
+
+    etapa('#8 · dos muertes a la vez en dos pestañas (mapas viejos en una): dos marcas y dos fotos');
+    // La otra pestaña sigue con la campaña T (ya reemplazada: su final no se
+    // podrá guardar en T y se dirá). La tercera abre la nueva (ranura E).
+    tercera = await abrirPestana(URL_APP);
+    await tercera.hasta(LISTA_APP);
+    await tercera.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await tercera.hasta('document.body.dataset.activeScreen === "cargar"');
+    await tercera.ev(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${E}"]').click(); true`);
+    await tercera.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.runId") === ${JSON.stringify(runNew)}`, 15000);
+    await tercera.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    // FIXTURE: la tercera ve los mapas locales de ANTES de las dos muertes.
+    const mapas = await evaluate(`({ m: localStorage.getItem('arcanveil:runs-muertos'), l: localStorage.getItem('arcanveil:legados') })`);
+    await tercera.ev(`(() => { const r = Storage.prototype.getItem; const v = ${JSON.stringify(mapas)}; window.__getItemReal = r; Storage.prototype.getItem = function (k) { if (k === 'arcanveil:runs-muertos') return v.m; if (k === 'arcanveil:legados') return v.l; return r.call(this, k); }; return true; })()`);
+    // FIXTURE: XP conocida y sin el rasgo que evita la muerte.
+    const prep = (xp) => `(() => { const x = ARCANVEIL.ver('player.xp') ?? 0; if (x < ${xp}) ARCANVEIL.store.dispatch('player/xp', { cantidad: ${xp} - x, motivo: 'fixture' }); ARCANVEIL.store.fijar('player._rasgoTrasfondo', null); return ARCANVEIL.ver('player.xp'); })()`;
+    const xpT = await otra.ev(prep(1000));
+    const xpN = await tercera.ev(prep(600));
+    const golpes = `(async () => { for (let i = 0; i < 3 && ARCANVEIL.ver('meta.fase') !== 'fin'; i++) { ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' }); await new Promise((r) => setTimeout(r, 150)); } return ARCANVEIL.ver('meta.fase'); })()`;
+    const fases = await Promise.all([otra.ev(golpes), tercera.ev(golpes)]);
+    if (fases.some((x) => x !== 'fin')) throw new Error(`#8: las dos no murieron: ${JSON.stringify(fases)}`);
+    const regs = await Promise.all([otra.ev('ARCANVEIL.sistema("muerte").registro'), tercera.ev('ARCANVEIL.sistema("muerte").registro')]);
+    await tercera.ev('Storage.prototype.getItem = window.__getItemReal; true');
+    const autoridad = await evaluate(`(async () => ({ mT: await ${idbLeer('muertos', runT)}, mN: await ${idbLeer('muertos', runNew)}, lT: await ${idbLeer('legados', runT)}, lN: await ${idbLeer('legados', runNew)} }))()`);
+    const espT = Math.trunc((xpT * 35) / 100);
+    const espN = Math.trunc((xpN * 35) / 100);
+    if (!regs.every((g) => g?.estado === 'registrada') || !autoridad.mT || !autoridad.mN || autoridad.lT?.cantidad !== espT || autoridad.lN?.cantidad !== espN) throw new Error(`#8: dos muertes: ${JSON.stringify({ regs, autoridad: { mT: Boolean(autoridad.mT), mN: Boolean(autoridad.mN), lT: autoridad.lT?.cantidad, lN: autoridad.lN?.cantidad }, espT, espN })}`);
+    // Final durable de la nueva (ranura E) y la ranura T intacta (es de M).
+    await tercera.hasta(`/Muerte registrada/.test(document.getElementById('caida-registro')?.textContent ?? '') && /${espN} XP/.test(document.getElementById('caida-legado')?.textContent ?? '')`, 10000);
+    // El final (con la muerte dentro) se escribe tras el registro: se espera
+    // a leerlo en las dos copias, con tope.
+    let final = null;
+    for (let i = 0; i < 50; i++) {
+      final = await evaluate(`(async () => ({ ls: (() => { try { return JSON.parse(${lsBytes(E)})?.estado?.meta?.muerte?.runId ?? null; } catch { return null; } })(), idb: JSON.parse((await ${idbLeer('partidas', E)})?.texto ?? 'null')?.estado?.meta?.muerte?.runId ?? null, duenoE: (await ${idbLeer('ranuras', E)})?.runId, duenoT: (await ${idbLeer('ranuras', T)})?.runId }))()`);
+      if (final.ls === runNew && final.idb === runNew) break;
+      await wait(200);
+    }
+    if (final.ls !== runNew || final.idb !== runNew || final.duenoE !== runNew || final.duenoT !== runM) throw new Error(`#8: final durable: ${JSON.stringify({ final, runNew, runM })}`);
+    await tercera.foto(`16g-muerte-registrada-durable-${viewport.label}.png`);
+    // Una pestaña que intenta cargar al muerto (la otra, ya en su final): no revive.
+    const revive = await otra.ev(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(E)}).then((r) => ({ exito: r.exito, motivo: r.motivo, run: ARCANVEIL.ver('meta.runId') }))`);
+    if (revive.exito || revive.motivo !== 'muerto') throw new Error(`#8: cargar la ranura del muerto lo revivió: ${JSON.stringify(revive)}`);
+    // Las dos herencias, elegibles.
+    await navegarEn(tercera, `[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "herencia"');
+    const tarjetas = await tercera.ev(`[...document.querySelectorAll('.tarjeta-herencia')].map((b) => ({ origen: b.dataset.origen, activa: !b.disabled, texto: b.textContent }))`);
+    const tT = tarjetas.find((x) => x.origen === runT);
+    const tN = tarjetas.find((x) => x.origen === runNew);
+    if (!tT?.activa || !tN?.activa || !tT.texto.includes(`${espT} XP`) || !tN.texto.includes(`${espN} XP`)) throw new Error(`#8: las dos herencias no se pueden elegir: ${JSON.stringify(tarjetas)}`);
+    await tercera.foto(`16h-dos-herencias-${viewport.label}.png`);
+    console.log(`  #8 dos muertes: ${runT} (${espT} XP) y ${runNew} (${espN} XP) con marca y foto en el registro coordinado; final durable en la ${E}; no revive; las dos herencias elegibles`);
+  } finally {
+    await otra.cerrar();
+    if (tercera) await tercera.cerrar();
+  }
 }
 
 try {
@@ -404,6 +647,26 @@ try {
   if ((await visibles()).length || (await evaluate(`document.activeElement?.id`)) !== 'inicio-jugar') throw new Error('Escape no cierra el menú o no devuelve el foco');
   await evaluate(`document.querySelector('#inicio-jugar').click()`);
   await shot(`01b-menu-${viewport.label}.png`);
+
+  principal: {
+  if (soloPestanas) {
+    etapa('solo pestañas: una campaña real y las demás ranuras llenas (FIXTURE)');
+    await evaluate(`document.querySelector('#menu-nueva').click()`);
+    await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#nombre")');
+    await evaluate(`(() => { const fill = (q, v) => { const n = document.querySelector(q); n.value = v; n.dispatchEvent(new Event('input', { bubbles: true })); }; fill('#nombre', 'Lyra'); fill('#retrato-descripcion', 'exploradora de pelo plateado y armadura de cuero negro'); fill('#lore-personaje', 'Busca a su hermana desde hace años.'); return true; })()`);
+    await evaluate(`document.querySelector('[data-intensidad="relato"]')?.click(); true`);
+    await evaluate(`document.querySelector('#creacion-crear').click()`);
+    await until('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")', 15000);
+    await evaluate(`document.querySelector('#creacion-empezar').click()`);
+    await until('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") && !ARCANVEIL.sistema("turns")._ocupado', 25000);
+    // FIXTURE: campañas de relleno (copias válidas con otro run) en las demás.
+    await evaluate(`(() => { const yo = ARCANVEIL.ver('meta.ranura'); const base = localStorage.getItem('arcanveil:partida:' + yo); let i = 0;
+      for (const n of ['1','2','3','4','5','6','7','8']) { if (n === String(yo) || localStorage.getItem('arcanveil:partida:' + n) !== null) continue; const g = JSON.parse(base); i += 1; g.estado.meta.runId = 'run-relleno-' + n; g.estado.meta.muerte = null; g.estado.player.nombre = 'Relleno ' + n; g.cabecera = { ...g.cabecera, nombre: 'Relleno ' + n, runId: 'run-relleno-' + n, muerto: false }; g.guardadoEn = Date.now() - i * 60000; localStorage.setItem('arcanveil:partida:' + n, JSON.stringify(g)); } return i; })()`);
+    await pestanasCoordinadas();
+    if (externos.length) throw new Error(`la página pidió cosas fuera de este equipo: ${[...new Set(externos)].slice(0, 5).join(' · ')}`);
+    console.log(JSON.stringify({ viewport: viewport.label, solo: 'pestanas', semilla, exceptions: exceptions.length, externos: externos.length, sinIA }, null, 2));
+    break principal;
+  }
 
   etapa('creación de personaje');
   await evaluate(`document.querySelector('#menu-nueva').click()`);
@@ -1042,8 +1305,12 @@ try {
       const ultimo = golpes.at(-1);
       if (ultimo.fase !== 'fin' || ultimo.sigo !== 1 || ultimo.fin !== 1) throw new Error(`${etiqueta}: la muerte no se confirmó antes de soltar la frontera: ${JSON.stringify(golpes)}`);
       if (proteccion ? (golpes.length !== 2 || golpes[0].salvados !== 1) : golpes.length !== 1) throw new Error(`${etiqueta}: golpes inesperados: ${JSON.stringify(golpes)}`);
-      const reg = await evaluate(`(() => { const run = ARCANVEIL.ver('meta.runId'); const l = JSON.parse(localStorage.getItem('arcanveil:legados') ?? '{}'); const m = JSON.parse(localStorage.getItem('arcanveil:runs-muertos') ?? '{}'); return { run, legado: l[run]?.estado ?? null, marca: Boolean(m[run]) }; })()`);
-      if (!reg.marca || reg.legado !== 'pendiente') throw new Error(`${etiqueta}: marca o herencia no persistidas antes de soltar: ${JSON.stringify(reg)}`);
+      // #8: la marca y la foto se registran después de la muerte (asíncrono,
+      // en el registro coordinado): se espera a ESE registro y se lee de ahí.
+      const reg = await evaluate(`(async () => { const g = await ARCANVEIL.sistema('muerte').registro; const run = ARCANVEIL.ver('meta.runId');
+        const leer = (a) => new Promise((ok) => { const p = indexedDB.open('arcanveil-coordinacion'); p.onsuccess = () => { const db = p.result; const q = db.transaction(a).objectStore(a).get(run); q.onsuccess = () => { db.close(); ok(q.result ?? null); }; q.onerror = () => { db.close(); ok(null); }; }; p.onerror = () => ok(null); });
+        return { run, registro: g?.estado ?? null, legado: (await leer('legados'))?.estado ?? null, marca: Boolean(await leer('muertos')) }; })()`);
+      if (reg.registro !== 'registrada' || !reg.marca || reg.legado !== 'pendiente') throw new Error(`${etiqueta}: marca o herencia no persistidas antes de soltar: ${JSON.stringify(reg)}`);
     } finally {
       await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); if (window.__pausaReal) c._pausa = window.__pausaReal; window.__soltar?.(); return true; })()`).catch(() => {});
     }
@@ -1127,7 +1394,8 @@ try {
   // pendiente dicha sin prometerla, y «Nueva partida». Ni «Volver en ti» ni
   // ninguna forma de curar la derrota. La cifra llega del estado compartido
   // (asíncrono, #7): se espera a que esté escrita.
-  await until('!/Comprobando/.test(document.getElementById("caida-legado")?.textContent ?? "Comprobando")', 8000);
+  // #8: primero «registrando…»; la cifra, cuando la muerte queda registrada.
+  await until('/Muerte registrada/.test(document.getElementById("caida-registro")?.textContent ?? "") && !/Comprobando|se mostrará/.test(document.getElementById("caida-legado")?.textContent ?? "Comprobando")', 8000);
   const final = await evaluate(`({
     titulo: document.getElementById('caida-titulo')?.textContent ?? '',
     nota: document.getElementById('caida-nota')?.textContent ?? '',
@@ -1147,12 +1415,12 @@ try {
   await pulsarYNavegar(`[...document.querySelectorAll('#caida-acciones button')].find((b) => b.textContent.trim() === 'Nueva partida')`,
     'window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo") && document.body.dataset.activeScreen === "herencia"');
   await shot(`09-nueva-partida-${viewport.label}.png`);
-  const trasMorir = await evaluate(`({
+  const trasMorir = await evaluate(`(async () => ({
     pantalla: document.body.dataset.activeScreen,
     jugador: ARCANVEIL.store.select('player.nombre'),
     muerte: ARCANVEIL.store.select('meta.muerte'),
-    cargar: (() => { const r = ARCANVEIL.sistema('saves').listar().find((x) => !x.vacia && x.muerto); return r ? ARCANVEIL.sistema('saves').cargar(r.ranura) : null; })(),
-  })`);
+    cargar: await (async () => { const r = ARCANVEIL.sistema('saves').listar().find((x) => !x.vacia && x.muerto); return r ? ARCANVEIL.sistema('saves').cargar(r.ranura) : null; })(),
+  }))()`);
   if (trasMorir.muerte || (trasMorir.jugador && trasMorir.jugador !== 'Sin nombre' && trasMorir.jugador !== null && trasMorir.jugador !== '')) {
     // El motor nuevo no trae al muerto.
     if (trasMorir.muerte) throw new Error(`la partida nueva arrastra la muerte anterior: ${JSON.stringify(trasMorir)}`);
@@ -1333,7 +1601,7 @@ try {
       const fila = lista.find((l) => l.ranura && JSON.stringify(ambos).includes(s.run));
       if (!fila) throw new Error(`tras recargar no se ve el sucesor ${s.run}: ${JSON.stringify(lista)}`);
     }
-    const r = await evaluate(`(() => { const out = []; for (const n of ['1','2','3','4','5','6','7','8']) { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + n) ?? 'null'); const o = g?.estado?.player?.legadoRecibido?.runOrigen; if (o === ${JSON.stringify(x)} || o === ${JSON.stringify(y)}) { const c = ARCANVEIL.sistema('saves').cargar(n); out.push({ n, ok: c.exito, xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), origen: ARCANVEIL.ver('player.legadoRecibido.runOrigen'), token: ARCANVEIL.ver('player.legadoRecibido.transaccion') }); } } return out; })()`);
+    const r = await evaluate(`(async () => { const out = []; for (const n of ['1','2','3','4','5','6','7','8']) { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + n) ?? 'null'); const o = g?.estado?.player?.legadoRecibido?.runOrigen; if (o === ${JSON.stringify(x)} || o === ${JSON.stringify(y)}) { const c = await ARCANVEIL.sistema('saves').cargar(n); out.push({ n, ok: c.exito, xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), origen: ARCANVEIL.ver('player.legadoRecibido.runOrigen'), token: ARCANVEIL.ver('player.legadoRecibido.transaccion') }); } } return out; })()`);
     if (r.length !== 2 || !r.every((s) => s.ok && s.xp === s.heredada && s.token)) throw new Error(`abrir los dos sucesores tras recargar: ${JSON.stringify(r)}`);
     await cdp('Page.reload', { ignoreCache: false });
     await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
@@ -1418,6 +1686,8 @@ try {
     console.log(`  ranuras llenas: Escape no toca nada; permiso caducado al cambiar la ${elegida}; reemplazo solo de la ${elegida}`);
     await shot(`09k-reemplazo-${viewport.label}.png`);
   }
+
+  await pestanasCoordinadas();
 
   etapa('muerte con la salida pendiente, caso A (sin protección)');
   {
@@ -1505,6 +1775,7 @@ try {
     sinIA,
   };
   console.log(JSON.stringify(report, null, 2));
+  }
 } catch (e) {
   console.error(e.stack || e);
   if (serverErr) console.error('server:', serverErr.slice(-1000));
