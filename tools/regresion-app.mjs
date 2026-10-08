@@ -250,7 +250,7 @@ async function abrirPestana(url) {
   socket.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); } };
   const enviar = (method, params = {}) => new Promise((resolve, reject) => { const id = ++n; esperan.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
   const ev = async (expression) => { const r = await enviar('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(`pestaña 2: ${r.exceptionDetails.text}`); return r.result?.value; };
-  const hasta = async (expression, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await ev(`Boolean(${expression})`)) return; } catch { /* navegando */ } await wait(120); } throw new Error(`pestaña 2: tiempo agotado esperando ${expression}`); };
+  const hasta = async (expression, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await ev(`Boolean(${expression})`)) return; } catch { /* navegando */ } await wait(120); } let diag = null; try { diag = await ev(`({ ...${DIAGNOSTICO}, avisos: [...document.querySelectorAll('#avisos .aviso')].map((n) => n.textContent), fallos: document.querySelector('#fallos')?.textContent ?? null, salida: document.getElementById('salida-modal')?.hidden === false ? document.getElementById('salida-nota')?.textContent : null })`); } catch (e) { diag = { sinDiagnostico: e.message }; } throw new Error(`pestaña 2: tiempo agotado esperando ${expression}\n  estado: ${JSON.stringify(diag)}`); };
   await enviar('Runtime.enable');
   // Mismo tamaño que la principal (en «headless» una pestaña nueva nace con otro).
   await enviar('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: !desktop });
@@ -360,9 +360,16 @@ async function guardarConBoton(ev, hasta, { doble = false } = {}) {
   return ev(`window.__avisos.slice(${n})`);
 }
 /** Clic que NAVEGA en otra pestaña (desde un temporizador) y espera al documento nuevo. */
-async function navegarEn(p, selectorExpr, listo) {
-  await p.ev(`(() => { const b = ${selectorExpr}; if (!b) throw new Error('no está el botón'); setTimeout(() => b.click(), 30); return true; })()`);
-  await wait(600);
+async function navegarEn(p, accionExpr, listo) {
+  const marca = `n${Date.now()}`;
+  await p.ev(`(() => { window.__marcaNav = '${marca}'; const b = ${accionExpr}; if (!b) throw new Error('no está el botón'); setTimeout(() => b.click(), 30); return true; })()`);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    await wait(150);
+    let sigue;
+    try { sigue = await p.ev(`window.__marcaNav === '${marca}'`); } catch { sigue = true; }
+    if (!sigue) break;
+  }
   await p.hasta(listo, 20000);
 }
 const LISTA_APP = 'window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")';
@@ -426,9 +433,7 @@ async function pestanasCoordinadas() {
     console.log(`  #8 caché vieja: ${runOld} no pisa ${runNew} en la ranura ${E} (sin fixture y con caché vieja simulada); motivo «${cache.find((t) => /otra/.test(t))?.slice(0, 70)}…»`);
 
     // La nueva sigue tras recargar su pestaña.
-    await otra.ev('setTimeout(() => location.reload(), 30); true');
-    await wait(600);
-    await otra.hasta(LISTA_APP, 20000);
+    await navegarEn(otra, '({ click: () => location.reload() })', LISTA_APP);
     await otra.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
     await otra.hasta('document.body.dataset.activeScreen === "cargar"');
     await otra.ev(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${E}"]').click(); true`);
