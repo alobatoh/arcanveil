@@ -114,7 +114,7 @@ async function crearCampana(m, { nombre, runId, ranura = null, reemplazo = null 
     },
     guardar: async (p) => {
       const g = await m.sistema('saves').guardar(p.ranura, { silencioso: true, reemplazo: p.reemplazo, lease: p.lease, op: p.op });
-      return { ok: g.exito, motivo: g.motivo, texto: g.texto };
+      return { ok: g.exito, motivo: g.motivo, texto: g.texto, intentado: g.intentado };
     },
   });
 }
@@ -363,7 +363,7 @@ async function heredar(m, { runOrigen, nombre, runId, ranura = null, reemplazo =
     },
     guardar: async (p) => {
       const g = await m.sistema('saves').guardar(p.ranura, { silencioso: true, lease: p.lease, op: p.op });
-      return { ok: g.exito, motivo: g.motivo, texto: g.texto };
+      return { ok: g.exito, motivo: g.motivo, texto: g.texto, intentado: g.intentado };
     },
   });
 }

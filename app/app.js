@@ -1223,7 +1223,7 @@ async function comenzarPartida(p, { ranura = null, reemplazo = null } = {}) {
   // ranura. Espera al resultado real.
   const guardar = async ({ ranura: slot, lease, op }) => {
     const g = await sistema('saves')?.guardar(slot, { silencioso: true, nota: 'crónica', lease, op });
-    return { ok: Boolean(g?.exito), motivo: g?.motivo ?? 'no hay partida que guardar', texto: g?.texto };
+    return { ok: Boolean(g?.exito), motivo: g?.motivo ?? 'no hay partida que guardar', texto: g?.texto, intentado: g?.intentado };
   };
 
   let r;

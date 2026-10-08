@@ -94,7 +94,7 @@ function herencia(m, runOrigen, { ranura = null, reemplazo = null, pausa = null,
       m.store.fijar('meta.ranura', elegida ?? ranura);
       await Entrega.crearEnMotor(m.store, { borrador: BORR(nombre, 'glifista'), runDestino, cantidad, legado });
     },
-    guardar: async ({ ranura: elegida, reemplazo: permiso, lease, op } = {}) => { const g = await m.sistema('saves').guardar(elegida ?? ranura, { silencioso: true, reemplazo: permiso ?? reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; },
+    guardar: async ({ ranura: elegida, reemplazo: permiso, lease, op } = {}) => { const g = await m.sistema('saves').guardar(elegida ?? ranura, { silencioso: true, reemplazo: permiso ?? reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto, intentado: g.intentado }; },
   });
 }
 
@@ -147,7 +147,7 @@ await caso('Con y sin herencia a la vez', async () => {
   const pausa = new Promise((r) => { soltar = r; });
   const sin = Entrega.crearPartidaNueva({ runDestino: 'run-sin', ranura: null,
     crear: async ({ ranura }) => { await pausa; m.store.reiniciar?.(); m.store.fijar('settings.persistencia', true); m.store.fijar('meta.ranura', ranura); m.store.dispatch('player/crear', { borrador: BORR('Sola'), runId: 'run-sin' }); await tic(); },
-    guardar: async ({ ranura, reemplazo, lease, op }) => { const g = await m.sistema('saves').guardar(ranura, { silencioso: true, reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; } });
+    guardar: async ({ ranura, reemplazo, lease, op }) => { const g = await m.sistema('saves').guardar(ranura, { silencioso: true, reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto, intentado: g.intentado }; } });
   await tic(20);
   const con = herencia(m, A, { nombre: 'Dara' });
   await tic(20);

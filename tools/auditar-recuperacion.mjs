@@ -256,7 +256,7 @@ await caso('Entregada sigue entregada; reintentos con el mismo token', async () 
   const T = Entrega.nuevaTransaccion();
   const op = { runOrigen: A, transaccion: T, runDestino: 'run-B', ranura: '2',
     crear: ({ cantidad, legado }) => Entrega.crearEnMotor(motor.store, { borrador: BORR_B, runDestino: 'run-B', cantidad, legado }),
-    guardar: async ({ lease, op } = {}) => { const r = await motor.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: r.exito, motivo: r.motivo, texto: r.texto }; } };
+    guardar: async ({ lease, op } = {}) => { const r = await motor.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: r.exito, motivo: r.motivo, texto: r.texto, intentado: r.intentado }; } };
   const r1 = await Entrega.entregarLegado(op);
   comprobar(r1.ok && (await estadoDe(A)) === 'aplicado', 'entrega normal', JSON.stringify(r1));
   const r2 = await Entrega.entregarLegado({ ...op, crear: () => { throw new Error('no'); } });
@@ -297,7 +297,7 @@ await caso('Deshacer: no borra lo ajeno ni lo que cambió desde la escritura', a
   Coordinacion.usarCoordinacion({ ...realCoord, async leer(a, k) { const v = await realCoord.leer(a, k); if (a === Coordinacion.ALMACENES.PARTIDAS && k === '2' && v) { const g = JSON.parse(v.texto); g.estado.player.xp = 9999; return { ...v, texto: JSON.stringify(g) }; } return v; } });
   const r2 = await Entrega.entregarLegado({ runOrigen: A2, transaccion: Entrega.nuevaTransaccion(), runDestino: 'run-B', ranura: '2',
     crear: ({ cantidad, legado }) => Entrega.crearEnMotor(motor2.store, { borrador: BORR_B, runDestino: 'run-B', cantidad, legado }),
-    guardar: async ({ lease, op } = {}) => { const x = await motor2.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: x.exito, motivo: x.motivo, texto: x.texto }; } });
+    guardar: async ({ lease, op } = {}) => { const x = await motor2.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: x.exito, motivo: x.motivo, texto: x.texto, intentado: x.intentado }; } });
   Coordinacion.usarCoordinacion(realCoord);
   restaurar();
   const quedan = crudo('arcanveil:partida:2');

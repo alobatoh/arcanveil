@@ -353,7 +353,9 @@ async function retirarPropio({ lease, ranura, runId, escrito, antes, previos }) 
  * @param {string|null} [op.ranura] null = la primera libre bajo el candado global.
  * @param {Object|null} [op.reemplazo] Permiso concreto para reemplazar una ranura ocupada.
  * @param {(e: {cantidad: number, legado: Object, ranura: string}) => Promise<void>|void} op.crear
- * @param {(e: {ranura: string, reemplazo: Object|null, lease: Object, op: string}) => Promise<{ok: boolean, motivo?: string, texto?: string}>} op.guardar
+ * @param {(e: {ranura: string, reemplazo: Object|null, lease: Object, op: string}) => Promise<{ok: boolean, motivo?: string, texto?: string, intentado?: string}>} op.guardar
+ *   `texto`: los bytes guardados (con éxito); `intentado`: los que se intentaron
+ *   (en un fallo), para retirar solo lo propio si llegaron a escribirse.
  *   Guarda con el arriendo del candado global que ya tiene la operación (no
  *   lo vuelve a pedir) y con la operación que reservó la ranura.
  */
@@ -439,7 +441,7 @@ async function entregarConCandado({ runOrigen, transaccion, runDestino, ranura, 
       const c = cuadra(l, { runOrigen, T: transaccion, runDestino, cantidad }, { inicial: true });
       const exacto = !g?.texto || l.texto === g.texto;
       if (!g?.ok || !c.ok || !exacto) {
-        return deshacer({ ...base, escrito: g?.texto ?? null, fase: 'guardar',
+        return deshacer({ ...base, escrito: g?.texto ?? g?.intentado ?? null, fase: 'guardar',
           motivo: g?.ok ? `Lo guardado no coincide con el personaje nuevo (${c.ok ? 'bytes distintos' : c.motivo}).` : `No se ha podido guardar el personaje nuevo: ${g?.motivo ?? 'error'}` });
       }
 
@@ -485,7 +487,7 @@ export async function crearPartidaNueva({ runDestino, ranura = null, reemplazo =
       return { ok: true, ranura: slot, runDestino, reemplazada: destino.reemplazo };
     }
     // Solo se retira lo propio (copia autoritativa y espejo), byte a byte.
-    const intacta = await retirarPropio({ lease, ranura: slot, runId: runDestino, escrito: g?.texto ?? null, antes: coord, previos: antes.texto });
+    const intacta = await retirarPropio({ lease, ranura: slot, runId: runDestino, escrito: g?.texto ?? g?.intentado ?? null, antes: coord, previos: antes.texto });
     if (intacta) await Ranuras.soltarRanura(slot, op).catch(() => null);
     return { ok: false, codigo: 'guardado', motivo: g?.ok ? 'Lo guardado no coincide con la partida nueva.' : `No se ha podido guardar la partida nueva: ${g?.motivo ?? 'error'}`,
       nota: intacta ? 'No se ha guardado ninguna partida nueva y la ranura sigue como estaba.' : `No puedo comprobar el estado de la ranura ${slot}; no la he tocado.` };
