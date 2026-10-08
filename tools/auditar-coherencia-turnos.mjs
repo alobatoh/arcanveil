@@ -135,7 +135,7 @@ for (const semilla of [9303, 9505]) {
         `  interrumpida a los ${paso} min con su causa, sin afirmar el intervalo pedido`, r.texto);
       const sig = await p.turno('miro alrededor');
       comprobar(!sig.texto.includes(corta.slice(0, 40)), '  la causa no se vuelve a narrar en el turno siguiente', sig.texto);
-      p.m.guardarYCargar();
+      await p.m.guardarYCargar();
       const ultima = (p.m.ver('narrative.entradas', []) ?? []).filter((e) => e.voz === 'dm').map((e) => e.texto).find((t) => t.includes('La espera se interrumpe'));
       comprobar(Boolean(ultima), '  y tras guardar y cargar, la entrada de la espera interrumpida sigue en la crónica');
     } else {
@@ -276,7 +276,7 @@ console.log('\n── Guardar y cargar tras medianoche ──');
   const p = await partida(9505, { fixture: true });
   p.fijarHora(23, 50);
   await p.turno('espero 30 minutos');
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   const t = p.m.ver('world.tiempo');
   const ultima = (p.m.ver('narrative.entradas', []) ?? []).filter((e) => e.voz === 'dm').at(-1)?.texto ?? '';
   comprobar(t.dia === 2 && t.hora === 0 && t.minuto === 20 && t.franja === 'madrugada' && ultima.includes('Día 2, 00:20'),
@@ -428,7 +428,7 @@ console.log('\n── Armas fuera de combate (semilla 9303, Sive: cuchillo en la
     const p = await partida(9303);
     await p.turno('ataco a Korsa con el hacha');
     const a = p.foto();
-    p.m.guardarYCargar();
+    await p.m.guardarYCargar();
     const d = p.foto();
     const ultima = (p.m.ver('narrative.entradas', []) ?? []).at(-1)?.texto ?? '';
     comprobar(a.reloj === d.reloj && a.turno === d.turno && a.inventario === d.inventario && /No llevas hacha/.test(ultima), 'tras guardar y cargar, la aclaración sigue en la crónica y nada cambió');

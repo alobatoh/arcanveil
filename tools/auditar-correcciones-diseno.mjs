@@ -210,7 +210,7 @@ await caso(async () => { {
   p.m.store.dispatch('clock/fijar', { hora: 23, minuto: 0 });
   const r = await p.turno('espero hasta el amanecer');
   comprobar(r.despues.dia === 2 && r.despues.hora === Calendario.AMANECER && r.despues.franja === 'alba', `FIXTURE «hasta el amanecer» desde las 23:00: día 2, ${Calendario.AMANECER}:00, alba`, r.texto);
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   const t = p.m.ver('world.tiempo');
   comprobar(t.dia === 2 && t.hora === Calendario.AMANECER, '  tras guardar y cargar, el mismo instante');
 } });
@@ -285,7 +285,7 @@ await caso(async () => { {
     `  actitud de Korsa baja y reputación de la guardia ${SOCIAL.reputacion.porCrimenPresenciado} (crimen presenciado), una vez`, `${act0}→${p.m.ver(`npcs.conocidos.porId.${korsa}.actitud`)} · ${rep0}→${p.m.ver('factions.reputacion.guardia_valle')}`);
   comprobar(r.combate[0].enemies.some((e) => e.nombre === 'Xivio' && e.npc), '  Xivio (guardia presente) se mete con su nombre: no se teletransporta a nadie', JSON.stringify(r.combate[0].enemies));
   const rep1 = p.m.ver('factions.reputacion.guardia_valle');
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   comprobar(Object.keys(p.m.ver('world.agresiones', {})).length === 1 && p.m.ver('factions.reputacion.guardia_valle') === rep1, 'tras guardar y cargar: el mismo hecho, sin aplicarlo otra vez');
 } });
 await caso(async () => { {
@@ -397,7 +397,7 @@ await caso(async () => { {
   comprobar(r.ofertas === 1 && pedidas.length === 1, 'RNG forzado: el turno normal siguiente hace UNA tirada y publica una oferta (no doce)', `${pedidas} · ofertas ${r.ofertas}`);
   r = await p.turno('miro alrededor');
   comprobar(r.ofertas === 0, '  y el siguiente no ofrece otra: la cadencia empieza de nuevo');
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   r = await p.turno('miro alrededor');
   comprobar(r.ofertas === 0 && Number.isFinite(p.m.ver('quests.oferta.ultimaMinuto')), 'recargar no duplica la oferta (el instante se guarda)');
 } });
@@ -523,7 +523,7 @@ await caso(async () => { {
   p.m.store.fijar('player.vida.actual', max - 2);
   r = await p.turno('como una ración');
   comprobar(r.despues.vida === max && racion() === 2, '  cura limitada al máximo', `${r.antes.vida}→${r.despues.vida}`);
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   comprobar(p.m.ver('world.campamento')?.lugar === p.m.ver('world.ubicacion') && racion() === 2, 'tras guardar y cargar: el campamento y las raciones siguen');
   p.m.store.fijar(`inventory.objetos.porId.${p.objeto('racion_viaje').id}.cantidad`, 0);
   p.m.store.fijar('player.vida.actual', max - 10);

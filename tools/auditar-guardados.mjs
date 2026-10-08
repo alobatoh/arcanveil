@@ -75,16 +75,16 @@ const saves = m.sistema('saves');
 }
 
 {
-  saves.guardar('9', { silencioso: true });
+  await saves.guardar('9', { silencioso: true });
   const texto = localStorage.getItem([...Array(localStorage.length).keys()].map((i) => localStorage.key(i)).find((k) => /9$/.test(k)));
   const guardado = JSON.parse(texto);
   const profundidad = (o) => (o && typeof o === 'object' ? 1 + Math.max(0, ...Object.values(o).map(profundidad)) : 0);
   comprobar(profundidad(guardado) < PERSISTENCIA.profundidadMax / 2, `una partida real anida ${profundidad(guardado)} niveles: holgura de sobra frente a ${PERSISTENCIA.profundidadMax}`);
   const exportado = Ser.aTexto(guardado);
   comprobar(exportado.length < PERSISTENCIA.importacionMaxBytes / 3, `una exportación real ocupa ${Math.round(exportado.length / 1024)} KB, lejos del tope`);
-  const r = saves.importar(exportado);
+  const r = await saves.importar(exportado);
   comprobar(r.exito && m.ver('player.nombre') === 'Alejo', 'exportar e importar una partida de verdad sigue funcionando', r.motivo);
-  comprobar(saves.cargar('9').exito, 'y cargar de una ranura también');
+  comprobar((await saves.cargar('9')).exito, 'y cargar de una ranura también');
 }
 
 console.log(`\n${casos - fallos}/${casos} comprobaciones`);

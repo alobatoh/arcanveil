@@ -201,8 +201,8 @@ await caso(async () => {
   const menu = c.accionesDelJugador();
   const vidas = () => JSON.stringify(Object.values(m.sistema('combat')._combatientes).map((x) => [x.nombre, x.vida.actual]));
   const antes = { vidas: vidas(), ronda: m.ver('combat.ronda') };
-  const g = m.sistema('saves').guardar('6', { silencioso: true });
-  const r = m.sistema('saves').cargar('6');
+  const g = await m.sistema('saves').guardar('6', { silencioso: true });
+  const r = await m.sistema('saves').cargar('6');
   await espera(20);
   const c2 = m.sistema('combat');
   const menu2 = c2.accionesDelJugador();
@@ -220,7 +220,7 @@ await caso(async () => {
   // FIXTURE: el enemigo está actuando (no es el turno del jugador).
   if (m.ver('combat.activo')) {
     c2._esperando = false;
-    const r2 = m.sistema('saves').guardar('6', { silencioso: true });
+    const r2 = await m.sistema('saves').guardar('6', { silencioso: true });
     c2._esperando = true;
     comprobar(!r2.exito && /tu turno/.test(r2.motivo), 'FIXTURE resolviendo: no se guarda a medias; se dice cuándo', JSON.stringify(r2));
   }

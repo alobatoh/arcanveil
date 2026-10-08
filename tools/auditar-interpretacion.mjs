@@ -112,7 +112,7 @@ console.log('\n── Los siete fallos de la partida de Ena (semilla 75313) ─�
   comprobar(/Marlo/.test(t) && /«/.test(t), 'con Marlo delante, Marlo contesta', t);
   comprobar(destinatario(t, 'Marlo', nombres, 'Marlo y la cabra'), 'y contesta él, no Torela', t);
 
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const recuerdos = JSON.stringify(m.ver('ai.memoria', {}));
   comprobar(/si el guardia me amenaza, me aparto/.test(recuerdos), '4 · la condición sigue guardada tras guardar y cargar');
 }
@@ -164,7 +164,7 @@ console.log('\n── Con el carro atascado delante, y después lejos de él ─
   t = await m.jugar('examino la carreta');
   comprobar(/Aquí no hay ninguna carreta/.test(t), 'una carreta que nunca existió no se confunde con el carro', t);
 
-  m.guardarYCargar();
+  await m.guardarYCargar();
   t = await m.jugar('examino el carro');
   comprobar(/El carro que viste estaba en/.test(t), 'y lo mismo tras guardar y cargar', t);
   t = await m.jugar(`le pregunto a ${carretero} qué tal el eje`);
@@ -219,7 +219,7 @@ console.log('\n── Conjunto aparte (paráfrasis, erratas, nombres parecidos) 
 
   // Guardar entre la pregunta y la respuesta: la siguiente pregunta sin
   // nombre va a quien se hablaba.
-  m.guardarYCargar();
+  await m.guardarYCargar();
   t = await m.jugar('y qué más sabes del paso?');
   comprobar(destinatario(t, 'Gedo', nombres, 'tras cargar'), 'tras cargar, la pregunta sin nombre sigue yendo a Gedo', t);
 
@@ -248,7 +248,7 @@ console.log('\n── Canon: se cambia a propósito, no por una frase de la hist
   comprobar(m.sistema('turns').memoria.registroCanon.ediciones.length === 1 && canonJugador().some((c) => /Aldo murió/.test(c)) && !canonJugador().some((c) => /vivo/.test(c)),
     'lo que dice el personaje o una hipótesis no reescribe el canon', JSON.stringify(canonJugador()));
 
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const turnos = m.sistema('turns');
   const inst = turnos._instantanea({ contexto: turnos._compositor.componerEstructurado({ accion: '', tipo: 'narracion' }) }, '');
   comprobar(inst.memoria.canon.some((c) => /Aldo murió/.test(c.texto) && /deliberada/.test(c.fuente)), 'tras guardar y cargar, viaja en el canon de la instantánea con su procedencia', JSON.stringify(inst.memoria.canon).slice(0, 300));

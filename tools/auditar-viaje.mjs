@@ -119,7 +119,7 @@ await caso(async () => {
   const r2 = await p.turno('voy a Saucedo');
   comprobar(/^Vas camino de las Tumbas Bajas/i.test(r2.texto) && r2.despues.min === r2.antes.min && r2.despues.viaje === r2.antes.viaje, '  «voy a Saucedo» a medias: explica, sin gasto ni cambio de ruta', r2.texto);
   // Guardar y cargar con el viaje a medias.
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   const v2 = JSON.parse(p.foto().viaje ?? 'null');
   comprobar(v2?.interrumpido && v2.tramoActual === v.tramoActual, '  tras guardar y cargar, el mismo viaje a medias', p.foto().viaje);
   p.m.sistema('exploration')._encuentro = null;

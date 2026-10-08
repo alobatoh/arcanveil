@@ -154,13 +154,14 @@ export async function crearMotor({ semilla = 20260925, silencio = true } = {}) {
      *
      * Cada campaña, en SU ranura de prueba (por run). Antes todas las
      * partidas de un proceso compartían la «9»; desde el #7 el guardado no
-     * escribe encima de otra campaña, y esto simulaba justo eso.
+     * escribe encima de otra campaña, y esto simulaba justo eso. Desde el #8
+     * guardar y cargar son asíncronos (coordinados entre pestañas): `await`.
      */
-    guardarYCargar(ranura = `prueba-${store.select('meta.runId') ?? 'sin-run'}`) {
-      const g = sistema('saves').guardar(ranura, { silencioso: true });
+    async guardarYCargar(ranura = `prueba-${store.select('meta.runId') ?? 'sin-run'}`) {
+      const g = await sistema('saves').guardar(ranura, { silencioso: true });
       if (!g.exito) throw new Error(`no se pudo guardar: ${g.motivo}`);
       store.reiniciar();
-      const c = sistema('saves').cargar(ranura);
+      const c = await sistema('saves').cargar(ranura);
       if (!c.exito) throw new Error(`no se pudo cargar: ${c.motivo}`);
       return c;
     },

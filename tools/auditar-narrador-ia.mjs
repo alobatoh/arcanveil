@@ -354,7 +354,7 @@ t = await jugar('le pregunto al carretero qué necesita');
 comprobar(envios.length === e4 && /ningún carretero/.test(t), 'una pregunta a quien no existe la contesta el motor y no gasta solicitud', t);
 
 // 12 · Guardar y cargar: el siguiente turno lleva lo de antes.
-m.guardarYCargar();
+await m.guardarYCargar();
 // Otra sesión: al arrancar de nuevo, el permiso no sigue.
 const e6 = envios.length;
 avisos.length = 0;
@@ -420,16 +420,16 @@ await Promise.all([m.sistema('turns').procesar('le pregunto a Vervek si cierra p
 comprobar(envios.filter((x) => x.op?.body).length === e8 + 1 && turnoAhora() === t8 + 1, 'un doble clic es un solo turno y una sola petición');
 
 // 17 · Recargar: el mismo turno con el mismo texto lleva el mismo identificador.
-const g = m.sistema('saves').guardar('7', { silencioso: true });
+const g = await m.sistema('saves').guardar('7', { silencioso: true });
 respuestas = [{ estado: 200, contenido: json({ story: 'El río baja crecido y arrastra ramas.', choices: [] }) }];
 await jugar('miro el río desde la orilla');
 const idA = envios.filter((x) => x.op?.body).at(-1).op.headers['X-Arcanveil-Turno'];
-m.store.reiniciar(); m.sistema('saves').cargar('7');
+m.store.reiniciar(); await m.sistema('saves').cargar('7');
 await groq.probar(); groq.configurar({ consentido: true }); dm.cambiar('groq', { silencioso: true });
 respuestas = [{ estado: 200, contenido: json({ story: 'El río baja crecido y arrastra ramas.', choices: [] }) }, { estado: 200, contenido: json({ story: 'Las ranas callan de golpe junto al vado.', choices: [] }) }];
 await jugar('miro el río desde la orilla');
 const idB = envios.filter((x) => x.op?.body).at(-1).op.headers['X-Arcanveil-Turno'];
-m.store.reiniciar(); m.sistema('saves').cargar('7');
+m.store.reiniciar(); await m.sistema('saves').cargar('7');
 await groq.probar(); groq.configurar({ consentido: true }); dm.cambiar('groq', { silencioso: true });
 await jugar('escucho a las ranas del vado');
 const idC = envios.filter((x) => x.op?.body).at(-1).op.headers['X-Arcanveil-Turno'];

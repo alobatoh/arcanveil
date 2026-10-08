@@ -206,7 +206,7 @@ async function campana({ semilla, turnos, modo, guardarCada, cont }) {
     const r = await m.sistema('turns').procesar(frase);
     if (r?.aclaracion || r?.rechazada) aclaraciones += 1;
     else if (m.ver('meta.turno') > antes) ejecutados += 1;
-    if (guardarCada && (i + 1) % guardarCada === 0) { m.guardarYCargar(); cargas += 1; }
+    if (guardarCada && (i + 1) % guardarCada === 0) { await m.guardarYCargar(); cargas += 1; }
   }
   return {
     semilla, turnosPedidos: turnos, turnosEjecutados: ejecutados, aclaraciones, combates, guardarCargar: cargas,

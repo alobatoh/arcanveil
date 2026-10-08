@@ -192,8 +192,8 @@ await caso(async () => {
       `  el menú la sigue enseñando, «está roto» y sin poder elegirla, consulta tras consulta; y ofrece el golpe sin arma (${JSON.stringify(menu?.ataques.map((a) => [a.nombre, a.disponible, a.motivo]))})`);
     const r = await c.ejecutar({ tipo: 'atacar', token: menu.token, ataqueId: `arma:${espada}`, objetivoId: menu.enemigos[0].id });
     comprobar(!r.ok && durab(p, espada) === 0, '  y no se puede atacar con ella (sin caer a otra arma)', JSON.stringify(r));
-    p.m.sistema('saves').guardar('6', { silencioso: true });
-    p.m.sistema('saves').cargar('6');
+    await p.m.sistema('saves').guardar('6', { silencioso: true });
+    await p.m.sistema('saves').cargar('6');
     await espera(20);
     const c2 = p.m.sistema('combat');
     const tras = c2.accionesDelJugador()?.ataques.find((a) => a.itemId === espada);

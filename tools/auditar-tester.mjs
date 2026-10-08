@@ -140,7 +140,7 @@ for (const semilla of [9303, 5]) {
 
   // Guardar y cargar: el recuento sigue leyendo el estado.
   const antes = { oro: p.m.ver('player.oro'), inv: JSON.stringify(p.m.ver('inventory.objetos.porId', {})) };
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   comprobar(p.m.ver('player.oro') === antes.oro && JSON.stringify(p.m.ver('inventory.objetos.porId', {})) === antes.inv, 'guardar y cargar: oro e inventario idénticos');
   r = await p.turno('cuento las monedas que llevo');
   comprobar(r.texto.includes(`${antes.oro} monedas de oro`) && !r.hablo.length && quieto(r), '  y tras cargar, el recuento da lo mismo', r.texto);
@@ -189,14 +189,14 @@ console.log('\n── El arma que no está (semilla 9303) ──');
   let r = await p.turno('afilo el hacha a la vista de todos');
   comprobar(/^Afilas el hacha a la vista de todos\./.test(r.texto) && quieto(r), 'hacha presente: se afila el hacha, sin tirada ni combate', r.texto);
 
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   r = await p.turno('afilo el hacha');
   comprobar(/^Afilas el hacha\./.test(r.texto) && quieto(r), 'guardar y cargar con hacha: sigue ahí y se afila', r.texto);
 }
 {
   // Un motor a la vez: el de antes ya no se usa.
   const p = await partida(9303, 'rastreador');
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   const r = await p.turno('afilo el hacha a la vista de todos');
   comprobar(/^No llevas hacha\./.test(r.texto) && !/afilas/i.test(r.texto) && quieto(r, { gastaTurno: false }), 'guardar y cargar sin hacha: la misma aclaración', r.texto);
 }

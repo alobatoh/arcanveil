@@ -176,7 +176,7 @@ async function jugarPartida(m, personaje, estilo, guion) {
 
   const turnos = [{ entrada: '(apertura)', texto: apertura }];
   for (const plantilla of guion) {
-    if (plantilla === '@guardar') { m.guardarYCargar(); turnos.push({ entrada: '(guardar y cargar)', texto: '' }); continue; }
+    if (plantilla === '@guardar') { await m.guardarYCargar(); turnos.push({ entrada: '(guardar y cargar)', texto: '' }); continue; }
     if (plantilla === '@patrulla') { m.sistema('exploration')._presentar(obtenerEncuentro('patrulla_hostil')); turnos.push({ entrada: '(llega una patrulla)', texto: '' }); continue; }
     if (plantilla === '@combate') {
       // Si hay pelea: se intenta parar hablando y, si no, se huye.

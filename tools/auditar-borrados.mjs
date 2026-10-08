@@ -82,7 +82,7 @@ const carga = () => m.ver('inventory.carga');
 
 {
   // Lo que ya no está no vuelve al guardar y cargar.
-  m.guardarYCargar();
+  await m.guardarYCargar();
   comprobar(Object.keys(inventario().porId).length === inventario().orden.length, 'tras guardar y cargar, sin fantasmas');
 }
 

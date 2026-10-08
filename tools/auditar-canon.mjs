@@ -302,7 +302,7 @@ console.log('\n── En el motor: guardar, cargar, una IA que contradice el can
   for (let i = 1; i < 12; i += 1) await jugar(`canon: ${NOMBRES[i]} fue el ${i}.º guardián de la cofradía de Pozoalto y conoce la mina vieja`);
   await caso('doce ediciones, las doce valen', () => [NOMBRES.slice(1, 12).every((n) => todo(registro()).includes(n)), vale(registro()).length]);
 
-  m.guardarYCargar();
+  await m.guardarYCargar();
   await caso('tras guardar y cargar siguen las doce, enteras', () => [NOMBRES.slice(1, 12).every((n) => todo(registro()).includes(`${n} fue el`)) && /herrero/.test(todo(registro())), vale(registro()).slice(0, 3).join(' | ')]);
 
   const dm = m.sistema('dungeonmaster');
@@ -330,7 +330,7 @@ console.log('\n── En el motor: guardar, cargar, una IA que contradice el can
   t = await jugar('canon: en realidad Aldo sigue vivo, preso en Saucedo');
   await caso('revisar la vida lo dice y conserva la versión anterior', () => [/Canon revisado/.test(t) && /sustituye a «[^»]*murió en el paso del norte/i.test(t), t]);
   await caso('[nuevo] y lo demás de Aldo sigue: hermano y herrero', () => [/hermano/.test(todo(registro())) && /herrero/.test(todo(registro())) && /Saucedo/.test(todo(registro())), vale(registro()).filter((x) => /Aldo/.test(x)).join(' | ')]);
-  m.guardarYCargar();
+  await m.guardarYCargar();
   await caso('tras cargar, la revisión y su historial siguen', () => { const h = Canon.hechosDe ? Canon.hechosDe(registro(), 'Aldo') : []; return [h.some((x) => x.predicado === 'vida' && x.valor === 'vivo' && x.sustituye.length) && /herrero/.test(h.map((x) => x.texto).join(' ')), h.map((x) => x.texto).join(' | ')]; });
 
   groq.configurar({ consentido: true });

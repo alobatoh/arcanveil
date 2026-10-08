@@ -86,7 +86,7 @@ console.log('\n── La figura del tejado (semilla 5) ──');
 
   // Guardar y cargar: las sugerencias usadas siguen usadas.
   const antes = JSON.stringify(m.ver('narrative.sugerenciasUsadas'));
-  m.guardarYCargar();
+  await m.guardarYCargar();
   comprobar(JSON.stringify(m.ver('narrative.sugerenciasUsadas')) === antes, 'tras guardar y cargar, lo ya sugerido y usado se recuerda');
 }
 

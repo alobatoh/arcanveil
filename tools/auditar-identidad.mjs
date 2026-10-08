@@ -117,7 +117,7 @@ await caso(async () => {
 await caso(async () => {
   // Guardar y cargar: el índice sale del inventario cargado, no de memoria.
   const p = await partida();
-  p.m.guardarYCargar();
+  await p.m.guardarYCargar();
   const r = await p.turno('ataco a Korsa usando la katana');
   comprobar(intacto(r) && /^No llevas katana/.test(r.texto), 'tras guardar y cargar, la katana sigue sin existir', r.texto);
   const r2 = await p.turno('ataco a Korsa con el cuchillo de caza');

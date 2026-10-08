@@ -71,7 +71,7 @@ async function partida() {
   const t3 = await m.jugar('miro otra vez el río');
   comprobar(!/huellas frescas/.test(t3), 'lo ya descubierto no se descubre dos veces', t3);
 
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const recordado = m.sistema('turns').memoria.hechos.some((h) => /huellas frescas/.test(h.texto));
   comprobar(recordado, 'lo descubierto sobrevive a guardar y cargar');
 
@@ -125,7 +125,7 @@ async function partida() {
   comprobar(compartidos.length > 0, 'lo contado queda apuntado como compartido', JSON.stringify(compartidos));
   const creencias = m.sistema('turns').memoria.hechos.map((h) => h.texto).filter((h) => /^Según Vervek:/.test(h));
   comprobar(creencias.length > 0, 'y el mundo lo recuerda como dicho por él, no como hecho', creencias.join(' | '));
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const t2 = await m.jugar('le pregunto a Vervek por el paso del norte');
   comprobar(cuerpo(t2) !== cuerpo(t1), 'tras guardar y cargar no repite lo mismo como nuevo', `${t1}\n---\n${t2}`);
 }

@@ -145,7 +145,7 @@ const misiones = () => {
 
   // Guardar y cargar: el mismo mundo, los mismos nombres, los mismos recuerdos.
   const nombreAntes = m.ver(`npcs.conocidos.porId.${carretero.refId}.nombre`);
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const tras = m.sistema('situations').todas().find((s) => s.id === sit.id);
   comprobar(tras?.estado === 'resuelta', 'tras guardar y cargar, la situación sigue resuelta');
   comprobar(m.ver(`npcs.conocidos.porId.${carretero.refId}.nombre`) === nombreAntes
@@ -200,7 +200,7 @@ const misiones = () => {
 
   // Diez turnos después, y tras guardar y cargar, Mara sigue acordándose.
   for (let i = 0; i < 9; i += 1) await m.jugar(['miro alrededor', 'compruebo mi equipo', 'escucho la calle'][i % 3]);
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const t12 = await m.jugar('le pregunto a Mara por el puerto');
   comprobar(m.ver('meta.turno') >= 12 && t12.includes('«No os entregaré la llave»'),
     'en el turno 12 y tras guardar y cargar, Mara recuerda la negativa con sus palabras', t12);
@@ -245,7 +245,7 @@ const misiones = () => {
   comprobar(meta && /forja/.test(JSON.stringify(meta)), 'un objetivo propio lo marca el jugador, no el juego', JSON.stringify(meta));
   // La primera línea es el eco del jugador, con su «mi padre».
   comprobar(/tu padre/.test(t3) && !/mi padre/.test(t3.split('\n').slice(1).join(' ')), 'y se le devuelve en segunda persona', t3);
-  m.guardarYCargar();
+  await m.guardarYCargar();
   comprobar(m.sistema('quests').activas().some((q) => q.tipo === 'meta'), 'el objetivo propio sobrevive a guardar y cargar');
 }
 
@@ -400,7 +400,7 @@ async function encuentro(refId = 'patrulla_hostil') {
   for (let i = 0; i < 6; i += 1) await m.jugar('miro el río');
   comprobar(situaciones.todas().find((s) => s.id === sit.id).estado === 'desenlace', 'el robo ocurre a su ritmo');
   comprobar(!m.ver('npcs.presentes', []).includes(sit.actores.vigia.refId), 'quien se ha ido ya no está en escena');
-  m.guardarYCargar();
+  await m.guardarYCargar();
   const t4 = await m.jugar(`le pregunto a ${sit.actores.mercader.nombre} qué le ha pasado`);
   comprobar(/Me han quitado la bolsa/.test(t4), 'preguntado qué le ha pasado, el mercader cuenta el robo, también tras guardar y cargar', t4);
 }
