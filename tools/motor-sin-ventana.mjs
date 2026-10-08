@@ -12,7 +12,9 @@
  * después de guardar y cargar.
  *
  * Solo se sustituye lo que Node no tiene: `localStorage` y `sessionStorage`
- * (en memoria) y `window` (el propio global).
+ * (en memoria), `window` (el propio global), el estado coordinado entre
+ * pestañas (IndexedDB, en memoria) y Web Locks (un doble). Guardar, cargar y
+ * `guardarYCargar` son asíncronos: siempre con `await`.
  *
  *   import { crearMotor } from './motor-sin-ventana.mjs';
  * ═══════════════════════════════════════════════════════════════════════════
@@ -42,6 +44,16 @@ globalThis.sessionStorage ??= almacen();
   const C = await import('../src/persistence/Coordinacion.js');
   if (!globalThis.indexedDB) C.usarCoordinacion(C.crearEnMemoria());
 }
+
+// Web Locks: un DOBLE explícito (`dobles/candados.mjs`), instalado UNA vez
+// aquí, al cargar, por el gancho de pruebas (`EntregaLegado.usarCandados`,
+// que también fija los de `Ranuras`). Siempre el doble, haya o no
+// `navigator.locks` en este Node: las auditorías no dependen de la versión.
+// `crearMotor` no lo vuelve a poner, así que una prueba que lo quita (para
+// comprobar el error sin exclusión) lo conserva quitado hasta que restaura
+// con `candadosDePrueba`.
+export const candadosDePrueba = (await import('./dobles/candados.mjs')).crearCandados();
+(await import('../src/persistence/EntregaLegado.js')).usarCandados(candadosDePrueba);
 
 const { store } = await import('../src/core/Store.js');
 const { bus } = await import('../src/core/EventBus.js');
