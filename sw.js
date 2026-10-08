@@ -1,6 +1,6 @@
 // Generado por tools/generar-sw.mjs. No editar a mano.
 // La lista se recorre del disco: un archivo nuevo entra solo al regenerar.
-const CACHE = 'arcanveil-e274up';
+const CACHE = 'arcanveil-1v04fq9';
 const SHELL = [
   './manifest.webmanifest',
   './index.html',
@@ -127,6 +127,7 @@ const SHELL = [
   './src/persistence/Coordinacion.js',
   './src/persistence/EntregaLegado.js',
   './src/persistence/Migrations.js',
+  './src/persistence/Muertes.js',
   './src/persistence/Ranuras.js',
   './src/persistence/RegistroRuns.js',
   './src/persistence/SaveManager.js',
