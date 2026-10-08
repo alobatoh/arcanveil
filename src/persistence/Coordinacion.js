@@ -15,6 +15,9 @@
  *                  revisión. `localStorage` guarda un espejo (para listar sin
  *                  esperar y por compatibilidad); si el espejo va atrasado,
  *                  manda esta.
+ *   · `operaciones` → el recibo de cada token de guardado (#9): qué ranura,
+ *                  run, operación y revisión nombra, para que un reintento no
+ *                  pase por otro contenido.
  *
  * Por qué no en `localStorage`: en Chrome cada pestaña lee `localStorage` de
  * su propia caché y los cambios de otra llegan un poco después (medido, #7:
@@ -33,8 +36,8 @@
  */
 
 export const BASE = 'arcanveil-coordinacion';
-export const VERSION_BASE = 2;
-export const ALMACENES = Object.freeze({ LEGADOS: 'legados', RANURAS: 'ranuras', PARTIDAS: 'partidas', MUERTOS: 'muertos' });
+export const VERSION_BASE = 3;
+export const ALMACENES = Object.freeze({ LEGADOS: 'legados', RANURAS: 'ranuras', PARTIDAS: 'partidas', MUERTOS: 'muertos', OPERACIONES: 'operaciones' });
 
 /** undefined = automático (IndexedDB si existe); null = ninguno; objeto = el dado. */
 let elegido;
@@ -57,7 +60,7 @@ function motor() {
 let abierta = null;
 function abrir() {
   abierta ??= new Promise((ok, mal) => {
-    // v1 (#7): legados y ranuras. v2 (#8): + partidas y muertos. Subir de
+    // v1 (#7): legados y ranuras. v2 (#8): + partidas y muertos. v3 (#9): + operaciones. Subir de
     // versión solo AÑADE almacenes: lo que ya había se conserva.
     const p = globalThis.indexedDB.open(BASE, VERSION_BASE);
     p.onupgradeneeded = () => {
