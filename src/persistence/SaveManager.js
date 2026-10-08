@@ -303,7 +303,9 @@ export class SaveManager extends SystemBase {
     if (!runId) return fallo('Esta partida no dice de qué campaña es: no se puede guardar en una ranura.');
 
     // ─── La escritura, en su turno ──────────────────────────────────────
-    const tarea = this._cola.then(() => this._escribir({ ranura, runId, texto, guardado, tamano, opciones }));
+    this._pendientes = (this._pendientes ?? 0) + 1;
+    const tarea = this._cola.then(() => this._escribir({ ranura, runId, texto, guardado, tamano, opciones }))
+      .finally(() => { this._pendientes -= 1; });
     this._cola = tarea.catch(() => {});
     return tarea;
   }
@@ -680,6 +682,20 @@ export class SaveManager extends SystemBase {
    * @returns {Promise<{borradas: number}>}
    */
   async borrarTodo() {
+    // Bajo el candado global: ninguna otra pestaña escribe entre el vaciado
+    // y las lápidas. Sin coordinación posible se borra igual (lo ha pedido el
+    // jugador), pero sin lápidas que garanticen nada entre pestañas.
+    const r = await Ranuras.conCandadoGlobal(() => this._borrarTodo());
+    if (r?.codigo === 'sin-exclusion') return this._borrarTodo();
+    if (r?.codigo === 'ocupado-global') {
+      this.emitir('ui:notice', { mensaje: r.motivo, tipo: 'aviso' });
+      return { borradas: 0, motivo: r.motivo };
+    }
+    return r;
+  }
+
+  /** @private */
+  async _borrarTodo() {
     let borradas = 0;
 
     // Quién ocupaba cada ranura: tras vaciar, cada una queda con su lápida
@@ -910,6 +926,8 @@ export class SaveManager extends SystemBase {
       permitido: this.leer('settings.persistencia', false),
       autoguardado: this.leer('settings.autoguardado', true),
       ultimoAuto: this._ultimoAuto,
+      // Diagnóstico (sin datos de la partida): guardados en cola ahora.
+      guardadosPendientes: this._pendientes ?? 0,
       partidas: this.listar().filter((r) => !r.vacia).length,
       espacio: this.espacioUsado(),
       versionFormato: PERSISTENCIA.versionFormato,
