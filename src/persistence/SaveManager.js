@@ -21,6 +21,17 @@
  * desactivada: descargar un JSON no es escribir en el navegador, es entregarle
  * al jugador sus propios datos.
  *
+ * GUARDADO COORDINADO ENTRE PESTAÑAS (#8). Guardar y cargar son asíncronos:
+ *   · la foto de la partida se toma AL PEDIR guardar (si la pestaña cambia
+ *     de partida mientras espera, se guarda la que se pidió, en su ranura);
+ *   · los guardados de esta pestaña van en cola, de uno en uno y en orden;
+ *   · cada escritura va bajo el candado global de ranuras y la decide el
+ *     registro coordinado (`Ranuras.escribirPartida`): dueño y revisión
+ *     vigentes en IndexedDB, nunca lo que diga la caché de `localStorage`
+ *     (que es un espejo y puede ir atrasada);
+ *   · cargar lee la copia autoritativa y comprueba la muerte en el registro
+ *     coordinado (`Muertes`); si no se puede comprobar, no se carga.
+ *
  * Dependencias: SystemBase, Serializer, Migrations.
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -31,6 +42,7 @@ import * as Mig from './Migrations.js';
 import * as RegistroRuns from './RegistroRuns.js';
 import * as Ranuras from './Ranuras.js';
 import * as Coordinacion from './Coordinacion.js';
+import * as Muertes from './Muertes.js';
 import { crearEstadoInicial } from '../core/GameState.js';
 import { PERSISTENCIA, APP } from '../config/app.config.js';
 
@@ -62,6 +74,12 @@ export class SaveManager extends SystemBase {
 
     /** true si LocalStorage está disponible y permitido. @private */
     this._disponible = false;
+
+    /** Guardados y borrados de esta pestaña, de uno en uno. @private */
+    this._cola = Promise.resolve();
+
+    /** Revisión conocida de cada ranura y campaña («ranura|run» → rev). @private */
+    this._revs = new Map();
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -80,8 +98,8 @@ export class SaveManager extends SystemBase {
     // antiguas invisibles justo para quien no había tocado los ajustes.
     this._migrarClavesHeredadas();
 
-    this.escuchar('game:save', ({ ranura, nota }) => this.guardar(ranura, { nota }));
-    this.escuchar('game:load', ({ ranura }) => this.cargar(ranura));
+    this.escuchar('game:save', ({ ranura, nota }) => { this.guardar(ranura, { nota }).catch((e) => this.log.error('guardar', e)); });
+    this.escuchar('game:load', ({ ranura }) => { this.cargar(ranura).catch((e) => this.log.error('cargar', e)); });
     this.escuchar('game:export', () => this.exportar());
 
     // Activar la persistencia en Ajustes reevalúa la disponibilidad.
@@ -115,7 +133,7 @@ export class SaveManager extends SystemBase {
 
     if (turno - this._ultimoAuto >= PERSISTENCIA.turnosEntreAutoguardados) {
       this._ultimoAuto = turno;
-      this.guardar(RANURA_AUTO, { silencioso: true, nota: 'automático' });
+      this.guardar(RANURA_AUTO, { silencioso: true, nota: 'automático' }).catch((e) => this.log.error('autoguardado', e));
     }
   }
 
@@ -231,110 +249,130 @@ export class SaveManager extends SystemBase {
   /**
    * Guarda la partida en una ranura.
    *
+   * La foto se toma YA (antes del primer `await`); la escritura espera su
+   * turno en la cola de esta pestaña y el candado global de ranuras.
+   *
    * @param {string} [ranura='1']
    * @param {Object} [opciones]
    * @param {string} [opciones.nota]
    * @param {boolean} [opciones.silencioso=false]
-   * @returns {{exito: boolean, motivo: string|null, tamano: Object|null}}
+   * @param {Object} [opciones.lease] Arriendo del candado global (una creación que ya lo tiene).
+   * @param {string} [opciones.op] La operación que reservó la ranura (creación).
+   * @returns {Promise<{exito: boolean, motivo: string|null, tamano: Object|null, ranura: string, runId: string|null, texto?: string, rev?: number, conflicto?: boolean, codigo?: string}>}
    */
-  guardar(ranura = '1', opciones = {}) {
+  async guardar(ranura = '1', opciones = {}) {
+    ranura = String(ranura);
+    const runActual = this.leer('meta.runId', null);
+    const fallo = (motivo, extra = {}, tipo = 'aviso') => {
+      if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: motivo, tipo });
+      return { exito: false, motivo, tamano: null, ranura, runId: runActual, ...extra };
+    };
+
     if (!this._disponible) {
-      const motivo = this._sinAlmacenamiento ?? 'La persistencia está desactivada. Actívala en Ajustes o exporta a archivo.';
-
-      if (!opciones.silencioso) {
-        this.emitir('ui:notice', { mensaje: motivo, tipo: 'aviso' });
-      }
-
-      return { exito: false, motivo, tamano: null };
+      return fallo(this._sinAlmacenamiento ?? 'La persistencia está desactivada. Actívala en Ajustes o exporta a archivo.');
     }
 
     // En mitad de una pelea solo se guarda en el turno del jugador: con el
     // enemigo actuando no hay un punto estable (ver `CombatManager.serializar`).
     if (this.leer('combat.activo', false) && !this.sistema('combat')?.esperandoJugador) {
-      const motivo = 'El combate se está resolviendo: guarda cuando sea tu turno.';
-      if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: motivo, tipo: 'aviso' });
-      return { exito: false, motivo, tamano: null };
+      return fallo('El combate se está resolviendo: guarda cuando sea tu turno.');
     }
 
+    // ─── La foto, AHORA ─────────────────────────────────────────────────
+    let guardado;
+    let tamano;
+    let texto;
     try {
-      const guardado = this._construir(opciones.nota);
+      guardado = this._construir(opciones.nota);
 
-      // ─── Auditoría de seguridad ───────────────────────────────────────
       // Si algo sensible se hubiera colado, se detecta antes de escribir.
       const auditoria = Ser.auditar(guardado.estado);
-
       if (!auditoria.limpio) {
         this.log.error('el guardado contiene campos sensibles', auditoria.encontrado);
-
-        return {
-          exito: false,
-          motivo: 'El guardado contiene datos que no deben persistirse.',
-          tamano: null,
-        };
+        return fallo('El guardado contiene datos que no deben persistirse.', {}, 'error');
       }
 
-      // ─── Tamaño ───────────────────────────────────────────────────────
-      const tamano = Ser.medir(guardado);
-
-      if (!tamano.dentroDelLimite) {
-        return {
-          exito: false,
-          motivo: `La partida ocupa ${tamano.kb} KB y no cabe en una ranura.`,
-          tamano,
-        };
-      }
-
-      // ─── ¿De quién es la ranura? ──────────────────────────────────────
-      // Actualizar la MISMA campaña, sí; escribir encima de otra, no (una
-      // pestaña vieja con `meta.ranura` antigua pisaba la campaña que otra
-      // había creado allí). Reemplazar solo con un permiso concreto y vigente
-      // (ranura + run + fecha + huella de lo leído). La automática es de todas.
-      if (ranura !== RANURA_AUTO) {
-        const dueno = Ranuras.puedeEscribir(ranura, this.leer('meta.runId', null), opciones.reemplazo ?? null);
-        if (!dueno.ok) {
-          if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: dueno.motivo, tipo: 'aviso' });
-          return { exito: false, motivo: dueno.motivo, tamano, conflicto: true };
-        }
-      }
-
-      // ─── Escritura ────────────────────────────────────────────────────
-      const texto = JSON.stringify(guardado);
-      localStorage.setItem(`${PREFIJO}${ranura}`, texto);
-
-      this.emitir(EVENTOS_GUARDADO.GUARDADO, {
-        ranura,
-        cabecera: guardado.cabecera,
-        tamano,
-        automatico: ranura === RANURA_AUTO,
-      });
-
-      if (!opciones.silencioso) {
-        this.emitir('ui:notice', { mensaje: 'Partida guardada.', tipo: 'exito' });
-      }
-
-      this.log.info(`partida guardada en la ranura ${ranura} (${tamano.kb} KB)`);
-
-      // Los bytes escritos: quien guarda puede comprobar después que lo que
-      // hay en la ranura es exactamente lo suyo (y no borrar nada ajeno).
-      return { exito: true, motivo: null, tamano, texto };
-
+      tamano = Ser.medir(guardado);
+      if (!tamano.dentroDelLimite) return fallo(`La partida ocupa ${tamano.kb} KB y no cabe en una ranura.`, { tamano });
+      texto = JSON.stringify(guardado);
     } catch (e) {
-      // El error más probable es la cuota agotada.
-      const esCuota = /quota|exceeded/i.test(e?.name ?? e?.message ?? '');
-
-      const motivo = esCuota
-        ? 'No queda espacio en el navegador. Borra alguna partida antigua.'
-        : `No se pudo guardar: ${e.message}`;
-
-      this.log.error('fallo al guardar', e);
-      this.emitir(EVENTOS_GUARDADO.ERROR, { operacion: 'guardar', motivo });
-
-      if (!opciones.silencioso) {
-        this.emitir('ui:notice', { mensaje: motivo, tipo: 'error' });
-      }
-
-      return { exito: false, motivo, tamano: null };
+      this.log.error('fallo al preparar el guardado', e);
+      return fallo(`No se pudo guardar: ${e?.message ?? e}`, {}, 'error');
     }
+    const runId = guardado.estado?.meta?.runId ?? null;
+    if (!runId) return fallo('Esta partida no dice de qué campaña es: no se puede guardar en una ranura.');
+
+    // ─── La escritura, en su turno ──────────────────────────────────────
+    const tarea = this._cola.then(() => this._escribir({ ranura, runId, texto, guardado, tamano, opciones }));
+    this._cola = tarea.catch(() => {});
+    return tarea;
+  }
+
+  /**
+   * Escribe una foto ya tomada: candado global (o el arriendo que trae una
+   * creación), escritura coordinada con dueño y revisión, y el espejo local.
+   * Si el espejo falla, se deshace la escritura propia (lo anterior o lo
+   * nuevo, nunca a medias) y se dice.
+   * @private
+   */
+  async _escribir({ ranura, runId, texto, guardado, tamano, opciones }) {
+    const compartida = ranura === RANURA_AUTO;
+    const clave = `${ranura}|${runId}`;
+    const base = { tamano, ranura, runId, texto };
+    const fallo = (motivo, extra = {}, tipo = 'aviso') => {
+      this.emitir(EVENTOS_GUARDADO.ERROR, { operacion: 'guardar', motivo, ranura, runId });
+      if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: motivo, tipo, runId });
+      return { exito: false, motivo, ...base, ...extra };
+    };
+
+    const escribir = async (lease) => {
+      // Primero se lee el dueño coordinado: si el estado compartido no se
+      // puede leer, no se escribe «por si acaso».
+      await Ranuras.duenoRanura(ranura);
+      const r = await Ranuras.escribirPartida({
+        lease, ranura, runId, texto, compartida,
+        op: opciones.op ?? null,
+        revBase: compartida ? null : (this._revs.get(clave) ?? null),
+        token: opciones.token ?? `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        guardadoEn: guardado.guardadoEn ?? Date.now(),
+      });
+      if (!r.ok) return { exito: false, motivo: r.motivo, codigo: r.codigo, conflicto: true };
+      try {
+        localStorage.setItem(`${PREFIJO}${ranura}`, texto);
+      } catch (e) {
+        // El espejo no cabe: se vuelve a lo de antes en la autoridad (si
+        // seguimos siendo lo último), para que lo que se ve y lo que vale
+        // no se contradigan.
+        if (!r.repetido) await Ranuras.deshacerEscritura({ lease, ranura, runId, texto, previo: r.previo }).catch(() => null);
+        throw e;
+      }
+      if (!compartida) this._revs.set(clave, r.rev);
+      return { exito: true, rev: r.rev };
+    };
+
+    let r;
+    try {
+      if (opciones.lease) {
+        r = Ranuras.leaseValido(opciones.lease)
+          ? await escribir(opciones.lease)
+          : { exito: false, motivo: 'La operación ya no tiene el candado de las ranuras: no se escribe.', codigo: 'sin-candado' };
+      } else {
+        r = await Ranuras.conCandadoGlobal(escribir);
+      }
+    } catch (e) {
+      const esCuota = /quota|exceeded/i.test(`${e?.name ?? ''} ${e?.message ?? ''}`);
+      this.log.error('fallo al guardar', e);
+      return fallo(esCuota ? 'No queda espacio en el navegador. Borra alguna partida antigua.' : `No se pudo guardar: ${e?.message ?? e}`, {}, 'error');
+    }
+    if (!r.exito) return fallo(r.motivo ?? 'No se pudo guardar.', { codigo: r.codigo ?? null, conflicto: Boolean(r.conflicto) });
+
+    this.emitir(EVENTOS_GUARDADO.GUARDADO, { ranura, runId, cabecera: guardado.cabecera, tamano, automatico: compartida, rev: r.rev });
+    if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: 'Partida guardada.', tipo: 'exito', runId });
+    this.log.info(`partida guardada en la ranura ${ranura} (${tamano.kb} KB, revisión ${r.rev})`);
+
+    // Los bytes escritos: quien guarda puede comprobar después que lo que
+    // hay en la ranura es exactamente lo suyo (y no borrar nada ajeno).
+    return { exito: true, motivo: null, ...base, rev: r.rev };
   }
 
   /**
@@ -364,19 +402,65 @@ export class SaveManager extends SystemBase {
      ═══════════════════════════════════════════════════════════════════════ */
 
   /**
-   * Carga una partida.
+   * Carga una partida: la copia AUTORITATIVA de la ranura (no la caché
+   * local), y solo si su personaje no ha muerto según el registro
+   * coordinado. Si no se puede comprobar, no se carga.
    *
    * @param {string} ranura
-   * @returns {{exito: boolean, motivo: string|null, avisos: string[]}}
+   * @returns {Promise<{exito: boolean, motivo: string|null, avisos: string[]}>}
    */
-  cargar(ranura) {
-    const crudo = this._leerRanura(ranura);
+  async cargar(ranura) {
+    ranura = String(ranura);
+    const vacia = { exito: false, motivo: 'No hay partida en esa ranura.', avisos: [] };
+    if (!this._disponible) return vacia;
 
-    if (!crudo) {
-      return { exito: false, motivo: 'No hay partida en esa ranura.', avisos: [] };
+    let l;
+    try {
+      l = Coordinacion.disponible() ? await Ranuras.leerRanuraCoordinada(ranura) : Ranuras.leerRanura(ranura);
+    } catch (e) {
+      const motivo = `No se puede leer el estado compartido del juego (${e?.message ?? e}): no se abre la partida para no cargar una copia vieja.`;
+      this.emitir('ui:notice', { mensaje: motivo, tipo: 'error' });
+      return { exito: false, motivo, avisos: [] };
     }
+    if (l.tipo === 'ausente' || l.tipo === 'reservada') return vacia;
+    if (l.tipo === 'inaccesible' || l.tipo === 'ilegible') {
+      this.log.aviso(`ranura ${ranura}: ${l.motivo}`);
+      const motivo = `La ranura ${ranura} no se puede abrir: ${l.motivo}.`;
+      this.emitir('ui:notice', { mensaje: motivo, tipo: 'error' });
+      return { exito: false, motivo, avisos: [] };
+    }
+    const guardado = l.guardado ?? Ser.parsearSeguro(l.texto).objeto;
 
-    return this.cargarDesde(crudo);
+    const vida = await this._comprobarVivo(guardado);
+    if (vida) return vida;
+
+    const r = this.cargarDesde(guardado);
+    if (r.exito && l.rev !== null && l.rev !== undefined) this._revs.set(`${ranura}|${this.leer('meta.runId', null)}`, l.rev);
+    return r;
+  }
+
+  /**
+   * ¿El personaje de este guardado sigue vivo según el registro coordinado?
+   * Devuelve el resultado de «no se carga», o null si se puede cargar.
+   * @private
+   */
+  async _comprobarVivo(guardado) {
+    const meta = guardado?.estado?.meta ?? {};
+    const runId = meta.runId ?? guardado?.cabecera?.runId ?? null;
+    if (!runId) return null;
+    let muerto;
+    try {
+      muerto = await Muertes.estaMuerto(runId);
+    } catch (e) {
+      const motivo = `No se puede comprobar si ese personaje sigue vivo (${e?.message ?? e}): no se abre para no revivir a un muerto.`;
+      this.emitir('ui:notice', { mensaje: motivo, tipo: 'error' });
+      return { exito: false, motivo, avisos: [] };
+    }
+    if (!muerto) return null;
+    const nombre = guardado?.estado?.player?.nombre ?? guardado?.cabecera?.nombre ?? 'Ese personaje';
+    const texto = `${nombre} murió: esa crónica terminó y no se puede continuar. Empieza una partida nueva.`;
+    this.emitir('ui:notice', { mensaje: texto, tipo: 'aviso' });
+    return { exito: false, motivo: 'muerto', texto, avisos: [] };
   }
 
   /**
@@ -429,7 +513,8 @@ export class SaveManager extends SystemBase {
       const muerto = Boolean(meta.muerte) || RegistroRuns.estaMuerto(meta.runId)
         || (Boolean(jugador.nombre) && Number.isFinite(vida) && vida <= 0);
       if (muerto) {
-        if (meta.runId) RegistroRuns.marcarMuerto(meta.runId, { nombre: jugador.nombre, causa: meta.muerte?.causa ?? null });
+        // El final guardado de un muerto que el registro aún no tuviera.
+        if (meta.runId) Muertes.registrar({ runId: meta.runId, marca: { nombre: jugador.nombre, causa: meta.muerte?.causa ?? null } }).catch((e) => this.log.aviso(`registro de muerte: ${e?.message ?? e}`));
         const texto = `${jugador.nombre ?? 'Ese personaje'} murió: esa crónica terminó y no se puede continuar. Empieza una partida nueva.`;
         this.emitir('ui:notice', { mensaje: texto, tipo: 'aviso' });
         return { exito: false, motivo: 'muerto', texto, avisos };
@@ -560,28 +645,30 @@ export class SaveManager extends SystemBase {
   }
 
   /**
-   * Borra una partida.
+   * Borra una partida: la de esa ranura (o, si se dice, solo si sigue siendo
+   * de ese run). Va en la cola de esta pestaña y bajo el candado global, y
+   * deja una lápida: un guardado tardío de esa campaña no la recrea.
    *
    * @param {string} ranura
-   * @returns {boolean}
+   * @param {{runId?: string|null}} [opciones]
+   * @returns {Promise<boolean>}
    */
-  borrar(ranura) {
-    if (!this._disponible) return false;
-
-    try {
-      localStorage.removeItem(`${PREFIJO}${ranura}`);
-      // La ranura queda libre también en el registro compartido entre
-      // pestañas (si no, seguiría «ocupada» por la campaña borrada).
-      Ranuras.liberarRegistro(ranura).catch((e) => this.log.aviso(`registro de la ranura ${ranura}: ${e.message}`));
-
+  borrar(ranura, { runId = null } = {}) {
+    if (!this._disponible) return Promise.resolve(false);
+    ranura = String(ranura);
+    const tarea = this._cola.then(async () => {
+      const r = await Ranuras.conCandadoGlobal((lease) => Ranuras.borrarRanura({ lease, ranura, runId }));
+      if (!r.ok) {
+        this.log.aviso(`no se ha borrado la ranura ${ranura}: ${r.motivo}`);
+        this.emitir('ui:notice', { mensaje: `No se ha borrado la ranura ${ranura}: ${r.motivo}.`, tipo: 'aviso' });
+        return false;
+      }
       this.emitir(EVENTOS_GUARDADO.BORRADO, { ranura });
       this.log.info(`ranura ${ranura} borrada`);
-
       return true;
-    } catch (e) {
-      this.log.error('fallo al borrar', e);
-      return false;
-    }
+    }).catch((e) => { this.log.error('fallo al borrar', e); return false; });
+    this._cola = tarea.catch(() => {});
+    return tarea;
   }
 
   /**
@@ -590,10 +677,15 @@ export class SaveManager extends SystemBase {
    * Es la contrapartida de haber escrito algo: el jugador puede deshacerlo por
    * completo cuando quiera.
    *
-   * @returns {{borradas: number}}
+   * @returns {Promise<{borradas: number}>}
    */
-  borrarTodo() {
+  async borrarTodo() {
     let borradas = 0;
+
+    // Quién ocupaba cada ranura: tras vaciar, cada una queda con su lápida
+    // (una pestaña vieja de esa campaña no la recrea al guardar).
+    let antes = [];
+    try { if (Coordinacion.disponible()) antes = await Coordinacion.listar(Coordinacion.ALMACENES.RANURAS); } catch { /* sin lápidas */ }
 
     try {
       // Se recorren las claves en orden inverso: borrar mientras se itera
@@ -607,8 +699,13 @@ export class SaveManager extends SystemBase {
         }
       }
 
-      // El estado compartido entre pestañas (herencias y ranuras) también.
-      Coordinacion.vaciar().catch((e) => this.log.aviso(`estado compartido: ${e.message}`));
+      // El estado compartido entre pestañas (herencias, muertes, ranuras y
+      // copias) también.
+      try {
+        await Coordinacion.vaciar();
+        await Ranuras.lapidasTodas(antes);
+      } catch (e) { this.log.aviso(`estado compartido: ${e?.message ?? e}`); }
+      this._revs.clear();
 
       this.log.info(`borradas ${borradas} claves del navegador`);
 
@@ -706,10 +803,14 @@ export class SaveManager extends SystemBase {
   /**
    * Importa una partida desde texto.
    *
+   * Carga en memoria (no escribe ninguna ranura: guardarla después sigue
+   * las reglas de dueño de siempre) y comprueba antes que su personaje no
+   * haya muerto según el registro coordinado.
+   *
    * @param {string} texto Contenido del archivo.
-   * @returns {{exito: boolean, motivo: string|null, avisos: string[]}}
+   * @returns {Promise<{exito: boolean, motivo: string|null, avisos: string[]}>}
    */
-  importar(texto) {
+  async importar(texto) {
     const lectura = Ser.desdeTexto(texto);
 
     if (!lectura.guardado) {
@@ -717,6 +818,8 @@ export class SaveManager extends SystemBase {
       return { exito: false, motivo: lectura.error, avisos: [] };
     }
 
+    const vida = await this._comprobarVivo(lectura.guardado);
+    if (vida) return vida;
     return this.cargarDesde(lectura.guardado);
   }
 
@@ -739,7 +842,7 @@ export class SaveManager extends SystemBase {
 
     try {
       const texto = await archivo.text();
-      return this.importar(texto);
+      return await this.importar(texto);
     } catch (e) {
       return { exito: false, motivo: `No se pudo leer el archivo: ${e.message}` };
     }
@@ -777,6 +880,27 @@ export class SaveManager extends SystemBase {
     }
 
     return { claves, kb: Math.round(bytes / 1024 * 10) / 10 };
+  }
+
+  /**
+   * Barrera: espera a que terminen los guardados y borrados ya pedidos en
+   * esta pestaña (para cerrar o para pruebas), con tope. Si no terminan a
+   * tiempo, lanza un error real (no se da por hecho).
+   * @param {number} [tope=15000] ms
+   */
+  async drenar(tope = 15000) {
+    const limite = Date.now() + tope;
+    let t;
+    try {
+      // La cola puede crecer mientras se espera: hasta que deje de cambiar.
+      for (let cola = null; cola !== this._cola;) {
+        cola = this._cola;
+        const resto = limite - Date.now();
+        if (resto <= 0) throw new Error(`los guardados pendientes no han terminado en ${tope} ms`);
+        await Promise.race([cola, new Promise((_, mal) => { t = setTimeout(() => mal(new Error(`los guardados pendientes no han terminado en ${tope} ms`)), resto); })]);
+        clearTimeout(t);
+      }
+    } finally { clearTimeout(t); }
   }
 
   /** @returns {Object} */
