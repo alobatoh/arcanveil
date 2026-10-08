@@ -407,7 +407,8 @@ async function pestanasCoordinadas() {
     // La pestaña nueva puede seguir guardando (el guardado de tras abrir la
     // crónica): se espera a su cola (barrera `drenar`) antes de tomar la
     // referencia, y la pestaña nueva no hace nada más mientras se prueba.
-    await otra.ev(`ARCANVEIL.sistema('saves').drenar(15000).then(() => true)`);
+    // (En la base 6afe016 el guardado es síncrono: no hay cola que esperar.)
+    await otra.ev(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
     const bytesNew = await otra.ev(lsBytes(E));
     const revNew = (await evaluate(idbLeer('ranuras', E)))?.rev ?? null;
     if (runNew === runOld || (await evaluate(lsRun(E))) !== runNew || (await dueno(E)) !== runNew) throw new Error(`#8: el reemplazo desde la otra pestaña no dejó NEW-RUN en la ranura ${E}: ${JSON.stringify({ runOld, runNew, ls: await evaluate(lsRun(E)), idb: await dueno(E) })}`);
