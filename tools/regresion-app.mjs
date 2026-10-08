@@ -727,13 +727,25 @@ try {
   const panelGrupo = await evaluate(`document.querySelector('#grupo-pj, .grupo__miembro')?.textContent ?? ''`);
   if (!panelGrupo.includes(reclutado.nombre)) throw new Error('el compañero no sale en el lateral');
 
-  const viajeGrupo = await evaluate(`(async () => {
+  const viaje = await evaluate(`(async () => {
     const destino = ARCANVEIL.sistema('world').lugarActual()?.plantilla?.conexiones?.[0]?.hasta;
+    const desde = ARCANVEIL.ver('world.ubicacion');
     const antes = ARCANVEIL.ver('narrative.entradas', []).length;
+    const escenasAntes = window.__escenas.length;
     await ARCANVEIL.sistema('travel').viajar(destino, { forzar: true });
-    return ARCANVEIL.ver('narrative.entradas', []).slice(antes).map((e) => e.texto ?? '').join(' ');
+    return { texto: ARCANVEIL.ver('narrative.entradas', []).slice(antes).map((e) => e.texto ?? '').join(' '), desde, destino, ubicacion: ARCANVEIL.ver('world.ubicacion'), escenas: window.__escenas.slice(escenasAntes), encuentro: Boolean(ARCANVEIL.sistema('exploration')?.encuentroActivo) || ARCANVEIL.ver('combat.activo', false) };
   })()`);
+  const viajeGrupo = viaje.texto;
   if (!viajeGrupo.includes(`con ${reclutado.nombre}`)) throw new Error(`el viaje no lleva al compañero: «${viajeGrupo.slice(0, 160)}»`);
+  // #7: llegar o ser interrumpido por un encuentro son los dos desenlaces
+  // legítimos de un viaje por un camino con peligro (la semilla decide). No
+  // se oculta el encuentro para forzar la llegada; se exige que el estado
+  // cuadre con el desenlace. Antes la prueba daba por hecha la llegada y
+  // fallaba en la base y en el HEAD con la misma semilla (505).
+  const llego = viaje.ubicacion === viaje.destino;
+  if (llego && !viaje.escenas.includes('llegada')) throw new Error(`llegó a ${viaje.destino} sin escena de llegada: ${JSON.stringify(viaje)}`);
+  if (!llego && !(viaje.escenas.includes('encuentro') || viaje.encuentro)) throw new Error(`el viaje no llegó y ningún encuentro lo explica: ${JSON.stringify(viaje)}`);
+  console.log(`  viaje con el compañero ${viaje.desde} → ${viaje.destino}: ${llego ? 'llegada' : `interrumpido por un encuentro (sigue en ${viaje.ubicacion})`}`);
 
   await until('!ARCANVEIL.ver("combat.activo", false)', 8000);
   await evaluate(`window.__ataquesGrupo = []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataquesGrupo.push(e))`);
@@ -820,7 +832,9 @@ try {
   // La escena cambia al llegar y al pelear, y solo entonces se pide imagen.
   // Los treinta turnos anteriores no la cambiaron.
   const escenas = await evaluate('window.__escenas');
-  for (const motivo of ['llegada', 'combate', 'fin_combate']) {
+  // La llegada solo se exige si el viaje llegó (ver arriba); combate y fin
+  // de combate, siempre.
+  for (const motivo of [...(llego ? ['llegada'] : ['encuentro']), 'combate', 'fin_combate']) {
     if (!escenas.includes(motivo)) throw new Error(`no hubo cambio de escena por «${motivo}»: ${escenas.join(', ')}`);
   }
 
