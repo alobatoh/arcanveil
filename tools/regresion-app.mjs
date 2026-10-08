@@ -404,13 +404,18 @@ async function pestanasCoordinadas() {
     await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(E)}`, 20000);
     await otra.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
     const runNew = await otra.ev(`ARCANVEIL.ver('meta.runId')`);
+    // La pestaña nueva puede seguir guardando (el guardado de tras abrir la
+    // crónica): se espera a su cola (barrera `drenar`) antes de tomar la
+    // referencia, y la pestaña nueva no hace nada más mientras se prueba.
+    await otra.ev(`ARCANVEIL.sistema('saves').drenar(15000).then(() => true)`);
     const bytesNew = await otra.ev(lsBytes(E));
+    const revNew = (await evaluate(idbLeer('ranuras', E)))?.rev ?? null;
     if (runNew === runOld || (await evaluate(lsRun(E))) !== runNew || (await dueno(E)) !== runNew) throw new Error(`#8: el reemplazo desde la otra pestaña no dejó NEW-RUN en la ranura ${E}: ${JSON.stringify({ runOld, runNew, ls: await evaluate(lsRun(E)), idb: await dueno(E) })}`);
 
     // (1) Sin fixture: Chrome real, mismo perfil, sin tocar la caché.
     const natural = await guardarConBoton(evaluate, until);
-    const tras1 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, dueno: await dueno(E), avisos: natural };
-    if (natural.length !== 1 || natural.some((t) => /Partida guardada/.test(t)) || !natural.some((t) => /otra (partida|campaña)/.test(t)) || !tras1.bytes || tras1.dueno !== runNew) throw new Error(`#8 (sin fixture): la pestaña vieja guardó encima de la nueva o no lo dijo: ${JSON.stringify(tras1)}`);
+    const tras1 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, run: await evaluate(lsRun(E)), dueno: await dueno(E), rev: (await evaluate(idbLeer('ranuras', E)))?.rev ?? null, revNew, avisos: natural };
+    if (natural.length !== 1 || natural.some((t) => /Partida guardada/.test(t)) || !natural.some((t) => /otra (partida|campaña)/.test(t)) || !tras1.bytes || tras1.run !== runNew || tras1.dueno !== runNew || tras1.rev !== revNew) throw new Error(`#8 (sin fixture): la pestaña vieja guardó encima de la nueva o no lo dijo: ${JSON.stringify(tras1)}`);
     // (2) FIXTURE: caché vieja; getItem de la ranura E devuelve los bytes de OLD-RUN.
     await evaluate(`(() => { window.__getItemReal = Storage.prototype.getItem; const viejo = ${JSON.stringify(bytesOld)}; Storage.prototype.getItem = function (k) { return k === 'arcanveil:partida:' + ${JSON.stringify(E)} ? viejo : window.__getItemReal.call(this, k); }; return true; })()`);
     let cache;
@@ -423,8 +428,8 @@ async function pestanasCoordinadas() {
     } finally {
       await evaluate(`Storage.prototype.getItem = window.__getItemReal; true`);
     }
-    const tras2 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, dueno: await dueno(E), copia: JSON.parse((await evaluate(idbLeer('partidas', E)))?.texto ?? 'null')?.estado?.meta?.runId ?? null, avisos: cache };
-    if (cache.length !== 1 || cache.some((t) => /Partida guardada/.test(t)) || !cache.some((t) => /otra (partida|campaña)/.test(t)) || !tras2.bytes || tras2.dueno !== runNew) throw new Error(`#8 (FIXTURE caché vieja OLD-RUN): ${JSON.stringify(tras2)}`);
+    const tras2 = { bytes: (await evaluate(lsBytes(E))) === bytesNew, run: await evaluate(lsRun(E)), rev: (await evaluate(idbLeer('ranuras', E)))?.rev ?? null, revNew, dueno: await dueno(E), copia: JSON.parse((await evaluate(idbLeer('partidas', E)))?.texto ?? 'null')?.estado?.meta?.runId ?? null, avisos: cache };
+    if (cache.length !== 1 || cache.some((t) => /Partida guardada/.test(t)) || !cache.some((t) => /otra (partida|campaña)/.test(t)) || !tras2.bytes || tras2.run !== runNew || tras2.rev !== revNew || tras2.dueno !== runNew) throw new Error(`#8 (FIXTURE caché vieja OLD-RUN): ${JSON.stringify(tras2)}`);
     // (3) Un turno: su guardado silencioso tampoco escribe, y se dice una vez.
     await evaluate(`ARCANVEIL.jugar('miro alrededor')`);
     await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
