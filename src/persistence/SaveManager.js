@@ -258,7 +258,15 @@ export class SaveManager extends SystemBase {
    * @param {boolean} [opciones.silencioso=false]
    * @param {Object} [opciones.lease] Arriendo del candado global (una creación que ya lo tiene).
    * @param {string} [opciones.op] La operación que reservó la ranura (creación).
-   * @returns {Promise<{exito: boolean, motivo: string|null, tamano: Object|null, ranura: string, runId: string|null, texto?: string, rev?: number, conflicto?: boolean, codigo?: string}>}
+   * @param {string} [opciones.token] Nombre de ESTA operación, para reintentarla
+   *   sin duplicarla. Ata ranura, run, operación y contenido (ver
+   *   `Ranuras.escribirPartida`): reusarlo con otro contenido es un conflicto,
+   *   no un guardado. Sin token, cada llamada es una operación nueva.
+   * @returns {Promise<{exito: boolean, motivo: string|null, tamano: Object|null, ranura: string, runId: string|null, texto?: string, rev?: number, repetido?: boolean, intentado?: string, escritura?: string, conflicto?: boolean, codigo?: string}>}
+   *   `texto` y `rev` solo con éxito, y son los AUTORITATIVOS (con
+   *   `repetido`, los de la primera vez). En un fallo, `intentado` son los
+   *   bytes que se intentaron y `escritura` dice qué pasó con ellos:
+   *   `no-confirmada`, `deshecha` o `confirmada-sin-espejo`.
    */
   async guardar(ranura = '1', opciones = {}) {
     ranura = String(ranura);
@@ -320,36 +328,45 @@ export class SaveManager extends SystemBase {
   async _escribir({ ranura, runId, texto, guardado, tamano, opciones }) {
     const compartida = ranura === RANURA_AUTO;
     const clave = `${ranura}|${runId}`;
-    const base = { tamano, ranura, runId, texto };
+    const base = { tamano, ranura, runId };
+    const token = opciones.token ?? null;
     const fallo = (motivo, extra = {}, tipo = 'aviso') => {
-      this.emitir(EVENTOS_GUARDADO.ERROR, { operacion: 'guardar', motivo, ranura, runId });
+      this.emitir(EVENTOS_GUARDADO.ERROR, { operacion: 'guardar', motivo, ranura, runId, codigo: extra.codigo ?? null });
       if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: motivo, tipo, runId });
-      return { exito: false, motivo, ...base, ...extra };
+      return { exito: false, motivo, ...base, intentado: texto, escritura: 'no-confirmada', ...extra };
     };
 
+    // Qué pasó con la escritura si algo lanza a mitad (para reintentar sabiendo).
+    let escritura = 'no-confirmada';
     const escribir = async (lease) => {
       // Primero se lee el dueño coordinado: si el estado compartido no se
       // puede leer, no se escribe «por si acaso».
       await Ranuras.duenoRanura(ranura);
       const r = await Ranuras.escribirPartida({
-        lease, ranura, runId, texto, compartida,
+        lease, ranura, runId, texto, compartida, token,
         op: opciones.op ?? null,
         revBase: compartida ? null : (this._revs.get(clave) ?? null),
-        token: opciones.token ?? `g-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         guardadoEn: guardado.guardadoEn ?? Date.now(),
       });
       if (!r.ok) return { exito: false, motivo: r.motivo, codigo: r.codigo, conflicto: true };
+      // El espejo recibe SIEMPRE los bytes autoritativos: con «repetido», los
+      // de la primera vez, nunca los que trae este reintento.
+      escritura = r.repetido ? 'repetida' : 'confirmada-sin-espejo';
       try {
-        localStorage.setItem(`${PREFIJO}${ranura}`, texto);
+        localStorage.setItem(`${PREFIJO}${ranura}`, r.texto);
       } catch (e) {
         // El espejo no cabe: se vuelve a lo de antes en la autoridad (si
         // seguimos siendo lo último), para que lo que se ve y lo que vale
-        // no se contradigan.
-        if (!r.repetido) await Ranuras.deshacerEscritura({ lease, ranura, runId, texto, previo: r.previo }).catch(() => null);
+        // no se contradigan. El recibo del token queda «deshecho» (no libre).
+        if (!r.repetido) {
+          const d = await Ranuras.deshacerEscritura({ lease, ranura, runId, texto, previo: r.previo, token }).catch(() => ({ ok: false }));
+          if (d.ok) escritura = 'deshecha';
+        }
         throw e;
       }
+      escritura = r.repetido ? 'repetida' : 'confirmada';
       if (!compartida) this._revs.set(clave, r.rev);
-      return { exito: true, rev: r.rev };
+      return { exito: true, rev: r.rev, texto: r.texto, repetido: Boolean(r.repetido) };
     };
 
     let r;
@@ -364,17 +381,26 @@ export class SaveManager extends SystemBase {
     } catch (e) {
       const esCuota = /quota|exceeded/i.test(`${e?.name ?? ''} ${e?.message ?? ''}`);
       this.log.error('fallo al guardar', e);
-      return fallo(esCuota ? 'No queda espacio en el navegador. Borra alguna partida antigua.' : `No se pudo guardar: ${e?.message ?? e}`, {}, 'error');
+      const queda = escritura === 'confirmada-sin-espejo' ? ' La partida quedó guardada, pero la copia local no se pudo escribir.' : '';
+      return fallo(`${esCuota ? 'No queda espacio en el navegador. Borra alguna partida antigua.' : `No se pudo guardar: ${e?.message ?? e}`}${queda}`, { escritura }, 'error');
     }
     if (!r.exito) return fallo(r.motivo ?? 'No se pudo guardar.', { codigo: r.codigo ?? null, conflicto: Boolean(r.conflicto) });
 
-    this.emitir(EVENTOS_GUARDADO.GUARDADO, { ranura, runId, cabecera: guardado.cabecera, tamano, automatico: compartida, rev: r.rev });
+    if (r.repetido) {
+      // La misma operación ya estaba guardada: no se ha guardado nada nuevo.
+      this.emitir(EVENTOS_GUARDADO.GUARDADO, { ranura, runId, tamano, automatico: compartida, rev: r.rev, repetido: true, token });
+      if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: 'Esa operación ya estaba guardada; no se ha guardado nada nuevo.', tipo: 'info', runId });
+      this.log.info(`operación ${token} ya guardada en la ranura ${ranura} (revisión ${r.rev})`);
+      return { exito: true, motivo: null, ...base, rev: r.rev, texto: r.texto, repetido: true, escritura: 'repetida' };
+    }
+
+    this.emitir(EVENTOS_GUARDADO.GUARDADO, { ranura, runId, cabecera: guardado.cabecera, tamano, automatico: compartida, rev: r.rev, token });
     if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: 'Partida guardada.', tipo: 'exito', runId });
     this.log.info(`partida guardada en la ranura ${ranura} (${tamano.kb} KB, revisión ${r.rev})`);
 
     // Los bytes escritos: quien guarda puede comprobar después que lo que
     // hay en la ranura es exactamente lo suyo (y no borrar nada ajeno).
-    return { exito: true, motivo: null, ...base, rev: r.rev };
+    return { exito: true, motivo: null, ...base, rev: r.rev, texto: r.texto, escritura: 'confirmada' };
   }
 
   /**
