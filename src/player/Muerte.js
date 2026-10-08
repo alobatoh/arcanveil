@@ -14,10 +14,12 @@
  *     resumen) y `meta.fase = 'fin'`, una sola vez (un evento doble o una
  *     recarga no crean otra muerte);
  *   · el viaje en curso y el encuentro pendiente se cierran;
- *   · marca durable del run muerto y foto de la herencia pendiente
- *     (`persistence/RegistroRuns.js`), sin aplicarla (`player/Legado.js`);
  *   · `run:ended`, para que la interfaz guarde el resultado y enseñe la
- *     pantalla final con «Nueva partida».
+ *     pantalla final con «Nueva partida»;
+ *   · marca durable del run muerto y foto de la herencia pendiente, juntas
+ *     y en una transacción del registro coordinado (`persistence/Muertes.js`),
+ *     sin aplicarla (`player/Legado.js`). Es asíncrono: `meta.muerte.guardado`
+ *     dice «registrando» y después «registrada» o «error» (`run:registrado`).
  *
  * Los rasgos que evitan caer (`evitarCaida`) siguen en `Player._alCaer`: son
  * reglas de clase, no una forma de curar la derrota. La muerte de un
@@ -27,9 +29,9 @@
 
 import { SystemBase } from '../core/SystemBase.js';
 import { fotoDeLegado } from './Legado.js';
-import * as Registro from '../persistence/RegistroRuns.js';
+import * as Muertes from '../persistence/Muertes.js';
 
-export const EVENTOS_MUERTE = Object.freeze({ FIN: 'run:ended' });
+export const EVENTOS_MUERTE = Object.freeze({ FIN: 'run:ended', REGISTRADA: 'run:registrado' });
 
 /** Un identificador de run nuevo (identidad, no azar de juego). */
 export function nuevoRunId() {
@@ -115,15 +117,56 @@ export class Muerte extends SystemBase {
     // agotamiento) se cierra como derrota: no sigue con el muerto en pie.
     this.sistema('combat')?.cerrarPorMuerte?.();
 
-    // La marca y la herencia, antes de ofrecer partida nueva. Si no se pueden
-    // escribir, se dice: no se promete lo que no ha ocurrido.
-    const marca = Registro.marcarMuerto(runId, { nombre: jugador.nombre, causa });
-    const legado = Registro.guardarLegado(muerte.legado);
-    const guardado = { marca: marca.ok, legado: legado.ok, error: marca.error ?? legado.error ?? null };
+    // La marca y la herencia van JUNTAS al registro coordinado (una
+    // transacción: las dos o ninguna). Mientras tanto la pantalla dice
+    // «registrando»; si no se pueden escribir, se dice: no se promete lo que
+    // no ha ocurrido.
+    const guardado = { estado: 'registrando', marca: null, legado: null, error: null };
     this.store.fijar('meta.muerte.guardado', guardado);
-
     this.emitir(EVENTOS_MUERTE.FIN, { ...muerte, guardado });
+    this._registro = this._registrar(runId, { nombre: jugador.nombre, causa, muerto: muerte.registrada }, muerte.legado);
     return { ...muerte, guardado };
+  }
+
+  /**
+   * Escribe la muerte en el registro coordinado y apunta el resultado en el
+   * estado (solo si la partida sigue siendo la del muerto).
+   * @private
+   */
+  async _registrar(runId, marca, foto) {
+    let guardado;
+    try {
+      const r = await Muertes.registrar({ runId, marca, foto });
+      guardado = r.ok
+        ? { estado: 'registrada', marca: true, legado: r.legado, error: null, conflicto: r.conflicto ?? null, aviso: r.aviso ?? null }
+        : { estado: 'error', marca: false, legado: false, error: r.error ?? 'no se ha podido apuntar' };
+    } catch (e) {
+      const cuota = /quota|exceeded/i.test(`${e?.name ?? ''} ${e?.message ?? ''}`);
+      guardado = { estado: 'error', marca: false, legado: false, error: cuota ? 'almacenamiento lleno' : String(e?.message ?? e) };
+    }
+    if (this.leer('meta.muerte.runId') === runId) this.store.fijar('meta.muerte.guardado', guardado);
+    this.emitir(EVENTOS_MUERTE.REGISTRADA, { runId, guardado });
+    return guardado;
+  }
+
+  /**
+   * Vuelve a intentar el registro de ESTA muerte si falló: la misma marca y
+   * la misma foto (congelada al morir), no un cadáver nuevo.
+   */
+  reintentarRegistro() {
+    const m = this.leer('meta.muerte');
+    if (!m) return Promise.resolve(null);
+    const g = m.guardado ?? {};
+    if (g.estado === 'registrando') return this.registro;
+    if (g.estado === 'registrada') return Promise.resolve(g);
+    this.store.fijar('meta.muerte.guardado', { estado: 'registrando', marca: null, legado: null, error: null });
+    this._registro = this._registrar(m.runId, { nombre: m.nombre, causa: m.causa, muerto: m.registrada }, m.legado);
+    return this._registro;
+  }
+
+  /** La escritura de la última muerte (para quien tenga que esperarla). */
+  get registro() {
+    return this._registro ?? Promise.resolve(this.leer('meta.muerte.guardado', null));
   }
 }
 
