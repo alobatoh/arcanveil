@@ -29,6 +29,8 @@ import { SystemBase } from '../core/SystemBase.js';
 import * as Ser from './Serializer.js';
 import * as Mig from './Migrations.js';
 import * as RegistroRuns from './RegistroRuns.js';
+import * as Ranuras from './Ranuras.js';
+import * as Coordinacion from './Coordinacion.js';
 import { crearEstadoInicial } from '../core/GameState.js';
 import { PERSISTENCIA, APP } from '../config/app.config.js';
 
@@ -282,8 +284,22 @@ export class SaveManager extends SystemBase {
         };
       }
 
+      // ─── ¿De quién es la ranura? ──────────────────────────────────────
+      // Actualizar la MISMA campaña, sí; escribir encima de otra, no (una
+      // pestaña vieja con `meta.ranura` antigua pisaba la campaña que otra
+      // había creado allí). Reemplazar solo con un permiso concreto y vigente
+      // (ranura + run + fecha + huella de lo leído). La automática es de todas.
+      if (ranura !== RANURA_AUTO) {
+        const dueno = Ranuras.puedeEscribir(ranura, this.leer('meta.runId', null), opciones.reemplazo ?? null);
+        if (!dueno.ok) {
+          if (!opciones.silencioso) this.emitir('ui:notice', { mensaje: dueno.motivo, tipo: 'aviso' });
+          return { exito: false, motivo: dueno.motivo, tamano, conflicto: true };
+        }
+      }
+
       // ─── Escritura ────────────────────────────────────────────────────
-      localStorage.setItem(`${PREFIJO}${ranura}`, JSON.stringify(guardado));
+      const texto = JSON.stringify(guardado);
+      localStorage.setItem(`${PREFIJO}${ranura}`, texto);
 
       this.emitir(EVENTOS_GUARDADO.GUARDADO, {
         ranura,
@@ -298,7 +314,9 @@ export class SaveManager extends SystemBase {
 
       this.log.info(`partida guardada en la ranura ${ranura} (${tamano.kb} KB)`);
 
-      return { exito: true, motivo: null, tamano };
+      // Los bytes escritos: quien guarda puede comprobar después que lo que
+      // hay en la ranura es exactamente lo suyo (y no borrar nada ajeno).
+      return { exito: true, motivo: null, tamano, texto };
 
     } catch (e) {
       // El error más probable es la cuota agotada.
@@ -552,6 +570,9 @@ export class SaveManager extends SystemBase {
 
     try {
       localStorage.removeItem(`${PREFIJO}${ranura}`);
+      // La ranura queda libre también en el registro compartido entre
+      // pestañas (si no, seguiría «ocupada» por la campaña borrada).
+      Ranuras.liberarRegistro(ranura).catch((e) => this.log.aviso(`registro de la ranura ${ranura}: ${e.message}`));
 
       this.emitir(EVENTOS_GUARDADO.BORRADO, { ranura });
       this.log.info(`ranura ${ranura} borrada`);
@@ -585,6 +606,9 @@ export class SaveManager extends SystemBase {
           borradas++;
         }
       }
+
+      // El estado compartido entre pestañas (herencias y ranuras) también.
+      Coordinacion.vaciar().catch((e) => this.log.aviso(`estado compartido: ${e.message}`));
 
       this.log.info(`borradas ${borradas} claves del navegador`);
 
