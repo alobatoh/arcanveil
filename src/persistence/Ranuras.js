@@ -365,7 +365,7 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
     if (!base || base.estado === 'borrada') {
       // Lo que el jugador borró no lo resucita un guardado tardío de esa
       // misma campaña (sí puede ocuparla otra, o una creación).
-      if (base?.estado === 'borrada' && base.runId && base.runId === runId && !op) { codigo = 'borrada'; motivo = `La ranura ${n} se borró: esta partida ya no está guardada ahí. No se ha recreado; guárdala en otra ranura desde el menú si quieres conservarla.`; return null; }
+      if (base?.estado === 'borrada' && base.runId && base.runId === runId && !op) { codigo = 'borrada'; motivo = `La ranura ${n} se borró: esta partida ya no está guardada ahí y no se ha recreado. Puedes seguir jugando en esta pestaña, pero lo que juegues no se guardará.`; return null; }
       if (snap) { codigo = 'otro-dueno'; motivo = `La ranura ${n} no tiene un dueño claro. No se escribe encima.`; return null; }
       // Libre de verdad: la escritura la ocupa (la revisión sigue subiendo).
       const rev = (base?.rev ?? 0) + 1;
@@ -378,7 +378,7 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
     }
     if (base.runId !== runId) {
       codigo = 'otro-dueno';
-      motivo = `La ranura ${n} ahora es de otra partida. No se ha guardado encima: esta partida sigue abierta; guárdala en otra ranura desde el menú.`;
+      motivo = `La ranura ${n} ahora es de otra partida (se ha usado desde otra pestaña). No se ha guardado encima. Esta partida sigue abierta aquí, pero ya no se guarda: si sales, se pierde lo jugado desde su último guardado.`;
       return null;
     }
     if (token && base.ultimoToken === token) { repetido = true; return null; }

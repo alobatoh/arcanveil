@@ -359,7 +359,7 @@ function partidaMasReciente() {
  * Escribir encima de otra campaña se niega en `SaveManager.guardar` (dueño
  * y revisión en IndexedDB, no lo que diga la caché local).
  */
-async function guardarPartidaActual({ silencioso = true } = {}) {
+async function guardarPartidaActual({ silencioso = true, avisarSiFalla = false } = {}) {
   if (!ver('player.raza')) return null;
   const runId = ver('meta.runId');
   let ranura = ver('meta.ranura');
@@ -369,14 +369,16 @@ async function guardarPartidaActual({ silencioso = true } = {}) {
       // Mientras se buscaba, la pestaña cambió de partida: esta foto no vale.
       if (ver('meta.runId') !== runId) return { exito: false, motivo: 'La partida cambió mientras se buscaba ranura.', runId };
       if (!ranura) {
-        const motivo = 'No queda ninguna ranura libre para esta partida. Exporta o borra alguna desde «Cargar»; no se escribe encima de otra.';
+        const motivo = 'No queda ninguna ranura libre para esta partida. Borra alguna desde «Cargar»; no se escribe encima de otra.';
         if (!silencioso) avisar(motivo, 'aviso');
         return { exito: false, motivo, runId };
       }
       store.fijar('meta.ranura', ranura);
     }
     const r = (await sistema('saves')?.guardar(ranura, { silencioso, nota: 'crónica' })) ?? null;
-    if (r && !r.exito && silencioso) avisarGuardadoFallido(r);
+    // Los automáticos (turno, pelea, final) dicen su fallo una vez; el manual
+    // y la salida lo dicen ellos mismos con el resultado.
+    if (r && !r.exito && avisarSiFalla) avisarGuardadoFallido(r);
     return r;
   } catch (e) {
     const motivo = `No se ha podido guardar: ${e?.message ?? e}`;
@@ -408,7 +410,7 @@ function avisarGuardadoFallido(r) {
 const guardadoTurno = { enMarcha: null, otraVez: false };
 function guardarTrasTurno() {
   if (guardadoTurno.enMarcha) { guardadoTurno.otraVez = true; return guardadoTurno.enMarcha; }
-  guardadoTurno.enMarcha = guardarPartidaActual().finally(() => {
+  guardadoTurno.enMarcha = guardarPartidaActual({ avisarSiFalla: true }).finally(() => {
     guardadoTurno.enMarcha = null;
     if (guardadoTurno.otraVez) { guardadoTurno.otraVez = false; guardarTrasTurno(); }
   });
@@ -701,7 +703,8 @@ function pintarHerencia(todas, origen) {
       ),
     ));
   }
-  pie.append(
+  // (Sin «null» suelto: `append` lo escribía como texto entre los botones.)
+  pie.append(...[
     el('button', { class: 'btn btn--fantasma', id: 'herencia-atras', onClick: () => mostrar('inicio') }, 'Atrás'),
     // Una entrega que no se pudo comprobar se puede volver a comprobar (no
     // se libera a ciegas ni se borra nada).
@@ -714,7 +717,7 @@ function pintarHerencia(todas, origen) {
       }) }, 'Volver a comprobar')
       : null,
     el('button', { class: 'btn', id: 'herencia-sin', onClick: protegido('sin herencia', () => elegirHerencia(null)) }, 'Empezar sin herencia'),
-  );
+  ].filter(Boolean));
   (caja.querySelector('button:not([disabled])') ?? $('#herencia-sin'))?.focus();
 }
 
@@ -1262,7 +1265,7 @@ async function comenzarPartida(p, { ranura = null, reemplazo = null } = {}) {
     if (['sin-ranura', 'ranura-ocupada', 'permiso-caducado'].includes(r.codigo)) {
       creandoPartida = false;
       if (r.codigo !== 'sin-ranura') avisar(r.motivo, 'aviso');
-      abrirRanurasLlenas(p, r.codigo === 'sin-ranura' ? r.campanas : await Ranuras.ocupacion());
+      abrirRanurasLlenas(p, r.codigo === 'sin-ranura' ? r.campanas : await Ranuras.ocupacion(), r.codigo === 'sin-ranura' ? null : r.motivo);
       return;
     }
     mostrarFalloCreacion(p, r);
@@ -1276,7 +1279,7 @@ async function comenzarPartida(p, { ranura = null, reemplazo = null } = {}) {
   await turns?.abrirCronica?.();
 
   refrescarTodo();
-  await guardarPartidaActual();
+  await guardarPartidaActual({ avisarSiFalla: true });
   programarSugerencias();
   if (herencia.elegida) {
     avisar(`Has heredado ${r.cantidad} XP de ${herencia.elegida.origen.nombre ?? 'tu personaje anterior'}: empiezas en el nivel ${ver('player.nivel') ?? 1}.`, 'exito');
@@ -1353,7 +1356,7 @@ async function descargarCopiaRanura(ranura, nombre = 'partida') {
  * El permiso queda atado a la ranura, el run, la fecha y la huella de lo que
  * se leyó: si otra pestaña la cambia antes de confirmar, caduca.
  */
-function abrirRanurasLlenas(p, campanas) {
+function abrirRanurasLlenas(p, campanas, motivo = null) {
   const modal = $('#ranuras-modal');
   const lista = $('#ranuras-lista');
   const acciones = $('#ranuras-acciones');
@@ -1362,7 +1365,9 @@ function abrirRanurasLlenas(p, campanas) {
   const pintarLista = () => {
     modal.dataset.etapa = 'lista';
     $('#ranuras-titulo').textContent = 'No queda ninguna ranura libre';
-    nota.textContent = 'Para empezar esta partida hay que reemplazar una campaña guardada. Elige cuál, descarga antes una copia si la quieres conservar, o cancela: no se ha tocado nada.';
+    // Si se vuelve aquí porque lo elegido cambió, el porqué va dentro del
+    // selector (el aviso de la esquina queda tapado por el propio modal).
+    nota.textContent = `${motivo ? `${motivo} ` : ''}Para empezar esta partida hay que reemplazar una campaña guardada. Elige cuál, descarga antes una copia si la quieres conservar, o cancela: no se ha tocado nada.`;
     vaciar(lista);
     vaciar(acciones);
     for (const c of campanas) {
@@ -3627,8 +3632,10 @@ function conectarEventos() {
     bus.emit('settings:change', { id: 'persistencia', valor: true });
 
     const runId = ver('meta.runId');
+    const rotulo = boton?.textContent ?? 'Guardar';
     boton?.setAttribute('aria-busy', 'true');
     boton?.classList.add('es-guardando');
+    if (boton) boton.textContent = 'Guardando…';
     let r;
     try {
       // Se dice lo que ha pasado de verdad (relectura de la copia que vale).
@@ -3636,6 +3643,7 @@ function conectarEventos() {
     } finally {
       boton?.removeAttribute('aria-busy');
       boton?.classList.remove('es-guardando');
+      if (boton) boton.textContent = rotulo;
     }
     // Si entretanto se abrió otra partida, el aviso no es para esta pantalla.
     if (ver('meta.runId') !== runId) return;
@@ -3719,7 +3727,7 @@ function conectarEventos() {
   bus.on('run:ended', (muerte) => {
     // El final (con la muerte dentro) va a la cola de guardados detrás de lo
     // que hubiera: el último que se escribe es el final.
-    guardarPartidaActual();
+    guardarPartidaActual({ avisarSiFalla: true });
     const modal = $('#caida-modal');
     if (modal && !modal.hidden) { bloquear(true); return; }
     rotuloMomento('HA MUERTO', 'sangre');
