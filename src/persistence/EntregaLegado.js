@@ -13,8 +13,11 @@
  *     que es coherente entre pestañas. `localStorage` no lo es: medido, dos
  *     pestañas con Web Locks aún leían valores viejos (118 de 120). La foto
  *     se importa al almacén la primera vez que se toca, sin pisar nada.
- *   · El sucesor, en su ranura de `localStorage`. La ranura se RECLAMA en el
- *     registro coordinado antes de escribir (`Ranuras.reclamarDestino`).
+ *   · El sucesor, en su ranura: copia autoritativa coordinada y espejo en
+ *     `localStorage` (`Ranuras.escribirPartida`). La ranura se RECLAMA en el
+ *     registro coordinado antes de escribir (`Ranuras.reclamarDestino`) y el
+ *     guardado usa el arriendo del candado global que ya tiene la operación.
+ *   · Las muertes (marca + foto), en `Muertes` (coordinado).
  *
  * EL DIARIO
  *
@@ -51,6 +54,7 @@
 import * as Registro from './RegistroRuns.js';
 import * as Ranuras from './Ranuras.js';
 import * as Coordinacion from './Coordinacion.js';
+import * as Muertes from './Muertes.js';
 import { leerFoto, explicarLegado } from '../player/Legado.js';
 
 export const PREFIJO_PARTIDA = Ranuras.PREFIJO;
@@ -131,10 +135,13 @@ export async function listarLegados() {
   if (Coordinacion.disponible()) {
     for (const [k, v] of await Coordinacion.listar(LEGADOS)) mapa[k] = v;
   }
+  // Muertos según la autoridad (un mapa local pisado por otra pestaña no
+  // esconde una herencia).
+  const muertos = await Muertes.runsMuertos();
   return Object.entries(mapa).map(([run, foto]) => {
     const v = leerFoto(foto);
     if (v.runOrigen && v.runOrigen !== run) return { ...v, runOrigen: run, estado: 'bloqueado', motivo: 'La herencia no coincide con su partida.' };
-    return { ...v, runOrigen: run, muerto: Registro.estaMuerto(run), bloqueo: foto?.bloqueo ?? null, reserva: foto?.reserva ?? null };
+    return { ...v, runOrigen: run, muerto: muertos.has(run), bloqueo: foto?.bloqueo ?? null, reserva: foto?.reserva ?? null };
   });
 }
 
@@ -181,24 +188,33 @@ function cuadra(l, e, { inicial = false } = {}) {
  *
  * @returns {{decision: 'aplicar'|'liberar'|'bloquear', motivo?: string, evidencia?: Object, sucesor?: Object}}
  */
-export function verificarReserva(runOrigen, foto) {
+export async function verificarReserva(runOrigen, foto) {
   const T = foto?.transaccion ?? null;
   const r = foto?.reserva ?? null;
   if (!T || !r?.runDestino || !r?.ranura || !Number.isSafeInteger(r?.cantidad)) {
     return { decision: 'bloquear', motivo: 'La reserva no guarda todos sus datos (transacción, destino, ranura y cantidad).' };
   }
   const e = { runOrigen, T, runDestino: r.runDestino, cantidad: r.cantidad };
-  const lista = Ranuras.enumerarPartidas();
-  if (!lista.ok) return { decision: 'bloquear', motivo: `No se puede comprobar la entrega: ${lista.motivo}.` };
-
+  // Lo que vale de cada ranura es su copia AUTORITATIVA (una caché local
+  // vieja no decide una entrega). Si no se puede leer, no hay comprobación.
+  let lista;
+  let propia;
   const copias = [];
-  for (const n of lista.ranuras) {
-    if (n === String(r.ranura)) continue;
-    const l = Ranuras.leerRanura(n);
-    if (l.tipo === 'valida' && l.estado.player?.legadoRecibido?.transaccion === T) copias.push(n);
+  try {
+    lista = await Ranuras.enumerarPartidas();
+    if (!lista.ok) return { decision: 'bloquear', motivo: `No se puede comprobar la entrega: ${lista.motivo}.` };
+    for (const n of lista.ranuras) {
+      if (n === String(r.ranura)) continue;
+      const l = await Ranuras.leerRanuraCoordinada(n);
+      if (l.tipo === 'valida' && l.estado.player?.legadoRecibido?.transaccion === T) copias.push(n);
+    }
+    propia = await Ranuras.leerRanuraCoordinada(r.ranura);
+  } catch (e) {
+    return { decision: 'bloquear', motivo: `No se puede comprobar la entrega: el estado compartido no se puede leer (${e?.message ?? e}).` };
   }
-
-  const propia = Ranuras.leerRanura(r.ranura);
+  // Reservada sin copia autoritativa: no se escribió nada por el protocolo
+  // del #8; una reserva del #7 pudo dejar el sucesor solo en la ranura local.
+  if (propia.tipo === 'reservada') propia = propia.registro?.op === T ? propia.local : { tipo: 'inaccesible', motivo: 'la ranura está reservada por otra operación' };
   const evidencia = { ranura: String(r.ranura), lectura: propia.tipo, copias };
   if (propia.tipo === 'ausente') {
     if (copias.length) return { decision: 'bloquear', motivo: `Hay un sucesor con esta entrega en otra ranura (${copias.join(', ')}), no en la reservada.`, evidencia };
@@ -229,7 +245,7 @@ async function resolverReserva(runOrigen) {
   const foto = await estadoLegado(runOrigen);
   if (foto?.estado !== 'reservado') return { ok: true, estado: foto?.estado ?? null };
   const T = foto.transaccion ?? null;
-  const v = verificarReserva(runOrigen, foto);
+  const v = await verificarReserva(runOrigen, foto);
   if (v.decision === 'aplicar') {
     const r = await cambiarLegado(runOrigen, { estado: 'reservado', transaccion: T }, {
       estado: 'aplicado', destinatario: v.sucesor.runId, ranura: v.sucesor.ranura, bloqueo: null,
@@ -268,6 +284,9 @@ async function conCandado(runOrigen, fn) {
  */
 export async function recuperarLegados() {
   if (!Coordinacion.disponible()) return [];
+  // Las marcas de muerte de antes del #8 pasan al registro coordinado (añadir
+  // si falta; un mapa dañado no se toca).
+  await Muertes.importarMapas().catch(() => null);
   const resultados = [];
   for (const v of await listarLegados()) {
     if (v.estado !== 'reservado') continue;
@@ -281,18 +300,9 @@ export async function recuperarLegados() {
  * este intento escribió en su ranura. Si la ranura cambió desde entonces, o
  * no se puede leer, no se toca y la reserva queda bloqueada.
  */
-async function deshacer({ runOrigen, T, ranura, previos, escrito, fase, motivo }) {
+async function deshacer({ runOrigen, T, ranura, previos, escrito, fase, motivo, lease = null, runDestino = null, antes = null }) {
+  const limpia = previos !== undefined && await retirarPropio({ lease, ranura, runId: runDestino, escrito, antes, previos });
   const ahora = bytesDe(ranura);
-  let limpia = false;
-  if (ahora.ok && ahora.texto === previos) {
-    limpia = true;                                   // no llegó a escribirse nada
-  } else if (ahora.ok && escrito && ahora.texto === escrito) {
-    try {
-      if (previos === null) almacen().removeItem(`${PREFIJO_PARTIDA}${ranura}`);
-      else almacen().setItem(`${PREFIJO_PARTIDA}${ranura}`, previos);
-      limpia = bytesDe(ranura).texto === previos;
-    } catch { limpia = false; }
-  }
   if (limpia) {
     const v = await cambiarLegado(runOrigen, { estado: 'reservado', transaccion: T }, { estado: 'pendiente', transaccion: null, reserva: null, bloqueo: null });
     if (v.ok) await Ranuras.soltarRanura(ranura, T).catch(() => null);
@@ -306,6 +316,34 @@ async function deshacer({ runOrigen, T, ranura, previos, escrito, fase, motivo }
 }
 
 /**
+ * Retira SOLO lo que escribió este intento: en la copia autoritativa (si
+ * sigue siendo la suya) y en el espejo local (si tiene exactamente sus
+ * bytes). Dice si la ranura ha quedado exactamente como estaba antes.
+ */
+async function retirarPropio({ lease, ranura, runId, escrito, antes, previos }) {
+  // Solo si lo que se LEE es exactamente lo escrito: una relectura que no
+  // cuadra es un estado dudoso y no se toca (queda bloqueado con motivo).
+  if (escrito && lease && antes) {
+    const ya = await Ranuras.instantanea(ranura).catch(() => null);
+    if (ya?.snap?.texto === escrito) await Ranuras.deshacerEscritura({ lease, ranura, runId, texto: escrito, previo: antes }).catch(() => null);
+  }
+  const ahora = bytesDe(ranura);
+  if (ahora.ok && escrito && ahora.texto === escrito && ahora.texto !== previos) {
+    try {
+      if (previos === null) almacen().removeItem(`${PREFIJO_PARTIDA}${ranura}`);
+      else almacen().setItem(`${PREFIJO_PARTIDA}${ranura}`, previos);
+    } catch { /* se comprueba abajo */ }
+  }
+  const local = bytesDe(ranura);
+  if (!local.ok || local.texto !== previos) return false;
+  if (!antes) return true;
+  try {
+    const ya = await Ranuras.instantanea(ranura);
+    return (ya.snap?.texto ?? null) === (antes.snap?.texto ?? null);
+  } catch { return false; }
+}
+
+/**
  * Entrega la herencia de `runOrigen` a un sucesor nuevo.
  *
  * @param {Object} op
@@ -315,7 +353,9 @@ async function deshacer({ runOrigen, T, ranura, previos, escrito, fase, motivo }
  * @param {string|null} [op.ranura] null = la primera libre bajo el candado global.
  * @param {Object|null} [op.reemplazo] Permiso concreto para reemplazar una ranura ocupada.
  * @param {(e: {cantidad: number, legado: Object, ranura: string}) => Promise<void>|void} op.crear
- * @param {(e: {ranura: string, reemplazo: Object|null}) => {ok: boolean, motivo?: string, texto?: string}} op.guardar
+ * @param {(e: {ranura: string, reemplazo: Object|null, lease: Object, op: string}) => Promise<{ok: boolean, motivo?: string, texto?: string}>} op.guardar
+ *   Guarda con el arriendo del candado global que ya tiene la operación (no
+ *   lo vuelve a pedir) y con la operación que reservó la ranura.
  */
 export async function entregarLegado({ runOrigen, transaccion, runDestino, ranura = null, reemplazo = null, crear, guardar }) {
   if (!runOrigen || !transaccion || !runDestino) return { ok: false, codigo: 'datos', motivo: 'Faltan datos para entregar la herencia.' };
@@ -359,12 +399,12 @@ async function entregarConCandado({ runOrigen, transaccion, runDestino, ranura, 
       return { ok: false, codigo: 'bloqueado-verificacion', bloqueado: true, motivo: previa.motivo ?? foto.bloqueo?.motivo ?? 'No se ha podido comprobar una entrega anterior de esta herencia.' };
     }
     if (v.estado !== 'pendiente') return { ok: false, codigo: 'bloqueado', motivo: v.motivo ?? 'Esa herencia no se puede entregar.' };
-    if (!Registro.estaMuerto(runOrigen)) return { ok: false, codigo: 'no-muerto', motivo: 'No consta que ese personaje haya muerto: su experiencia no se hereda.' };
+    if (!(await Muertes.estaMuerto(runOrigen))) return { ok: false, codigo: 'no-muerto', motivo: 'No consta que ese personaje haya muerto: su experiencia no se hereda.' };
 
     const cantidad = v.cantidad;
     const legado = { runOrigen, transaccion, xp: cantidad, xpOrigen: v.xpAcumulada, nombreOrigen: v.origen.nombre ?? null, claseOrigen: v.origen.clase ?? null };
 
-    return Ranuras.conCandadoGlobal(async () => {
+    return Ranuras.conCandadoGlobal(async (lease) => {
       // La ranura, bajo el candado global, releída y reclamada AHORA.
       const destino = await Ranuras.reclamarDestino({ ranura, reemplazo, op: transaccion, runDestino });
       if (!destino.ok) return { ...destino, herencia: 'pendiente' };
@@ -383,20 +423,23 @@ async function entregarConCandado({ runOrigen, transaccion, runDestino, ranura, 
       const antes = bytesDe(slot);
       if (!antes.ok) return deshacer({ runOrigen, T: transaccion, ranura: slot, previos: undefined, escrito: null, fase: 'leer', motivo: `No se puede leer la ranura ${slot}.` });
       const previos = antes.texto;
+      const coord = await Ranuras.instantanea(slot);
+      const base = { runOrigen, T: transaccion, ranura: slot, previos, lease, runDestino, antes: coord };
 
       try {
         await crear({ cantidad, legado, ranura: slot });
       } catch (e) {
-        return deshacer({ runOrigen, T: transaccion, ranura: slot, previos, escrito: null, fase: 'crear', motivo: `No se ha podido crear el personaje: ${e?.message ?? e}` });
+        return deshacer({ ...base, escrito: null, fase: 'crear', motivo: `No se ha podido crear el personaje: ${e?.message ?? e}` });
       }
 
       let g;
-      try { g = await guardar({ ranura: slot, reemplazo: destino.reemplazo }); } catch (e) { g = { ok: false, motivo: e?.message ?? String(e) }; }
-      const l = Ranuras.leerRanura(slot);
+      try { g = await guardar({ ranura: slot, reemplazo: destino.reemplazo, lease, op: transaccion }); } catch (e) { g = { ok: false, motivo: e?.message ?? String(e) }; }
+      let l;
+      try { l = await Ranuras.leerRanuraCoordinada(slot); } catch (e) { l = { tipo: 'inaccesible', motivo: String(e?.message ?? e) }; }
       const c = cuadra(l, { runOrigen, T: transaccion, runDestino, cantidad }, { inicial: true });
       const exacto = !g?.texto || l.texto === g.texto;
       if (!g?.ok || !c.ok || !exacto) {
-        return deshacer({ runOrigen, T: transaccion, ranura: slot, previos, escrito: g?.texto ?? null, fase: 'guardar',
+        return deshacer({ ...base, escrito: g?.texto ?? null, fase: 'guardar',
           motivo: g?.ok ? `Lo guardado no coincide con el personaje nuevo (${c.ok ? 'bytes distintos' : c.motivo}).` : `No se ha podido guardar el personaje nuevo: ${g?.motivo ?? 'error'}` });
       }
 
@@ -405,7 +448,8 @@ async function entregarConCandado({ runOrigen, transaccion, runDestino, ranura, 
       const fin = await cambiarLegado(runOrigen, { estado: 'reservado', transaccion }, {
         estado: 'aplicado', destinatario: runDestino, ranura: slot, bloqueo: null, aplicado: { cantidad, momento: Date.now() },
       });
-      await Ranuras.confirmarRanura(slot, transaccion, runDestino).catch(() => null);
+      // (La ranura ya quedó ocupada por el sucesor en la misma transacción
+      // que escribió sus bytes: no hay paso aparte que pueda quedarse a medias.)
       return { ok: true, cantidad, runDestino, ranura: slot, reemplazada: destino.reemplazo, confirmado: fin.ok, nota: fin.ok ? null : 'La entrega se terminará de apuntar al volver a abrir el juego.', texto: explicarLegado(v) };
     });
   }
@@ -420,12 +464,13 @@ export async function crearPartidaNueva({ runDestino, ranura = null, reemplazo =
   if (!runDestino) return { ok: false, codigo: 'datos', motivo: 'Falta el run de la partida nueva.' };
   if (!Coordinacion.disponible()) return { ...SIN_COORDINACION, motivo: 'Este navegador no permite asegurar que dos pestañas no creen una partida en la misma ranura (falta Web Locks o IndexedDB).' };
   const op = `nueva-${runDestino}`;
-  return conCaptura(() => Ranuras.conCandadoGlobal(async () => {
+  return conCaptura(() => Ranuras.conCandadoGlobal(async (lease) => {
     const destino = await Ranuras.reclamarDestino({ ranura, reemplazo, op, runDestino });
     if (!destino.ok) return destino;
     const slot = destino.ranura;
     const antes = bytesDe(slot);
     if (!antes.ok) { await Ranuras.soltarRanura(slot, op).catch(() => null); return { ok: false, codigo: 'almacenamiento', motivo: `No se puede leer la ranura ${slot}.` }; }
+    const coord = await Ranuras.instantanea(slot);
     try {
       await crear({ ranura: slot });
     } catch (e) {
@@ -433,18 +478,14 @@ export async function crearPartidaNueva({ runDestino, ranura = null, reemplazo =
       return { ok: false, codigo: 'crear', motivo: `No se ha podido crear el personaje: ${e?.message ?? e}` };
     }
     let g;
-    try { g = await guardar({ ranura: slot, reemplazo: destino.reemplazo }); } catch (e) { g = { ok: false, motivo: e?.message ?? String(e) }; }
-    const l = Ranuras.leerRanura(slot);
+    try { g = await guardar({ ranura: slot, reemplazo: destino.reemplazo, lease, op }); } catch (e) { g = { ok: false, motivo: e?.message ?? String(e) }; }
+    let l;
+    try { l = await Ranuras.leerRanuraCoordinada(slot); } catch (e) { l = { tipo: 'inaccesible', motivo: String(e?.message ?? e) }; }
     if (g?.ok && l.tipo === 'valida' && l.runId === runDestino && (!g.texto || l.texto === g.texto)) {
-      await Ranuras.confirmarRanura(slot, op, runDestino).catch(() => null);
       return { ok: true, ranura: slot, runDestino, reemplazada: destino.reemplazo };
     }
-    // Solo se retira lo propio, byte a byte.
-    const ahora = bytesDe(slot);
-    if (ahora.ok && g?.texto && ahora.texto === g.texto) {
-      try { if (antes.texto === null) almacen().removeItem(`${PREFIJO_PARTIDA}${slot}`); else almacen().setItem(`${PREFIJO_PARTIDA}${slot}`, antes.texto); } catch { /* se dice abajo */ }
-    }
-    const intacta = bytesDe(slot).texto === antes.texto;
+    // Solo se retira lo propio (copia autoritativa y espejo), byte a byte.
+    const intacta = await retirarPropio({ lease, ranura: slot, runId: runDestino, escrito: g?.texto ?? null, antes: coord, previos: antes.texto });
     if (intacta) await Ranuras.soltarRanura(slot, op).catch(() => null);
     return { ok: false, codigo: 'guardado', motivo: g?.ok ? 'Lo guardado no coincide con la partida nueva.' : `No se ha podido guardar la partida nueva: ${g?.motivo ?? 'error'}`,
       nota: intacta ? 'No se ha guardado ninguna partida nueva y la ranura sigue como estaba.' : `No puedo comprobar el estado de la ranura ${slot}; no la he tocado.` };
