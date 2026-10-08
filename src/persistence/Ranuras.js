@@ -26,6 +26,25 @@
  *   · sin registro pero con bytes de antes del #8 → se importa (una vez) y se
  *     aplica la regla de dueño.
  *
+ * TOKEN DE OPERACIÓN (#9). Quien pasa un `token` nombra UNA operación
+ * inmutable: esa ranura, ese run, esa operación y ESE contenido. Su recibo
+ * vive en `operaciones[token]` (coordinado, global a todas las ranuras):
+ *   · mismo token, misma identidad y mismo contenido, y su revisión sigue
+ *     siendo la vigente → «repetido»: no se escribe nada y se devuelven los
+ *     bytes y la revisión AUTORITATIVOS (los de la primera vez);
+ *   · mismo token con otro contenido, otra ranura, otro run u otra
+ *     operación → `token-contenido` (conflicto): nada cambia;
+ *   · mismo token cuya revisión ya no es la vigente (después hubo otro
+ *     guardado) → `token-superado`: no se reaplica ni se tapa lo posterior;
+ *   · el recibo de una escritura que se deshizo (falló el espejo) guarda su
+ *     contenido canónico: con el MISMO contenido se puede rehacer; con otro,
+ *     conflicto. Una escritura que no llegó a confirmarse no deja recibo.
+ * «Mismo contenido» = el guardado entero salvo `guardadoEn` y `firma`
+ * (metadatos de la escritura, que cambian en cada serialización), con las
+ * claves ordenadas: comparación EXACTA de esos bytes canónicos, no de una
+ * huella. Turno, XP, inventario, vida, combate o cualquier otro campo
+ * distinto es contenido distinto.
+ *
  * El candado global se pide UNA vez por operación. Quien ya lo tiene (una
  * creación que guarda dentro) pasa su «arriendo»: un objeto que solo existe
  * mientras el candado está tomado; no hay atajo por bandera.
@@ -48,6 +67,7 @@ export const CANDADO_GLOBAL = 'arcanveil:ranuras';
 export const RANURA_AUTO = 'auto';
 const R = Coordinacion.ALMACENES.RANURAS;
 const P = Coordinacion.ALMACENES.PARTIDAS;
+const O = Coordinacion.ALMACENES.OPERACIONES;
 
 /** Para las pruebas: sustituir Web Locks (dos «pestañas» en un proceso). */
 let candados = null;
@@ -348,19 +368,24 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
   // Una ranura sin registro con bytes de antes del #8: se importa una vez
   // (el espejo local es lo único que hay de ella).
   const local = leerRanura(n);
+  const canonico = token ? contenidoCanonico(texto) : null;
+  if (token && canonico === null) return { ok: false, codigo: 'datos', motivo: 'Lo que se iba a guardar no es un guardado legible: no se escribe.' };
   let motivo = null;
   let codigo = null;
-  let repetido = false;
-  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+  let repetido = null;
+
+  /** La decisión de siempre (dueño, revisión, reserva, lápida): [rec, snap] nuevos o null. */
+  const decidir = (rec, snap) => {
     let base = rec;
     if (!base && !snap && local.tipo === 'valida') base = { estado: 'ocupada', runId: local.runId, rev: 0, importada: true };
     if (!base && !snap && (local.tipo === 'ilegible' || local.tipo === 'invalida' || local.tipo === 'inaccesible') && !compartida) {
       codigo = 'ranura-ilegible'; motivo = `La ranura ${n} tiene datos que no se pueden leer (${local.motivo}). No se escribe encima.`; return null;
     }
+    const copia = (rev) => ({ runId, rev, texto, huella: huella(texto), guardadoEn });
     if (compartida) {
       // La automática es de todos: se ordena por revisión, sin dueño.
       const rev = (base?.rev ?? 0) + 1;
-      return [{ nuevo: { estado: 'ocupada', runId, rev, compartida: true, momento: Date.now(), ultimoToken: token } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+      return [{ estado: 'ocupada', runId, rev, compartida: true, momento: Date.now() }, copia(rev)];
     }
     if (!base || base.estado === 'borrada') {
       // Lo que el jugador borró no lo resucita un guardado tardío de esa
@@ -369,45 +394,121 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
       if (snap) { codigo = 'otro-dueno'; motivo = `La ranura ${n} no tiene un dueño claro. No se escribe encima.`; return null; }
       // Libre de verdad: la escritura la ocupa (la revisión sigue subiendo).
       const rev = (base?.rev ?? 0) + 1;
-      return [{ nuevo: { estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+      return [{ estado: 'ocupada', runId, rev, momento: Date.now() }, copia(rev)];
     }
     if (base.estado === 'reservada') {
       if (!op || base.op !== op || base.runId !== runId) { codigo = 'otro-dueno'; motivo = `La ranura ${n} está apartada por otra operación: no se escribe encima.`; return null; }
       const rev = (base.previo?.rev ?? 0) + 1;
-      return [{ nuevo: { estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token, creadaPor: op } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+      return [{ estado: 'ocupada', runId, rev, momento: Date.now(), creadaPor: op }, copia(rev)];
     }
     if (base.runId !== runId) {
       codigo = 'otro-dueno';
       motivo = `La ranura ${n} ahora es de otra partida (se ha usado desde otra pestaña). No se ha guardado encima. Esta partida sigue abierta aquí, pero ya no se guarda: si sales, se pierde lo jugado desde su último guardado.`;
       return null;
     }
-    if (token && base.ultimoToken === token) { repetido = true; return null; }
     if (revBase !== null && revBase !== undefined && revBase !== base.rev) {
       codigo = 'revision';
       motivo = `Esta campaña se ha guardado desde otra pestaña después (revisión ${base.rev}, aquí ${revBase}). No se ha tapado: recarga para seguir desde la más reciente.`;
       return null;
     }
     const rev = (base.rev ?? 0) + 1;
-    return [{ nuevo: { ...base, estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token, importada: undefined } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+    const { importada, ...resto } = base;
+    void importada;
+    return [{ ...resto, estado: 'ocupada', runId, rev, momento: Date.now() }, copia(rev)];
+  };
+
+  const claves = token ? [[R, n], [P, n], [O, token]] : [[R, n], [P, n]];
+  const r = await Coordinacion.casVarios(claves, ([rec, snap, recibo]) => {
+    if (token && recibo) {
+      const mismaIdentidad = recibo.ranura === n && recibo.runId === runId && (recibo.op ?? null) === (op ?? null);
+      if (!mismaIdentidad) {
+        codigo = 'token-contenido';
+        motivo = `Esa operación (${token}) ya se usó para otra partida u otra ranura (${recibo.runId} en la ${recibo.ranura}). No se ha guardado nada.`;
+        return null;
+      }
+      if (recibo.estado === 'hecho') {
+        if (!rec || rec.rev !== recibo.rev || !snap || snap.rev !== recibo.rev) {
+          codigo = 'token-superado';
+          motivo = `Esa operación ya se guardó (revisión ${recibo.rev}) y después hubo otro guardado: no se vuelve a aplicar ni se tapa lo posterior.`;
+          return null;
+        }
+        if (contenidoCanonico(snap.texto) !== canonico) {
+          codigo = 'token-contenido';
+          motivo = `Esa operación ya guardó otro contenido (revisión ${recibo.rev}). Lo nuevo NO se ha guardado: hace falta una operación nueva.`;
+          return null;
+        }
+        repetido = { rev: snap.rev, texto: snap.texto };
+        return null;
+      }
+      // Deshecha (falló el espejo y se volvió atrás): solo se rehace la MISMA.
+      if (recibo.contenido !== canonico) {
+        codigo = 'token-contenido';
+        motivo = 'Esa operación se intentó con otro contenido y no llegó a quedar guardada. Lo nuevo NO se ha guardado: hace falta una operación nueva.';
+        return null;
+      }
+    }
+    const d = decidir(rec, snap);
+    if (!d) return null;
+    const cambios = [{ nuevo: d[0] }, { nuevo: d[1] }];
+    if (token) cambios.push({ nuevo: { token, ranura: n, runId, op: op ?? null, rev: d[0].rev, estado: 'hecho', momento: Date.now() } });
+    return cambios;
   });
-  if (repetido) return { ok: true, rev: r.actuales[0]?.rev ?? null, repetido: true };
+  if (repetido) return { ok: true, repetido: true, rev: repetido.rev, texto: repetido.texto };
   if (!r.cambiado) return { ok: false, codigo: codigo ?? 'otro-dueno', motivo: motivo ?? `No se ha podido escribir la ranura ${n}.` };
-  return { ok: true, rev: r.nuevos[0].rev, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null } };
+  if (token) podarOperacionesDeVezEnCuando();
+  return { ok: true, rev: r.nuevos[0].rev, texto, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null, recibo: token ? (r.actuales[2] ?? null) : undefined } };
 }
 
 /**
  * Deshace una escritura PROPIA si sigue siendo la vigente (los mismos bytes
  * del mismo run en la copia autoritativa): vuelve exactamente lo de antes.
- * Si alguien escribió después, no se toca.
+ * Si alguien escribió después, no se toca. Con token, su recibo queda como
+ * «deshecho» con el contenido canónico: el token no queda libre para otro
+ * contenido.
  */
-export async function deshacerEscritura({ lease, ranura, runId, texto, previo }) {
+export async function deshacerEscritura({ lease, ranura, runId, texto, previo, token = null }) {
   if (!leaseValido(lease)) return { ok: false, motivo: 'sin el candado global' };
   const n = String(ranura);
-  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+  const claves = token ? [[R, n], [P, n], [O, token]] : [[R, n], [P, n]];
+  const r = await Coordinacion.casVarios(claves, ([rec, snap, recibo]) => {
     if (snap?.texto !== texto || rec?.runId !== runId || rec?.estado !== 'ocupada') return null;
-    return [previo?.rec ? { nuevo: previo.rec } : { borrar: true }, previo?.snap ? { nuevo: previo.snap } : { borrar: true }];
+    const cambios = [previo?.rec ? { nuevo: previo.rec } : { borrar: true }, previo?.snap ? { nuevo: previo.snap } : { borrar: true }];
+    if (token) cambios.push(recibo ? { nuevo: { ...recibo, estado: 'deshecho', rev: null, contenido: contenidoCanonico(texto) } } : null);
+    return cambios;
   });
   return { ok: r.cambiado };
+}
+
+/** Lo que se compara de dos guardados: todo salvo los metadatos de la escritura, claves en orden. */
+export function contenidoCanonico(texto) {
+  let g;
+  try { g = JSON.parse(String(texto)); } catch { return null; }
+  if (!g || typeof g !== 'object') return null;
+  const { guardadoEn, firma, ...resto } = g;
+  void guardadoEn; void firma;
+  const ordenar = (v) => (Array.isArray(v) ? v.map(ordenar)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordenar(v[k])])) : v);
+  return JSON.stringify(ordenar(resto));
+}
+
+/**
+ * Los recibos de operaciones no crecen sin fin: de vez en cuando se quedan
+ * los 200 más recientes (los viejos ya están superados por guardados
+ * posteriores: un token antiguo sin recibo daría una escritura NUEVA, que
+ * sigue sujeta a dueño y revisión).
+ */
+let escriturasConToken = 0;
+function podarOperacionesDeVezEnCuando() {
+  escriturasConToken += 1;
+  if (escriturasConToken % 25) return;
+  podarOperaciones().catch(() => null);
+}
+export async function podarOperaciones(maximo = 200) {
+  const todos = await Coordinacion.listar(O);
+  if (todos.length <= maximo) return 0;
+  const viejos = todos.sort((a, b) => (a[1]?.momento ?? 0) - (b[1]?.momento ?? 0)).slice(0, todos.length - maximo);
+  for (const [k] of viejos) await Coordinacion.cas(O, k, () => ({ borrar: true }));
+  return viejos.length;
 }
 
 /** El registro y la copia autoritativa de una ranura, tal cual (para poder volver). */
@@ -470,5 +571,5 @@ export async function lapidasTodas(antes) {
 export default {
   PREFIJO, CANDADO_GLOBAL, RANURA_AUTO, usarCandados, ranurasManuales, huella, leaseValido, conCandadoGlobal,
   validarGuardado, leerRanura, duenoRanura, leerRanuraCoordinada, enumerarPartidas, ocupacion, ranuraLibre, ranuraLibreLocal,
-  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
+  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, contenidoCanonico, podarOperaciones, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
 };
