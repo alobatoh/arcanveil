@@ -47,6 +47,7 @@ async function caso(fn) {
 const Legado = await import('../src/player/Legado.js');
 const Entrega = await import('../src/persistence/EntregaLegado.js').catch(() => null);
 const Registro = await import('../src/persistence/RegistroRuns.js');
+const Coordinacion = await import('../src/persistence/Coordinacion.js');
 const { nuevoRunId } = await import('../src/player/Muerte.js');
 const { nivelParaXP } = await import('../src/player/Progression.js');
 const Ser = await import('../src/persistence/Serializer.js');
@@ -59,7 +60,10 @@ function candadosFalsos() {
   return {
     tomados,
     async request(nombre, opciones, fn) {
-      if (tomados.has(nombre)) return fn(null);
+      // `ifAvailable` no espera (candado de la herencia); sin él se espera
+      // como el Web Locks de verdad (candado global de ranuras, #7).
+      if (opciones?.ifAvailable && tomados.has(nombre)) return fn(null);
+      while (tomados.has(nombre)) await new Promise((r) => setTimeout(r, 3));
       tomados.add(nombre);
       try { return await fn({ name: nombre }); } finally { tomados.delete(nombre); }
     },
@@ -84,11 +88,37 @@ LS.removeItem = (k) => {
   if (trampa.caido) throw new Error('proceso caído');
   original.removeItem(k);
 };
+// #7: el estado de cada herencia y el registro de ranuras viven en el
+// almacén coordinado (IndexedDB; aquí en memoria). Sus escrituras también
+// cuentan para cortar y para llenar la cuota, en el mismo orden.
+{
+  const interno = Coordinacion.crearEnMemoria();
+  Coordinacion.usarCoordinacion({
+    ...interno,
+    async cas(a, k, decidir) {
+      if (trampa.caido) throw new Error('proceso caído');
+      const r = await interno.cas(a, k, (actual) => {
+        const d = decidir(actual);
+        if (d) {
+          trampa.escrituras += 1;
+          if (trampa.escrituras === trampa.cuotaEn) { const e = new Error('lleno'); e.name = 'QuotaExceededError'; throw e; }
+        }
+        return d;
+      });
+      if (r.cambiado) {
+        trampa.registro.push(`[coordinado] ${a}/${k}`);
+        if (trampa.escrituras >= trampa.cortarTras) trampa.caido = true;
+      }
+      return r;
+    },
+  });
+}
 function armar({ cortarTras = Infinity, cuotaEn = Infinity } = {}) {
   Object.assign(trampa, { escrituras: 0, cortarTras, cuotaEn, caido: false, registro: [] });
 }
 const desarmar = () => armar();
-function limpiarTodo() {
+async function limpiarTodo() {
+  await Coordinacion.vaciar();
   desarmar();
   for (const k of Array.from({ length: LS.length }, (_, i) => LS.key(i))) if (k?.startsWith('arcanveil:')) original.removeItem(k);
 }
@@ -177,23 +207,23 @@ if (!Entrega) {
 
 console.log('\n── Entrega en el motor: muere con 103 XP, sucesor de otra clase ──');
 await caso(async () => {
-  limpiarTodo();
+  await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const invA = progreso(a).inventario;
   const muerte = await morirCon(a, 103);
   const runA = muerte.runId;
   comprobar(muerte.guardado.marca && muerte.guardado.legado, 'marca de muerte y herencia escritas al morir', JSON.stringify(muerte.guardado));
-  comprobar(Registro.legado(runA)?.cantidad === 36 && Registro.legado(runA)?.estado === 'pendiente', 'herencia pendiente: 36 XP (35 % de 103 hacia abajo)', JSON.stringify(Registro.legado(runA))?.slice(0, 300));
+  comprobar((await Entrega.estadoLegado(runA))?.cantidad === 36 && (await Entrega.estadoLegado(runA))?.estado === 'pendiente', 'herencia pendiente: 36 XP (35 % de 103 hacia abajo)', JSON.stringify((await Entrega.estadoLegado(runA)))?.slice(0, 300));
   a.store.dispatch('player/xp', { cantidad: 500, motivo: 'tardía' });
   await new Promise((r) => setTimeout(r, 0));
-  comprobar(a.ver('player.xp') === 103 && Registro.legado(runA).base.xpAcumulada === 103, 'experiencia tardía tras morir: no entra ni cambia la foto');
+  comprobar(a.ver('player.xp') === 103 && (await Entrega.estadoLegado(runA)).base.xpAcumulada === 103, 'experiencia tardía tras morir: no entra ni cambia la foto');
   a.sistema('muerte').morir({ origen: 'combate' });
   Registro.marcarMuerto(runA, { nombre: 'Sive' });
-  comprobar(Object.keys(Registro.legados()).length === 1 && Registro.legado(runA).creado === muerte.legado.creado, 'morir o marcar dos veces: una sola herencia, sin reescribir');
+  comprobar(Object.keys(Registro.legados()).length === 1 && (await Entrega.estadoLegado(runA)).creado === muerte.legado.creado, 'morir o marcar dos veces: una sola herencia, sin reescribir');
 
   // Abrir el creador, mirar y cancelar no escribe nada: el listado es lectura.
   const antes = original.getItem(Registro.CLAVE_LEGADOS);
-  const pendientes = Entrega.legadosPendientes();
+  const pendientes = (await Entrega.legadosPendientes());
   comprobar(pendientes.length === 1 && pendientes[0].cantidad === 36 && original.getItem(Registro.CLAVE_LEGADOS) === antes, 'listar (abrir el creador y cancelar) no consume ni escribe', JSON.stringify(pendientes));
 
   const { m: b, r, runDestino } = await sucesor(runA, BORRADOR.B, { ranura: '2' });
@@ -207,7 +237,7 @@ await caso(async () => {
     `nivel, vida, maná y puntos = los de un ${BORRADOR.B.clase} que gana 36 jugando (nivel ${control.nivel}, vida ${control.vida}, maná ${control.mana})`, JSON.stringify({ pB: { n: pB.nivel, v: pB.vida.max, m: pB.mana.max }, control }));
   const invB = Object.values(g.estado.inventory?.objetos?.porId ?? {}).map((o) => o.refId).sort().join(',');
   comprobar(invB === control.inventario && invB !== invA, 'inventario propio de su clase, no el del muerto', `${invB} | muerto: ${invA}`);
-  const fotoA = Registro.legado(runA);
+  const fotoA = (await Entrega.estadoLegado(runA));
   comprobar(pB.legadoRecibido?.runOrigen === runA && pB.legadoRecibido.xp === 36 && pB.legadoRecibido.xpOrigen === 103 && pB.xpHeredada === 36
     && pB.legadoRecibido.transaccion === fotoA.transaccion && Number.isFinite(pB.legadoRecibido.momento),
     'procedencia: origen, cantidad, experiencia del muerto, transacción y momento', JSON.stringify(pB.legadoRecibido));
@@ -231,14 +261,15 @@ await caso(async () => {
 
   const otra = await sucesor(runA, BORRADOR.C, { ranura: '3' });
   comprobar(!otra.r.ok && otra.r.codigo === 'entregado' && !leerJSON('arcanveil:partida:3'), 'segundo sucesor del mismo muerto: rechazado, sin ranura nueva', JSON.stringify(otra.r));
-  const mismo = await Entrega.entregarLegado({ runOrigen: runA, transaccion: fotoA.transaccion, runDestino: nuevoRunId(), ranura: '4', crear: () => { throw new Error('no debería crear'); }, guardar: () => ({ ok: true }) });
+  // Contrato #7: el reintento lleva la misma transacción Y el mismo destino.
+  const mismo = await Entrega.entregarLegado({ runOrigen: runA, transaccion: fotoA.transaccion, runDestino, ranura: '4', crear: () => { throw new Error('no debería crear'); }, guardar: () => ({ ok: true }) });
   comprobar(mismo.ok && mismo.yaHecho && mismo.runDestino === runDestino && !leerJSON('arcanveil:partida:4'), 'repetir la MISMA transacción (doble clic, recarga): el mismo resultado, sin crear otro', JSON.stringify(mismo));
   comprobar(sucesoresDe(runA).length === 1, 'un único sucesor guardado de ese muerto', sucesoresDe(runA).map((x) => x.k));
 });
 
 console.log('\n── Generaciones: B heredó 350, gana 650 y muere con 1000 → C recibe 350 ──');
 await caso(async () => {
-  limpiarTodo();
+  await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const mA = await morirCon(a, 1000);
   const { r: rB } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2' });
@@ -248,27 +279,27 @@ await caso(async () => {
   b.sistema('saves').cargar('2');
   b.store.fijar('meta.ranura', '2');
   const mB = await morirCon(b, 650);
-  const fB = Registro.legado(mB.runId);
+  const fB = (await Entrega.estadoLegado(mB.runId));
   comprobar(fB.base.xpAcumulada === 1000 && fB.base.xpHeredada === 350 && fB.base.xpGanada === 650 && fB.cantidad === 350,
     'foto de B: 1000 acumulada = 350 heredada + 650 ganada → 350 (ni 577 ni 227)', JSON.stringify(fB.base));
   const { r: rC } = await sucesor(mB.runId, BORRADOR.C, { ranura: '3' });
   const pC = leerJSON('arcanveil:partida:3')?.estado?.player;
   comprobar(rC.ok && pC?.xp === 350 && pC.xpHeredada === 350 && pC.legadoRecibido.runOrigen === mB.runId && pC.legadoRecibido.xpOrigen === 1000, 'C: 350 de B, con B como origen', JSON.stringify(pC?.legadoRecibido));
-  comprobar(Registro.legado(mA.runId).estado === 'aplicado' && Registro.legado(mA.runId).destinatario === mB.runId, 'la herencia de A sigue entregada a B, sin tocarse', JSON.stringify(Registro.legado(mA.runId)).slice(0, 200));
+  comprobar((await Entrega.estadoLegado(mA.runId)).estado === 'aplicado' && (await Entrega.estadoLegado(mA.runId)).destinatario === mB.runId, 'la herencia de A sigue entregada a B, sin tocarse', JSON.stringify((await Entrega.estadoLegado(mA.runId))).slice(0, 200));
 });
 
 console.log('\n── 0 XP, varios niveles, nivel máximo, mismos nombres, origen vivo ──');
 await caso(async () => {
-  limpiarTodo();
+  await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const m0 = await morirCon(a, 0);
   const { r } = await sucesor(m0.runId, BORRADOR.B, { ranura: '2' });
   const p = leerJSON('arcanveil:partida:2')?.estado?.player;
-  comprobar(r.ok && r.cantidad === 0 && p.xp === 0 && p.nivel === 1 && p.legadoRecibido?.xp === 0 && Registro.legado(m0.runId).estado === 'aplicado', '0 XP: se entrega una vez sin premio y queda cerrada', JSON.stringify({ r, xp: p?.xp }));
+  comprobar(r.ok && r.cantidad === 0 && p.xp === 0 && p.nivel === 1 && p.legadoRecibido?.xp === 0 && (await Entrega.estadoLegado(m0.runId)).estado === 'aplicado', '0 XP: se entrega una vez sin premio y queda cerrada', JSON.stringify({ r, xp: p?.xp }));
   const otra = await sucesor(m0.runId, BORRADOR.C, { ranura: '3' });
   comprobar(!otra.r.ok && otra.r.codigo === 'entregado', '…y no queda «disponible» para siempre');
 
-  limpiarTodo();
+  await limpiarTodo();
   const a2 = await empezar(BORRADOR.A, 9303, '1');
   const m2 = await morirCon(a2, 3000);
   const { r: r2 } = await sucesor(m2.runId, BORRADOR.C, { ranura: '2' });
@@ -277,7 +308,7 @@ await caso(async () => {
   comprobar(r2.ok && p2.xp === 1050 && p2.nivel === nivelParaXP(1050) && p2.nivel === control.nivel && p2.nivel >= 4 && p2.vida.max === control.vida && (p2.puntosHabilidad ?? 0) === control.habilidad && (p2.puntosAtributo ?? 0) === control.atributo,
     `3000 → 1050: varios niveles de golpe (${p2?.nivel}), cada recompensa una vez, como el testigo`, JSON.stringify({ p2: { n: p2?.nivel, v: p2?.vida?.max, h: p2?.puntosHabilidad, a: p2?.puntosAtributo }, control }));
 
-  limpiarTodo();
+  await limpiarTodo();
   const a3 = await empezar(BORRADOR.A, 9303, '1');
   const m3 = await morirCon(a3, 50_000_000);
   const { r: r3 } = await sucesor(m3.runId, BORRADOR.B, { ranura: '2' });
@@ -285,14 +316,14 @@ await caso(async () => {
   const p3 = leerJSON('arcanveil:partida:2')?.estado?.player;
   comprobar(r3.ok && p3.xp === 17_500_000 && p3.nivel === 20 && p3.nivel === control3.nivel && (p3.puntosHabilidad ?? 0) === control3.habilidad, 'nivel máximo: se queda en 20 con las recompensas de 19 niveles, una vez', JSON.stringify({ n: p3?.nivel, h: p3?.puntosHabilidad, c: control3 }));
 
-  limpiarTodo();
+  await limpiarTodo();
   const s1 = await empezar(BORRADOR.A, 9303, '1');
   const d1 = await morirCon(s1, 200);
   const s2 = await empezar(BORRADOR.A, 9304, '2');
   const d2 = await morirCon(s2, 400);
-  const lista = Entrega.legadosPendientes();
+  const lista = (await Entrega.legadosPendientes());
   comprobar(d1.runId !== d2.runId && lista.length === 2 && lista.every((v) => v.origen.nombre === 'Sive'), 'dos «Sive» muertas: dos herencias distintas por run, no una por nombre', JSON.stringify(lista.map((v) => [v.runOrigen, v.cantidad])));
-  const intacta = original.getItem(Registro.CLAVE_LEGADOS) && JSON.stringify(Registro.legado(d2.runId));
+  const intacta = original.getItem(Registro.CLAVE_LEGADOS) && JSON.stringify((await Entrega.estadoLegado(d2.runId)));
   const { r: r4 } = await sucesor(d1.runId, BORRADOR.B, { ranura: '3' });
   const tras = JSON.parse(original.getItem(Registro.CLAVE_LEGADOS))[d2.runId];
   comprobar(r4.ok && r4.cantidad === 70 && JSON.stringify(tras) === intacta && tras.estado === 'pendiente', 'entregar la de una no toca la otra (byte a byte)', JSON.stringify(tras).slice(0, 200));
@@ -303,7 +334,7 @@ await caso(async () => {
   mapa[vivo] = Legado.fotoDeLegado({ meta: { runId: vivo }, player: { nombre: 'Vivo', xp: 900 } });
   original.setItem(Registro.CLAVE_LEGADOS, JSON.stringify(mapa));
   const rv = await sucesor(vivo, BORRADOR.C, { ranura: '4' });
-  comprobar(!rv.r.ok && rv.r.codigo === 'no-muerto' && !leerJSON('arcanveil:partida:4') && !Entrega.legadosPendientes().some((v) => v.runOrigen === vivo), 'origen sin muerte registrada: rechazado y fuera de la lista', JSON.stringify(rv.r));
+  comprobar(!rv.r.ok && rv.r.codigo === 'no-muerto' && !leerJSON('arcanveil:partida:4') && !(await Entrega.legadosPendientes()).some((v) => v.runOrigen === vivo), 'origen sin muerte registrada: rechazado y fuera de la lista', JSON.stringify(rv.r));
   const propia = await Entrega.entregarLegado({ runOrigen: d2.runId, transaccion: 't', runDestino: d2.runId, ranura: '5', crear: () => {}, guardar: () => ({ ok: true }) });
   comprobar(!propia.ok, 'el muerto no es su propio sucesor');
 });
@@ -312,7 +343,7 @@ console.log('\n── Corte DESPUÉS DE CADA ESCRITURA, reapertura y recuperaci�
 let escriturasProtocolo = 0;
 await caso(async () => {
   // Cuántas escrituras hace una entrega normal.
-  limpiarTodo();
+  await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const mA = await morirCon(a, 1000);
   armar();
@@ -325,18 +356,18 @@ await caso(async () => {
 
 for (let k = 1; k <= escriturasProtocolo; k++) {
   await caso(async () => {
-    limpiarTodo();
+    await limpiarTodo();
     const a = await empezar(BORRADOR.A, 9303, '1');
     const mA = await morirCon(a, 1000);
     armar({ cortarTras: k });
     let r;
     try { ({ r } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2' })); } catch (e) { r = { excepcion: e.message }; }
     desarmar();
-    const enDisco = Registro.legado(mA.runId)?.estado;
+    const enDisco = (await Entrega.estadoLegado(mA.runId))?.estado;
     // Reabrir: un motor nuevo y la recuperación.
     await crearMotor({ semilla: 3 });
     const rec = await Entrega.recuperarLegados();
-    const f = Registro.legado(mA.runId);
+    const f = (await Entrega.estadoLegado(mA.runId));
     const hijos = sucesoresDe(mA.runId);
     const coherente = (f.estado === 'aplicado' && hijos.length === 1 && hijos[0].g.estado.meta.runId === f.destinatario && hijos[0].g.estado.player.xp === 350)
       || (f.estado === 'pendiente' && hijos.length === 0);
@@ -344,7 +375,7 @@ for (let k = 1; k <= escriturasProtocolo; k++) {
     // Después, un intento nuevo: o se rechaza (ya entregada) o entrega una vez.
     const otra = await sucesor(mA.runId, BORRADOR.C, { ranura: '3' });
     const total = sucesoresDe(mA.runId).length;
-    comprobar(total === 1 && Registro.legado(mA.runId).estado === 'aplicado' && (f.estado === 'aplicado' ? !otra.r.ok : otra.r.ok),
+    comprobar(total === 1 && (await Entrega.estadoLegado(mA.runId)).estado === 'aplicado' && (f.estado === 'aplicado' ? !otra.r.ok : otra.r.ok),
       `  …y un intento nuevo deja exactamente un sucesor (${f.estado === 'aplicado' ? 'rechazado' : 'entregado ahora'})`, JSON.stringify(otra.r));
   });
 }
@@ -352,13 +383,13 @@ for (let k = 1; k <= escriturasProtocolo; k++) {
 console.log('\n── Cuota llena en cada escritura: pendiente o recuperable, nunca premio sin guardar ──');
 for (let k = 1; k <= escriturasProtocolo; k++) {
   await caso(async () => {
-    limpiarTodo();
+    await limpiarTodo();
     const a = await empezar(BORRADOR.A, 9303, '1');
     const mA = await morirCon(a, 1000);
     armar({ cuotaEn: k });
     const { r } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2' });
     desarmar();
-    const f = Registro.legado(mA.runId);
+    const f = (await Entrega.estadoLegado(mA.runId));
     const hijos = sucesoresDe(mA.runId);
     const bien = r.ok
       ? (hijos.length === 1 && ['aplicado', 'reservado'].includes(f.estado))
@@ -366,13 +397,13 @@ for (let k = 1; k <= escriturasProtocolo; k++) {
     comprobar(bien, `cuota llena en la escritura ${k}: ${r.ok ? 'entregada' : `falla con aviso («${r.motivo}»)`}; herencia ${f.estado}, ${hijos.length} sucesor(es)`, JSON.stringify(r));
     await Entrega.recuperarLegados();
     const reintento = await sucesor(mA.runId, BORRADOR.B, { ranura: '2', transaccion: r.ok ? 'otra' : 'reintento' });
-    comprobar(sucesoresDe(mA.runId).length === 1 && Registro.legado(mA.runId).estado === 'aplicado', `  …reintentar deja un único sucesor y la herencia entregada`, JSON.stringify(reintento.r));
+    comprobar(sucesoresDe(mA.runId).length === 1 && (await Entrega.estadoLegado(mA.runId)).estado === 'aplicado', `  …reintentar deja un único sucesor y la herencia entregada`, JSON.stringify(reintento.r));
   });
 }
 
 console.log('\n── Relectura que no cuadra, transacción vieja, doble petición, dos pestañas ──');
 await caso(async () => {
-  limpiarTodo();
+  await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const mA = await morirCon(a, 1000);
   // La ranura se escribe, pero lo que se relee no es lo escrito.
@@ -380,55 +411,65 @@ await caso(async () => {
   LS.getItem = (k) => { const v = getItem.call(LS, k); if (k === 'arcanveil:partida:2' && v) { const g = JSON.parse(v); g.estado.player.xp = 9999; return JSON.stringify(g); } return v; };
   const { r } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2' });
   LS.getItem = getItem;
-  comprobar(!r.ok && r.fase === 'guardar' && r.devuelto && Registro.legado(mA.runId).estado === 'pendiente' && sucesoresDe(mA.runId).length === 0,
-    'relectura distinta de lo escrito: no se da por entregada, la ranura nueva se retira y la herencia sigue pendiente', JSON.stringify(r));
+  // Contrato #7 (más estricto que el del #6, que retiraba la ranura y
+  // devolvía la herencia): si lo releído no es lo escrito, el estado es
+  // dudoso; no se borra nada ni se libera la herencia: se bloquea y se
+  // vuelve a comprobar con lecturas sanas.
+  comprobar(!r.ok && r.fase === 'guardar' && !r.devuelto && (await Entrega.estadoLegado(mA.runId)).estado === 'reservado' && (await Entrega.estadoLegado(mA.runId)).bloqueo?.motivo && !(await Entrega.legadosPendientes()).some((v) => v.runOrigen === mA.runId),
+    'relectura distinta de lo escrito: no se da por entregada ni se libera; queda bloqueada con motivo y sin borrar la ranura', JSON.stringify(r));
+  await Entrega.recuperarLegados();
+  comprobar((await Entrega.estadoLegado(mA.runId)).estado === 'aplicado' && sucesoresDe(mA.runId).length === 1, '  al volver a comprobar con lecturas sanas, el sucesor estaba bien escrito: aplicado, uno', (await Entrega.estadoLegado(mA.runId)).estado);
 
+  await limpiarTodo();
+  const a1 = await empezar(BORRADOR.A, 9303, '1');
+  const m1 = await morirCon(a1, 1000);
   const t1 = Entrega.nuevaTransaccion();
-  const { r: ok1 } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2', transaccion: t1 });
-  const vieja = await sucesor(mA.runId, BORRADOR.C, { ranura: '3', transaccion: 'leg-vieja' });
+  const { r: ok1 } = await sucesor(m1.runId, BORRADOR.B, { ranura: '2', transaccion: t1 });
+  const vieja = await sucesor(m1.runId, BORRADOR.C, { ranura: '3', transaccion: 'leg-vieja' });
   comprobar(ok1.ok && !vieja.r.ok && vieja.r.codigo === 'entregado', 'transacción vieja o distinta tras entregar: rechazada');
 
-  limpiarTodo();
+  await limpiarTodo();
   const a2 = await empezar(BORRADOR.A, 9303, '1');
   const m2 = await morirCon(a2, 1000);
   // Doble petición: la segunda llega mientras la primera está creando.
   let soltar;
   const parada = new Promise((ok) => { soltar = ok; });
   const T = Entrega.nuevaTransaccion();
-  const primera = sucesor(m2.runId, BORRADOR.B, { ranura: '2', transaccion: T, alCrear: () => parada });
+  const destinoT = nuevoRunId();
+  const primera = sucesor(m2.runId, BORRADOR.B, { ranura: '2', transaccion: T, runDestino: destinoT, alCrear: () => parada });
   await new Promise((rr) => setTimeout(rr, 20));
   const segunda = await Entrega.entregarLegado({ runOrigen: m2.runId, transaccion: T, runDestino: nuevoRunId(), ranura: '3', crear: () => { throw new Error('no'); }, guardar: () => ({ ok: true }) });
   comprobar(!segunda.ok && segunda.codigo === 'ocupado', 'doble petición a la vez: la segunda espera fuera (candado ocupado), no crea', JSON.stringify(segunda));
   soltar();
   const { r: r1 } = await primera;
-  const tercera = await Entrega.entregarLegado({ runOrigen: m2.runId, transaccion: T, runDestino: nuevoRunId(), ranura: '3', crear: () => { throw new Error('no'); }, guardar: () => ({ ok: true }) });
+  const tercera = await Entrega.entregarLegado({ runOrigen: m2.runId, transaccion: T, runDestino: destinoT, ranura: '3', crear: () => { throw new Error('no'); }, guardar: () => ({ ok: true }) });
   comprobar(r1.ok && tercera.ok && tercera.yaHecho && sucesoresDe(m2.runId).length === 1, 'al terminar la primera, repetir la misma petición devuelve lo hecho, sin otro sucesor', JSON.stringify(tercera));
 
   // Dos pestañas: la reserva de una está en disco y su candado tomado.
-  limpiarTodo();
+  await limpiarTodo();
   const a3 = await empezar(BORRADOR.A, 9303, '1');
   const m3 = await morirCon(a3, 1000);
-  Registro.cambiarLegado(m3.runId, { estado: 'pendiente' }, { estado: 'reservado', transaccion: 'leg-pestana-1', reserva: { runDestino: 'run-p1', ranura: '7' } });
+  await Entrega.cambiarLegado(m3.runId, { estado: 'pendiente' }, { estado: 'reservado', transaccion: 'leg-pestana-1', reserva: { runDestino: 'run-p1', ranura: '7', cantidad: 350 } });
   candados.tomados.add(`arcanveil:legado:${m3.runId}`);
   const rec = await Entrega.recuperarLegados();
   const p2 = await sucesor(m3.runId, BORRADOR.C, { ranura: '3' });
-  comprobar(Registro.legado(m3.runId).estado === 'reservado' && rec[0]?.codigo === 'ocupado' && !p2.r.ok && p2.r.codigo === 'ocupado',
+  comprobar((await Entrega.estadoLegado(m3.runId)).estado === 'reservado' && rec[0]?.codigo === 'ocupado' && !p2.r.ok && p2.r.codigo === 'ocupado',
     'otra pestaña trabajando (candado tomado): ni se recupera su reserva ni se crea otro sucesor', JSON.stringify({ rec, r: p2.r }));
   candados.tomados.delete(`arcanveil:legado:${m3.runId}`);
   // La otra pestaña murió sin guardar: su reserva es huérfana y se devuelve.
   const rec2 = await Entrega.recuperarLegados();
-  comprobar(Registro.legado(m3.runId).estado === 'pendiente' && rec2[0]?.estado === 'pendiente', 'pestaña muerta sin sucesor guardado: su reserva vuelve a pendiente', JSON.stringify(rec2));
+  comprobar((await Entrega.estadoLegado(m3.runId)).estado === 'pendiente' && rec2[0]?.estado === 'pendiente', 'pestaña muerta sin sucesor guardado: su reserva vuelve a pendiente', JSON.stringify(rec2));
 
   // Sin Web Locks no se puede asegurar: se bloquea con aviso.
   Entrega.usarCandados({});
   const sin = await sucesor(m3.runId, BORRADOR.C, { ranura: '3' });
   Entrega.usarCandados(candados);
-  comprobar(!sin.r.ok && sin.r.codigo === 'sin-exclusion' && /sin herencia/.test(sin.r.motivo) && Registro.legado(m3.runId).estado === 'pendiente', 'navegador sin Web Locks: bloqueado con aviso, la herencia intacta', JSON.stringify(sin.r));
+  comprobar(!sin.r.ok && sin.r.codigo === 'sin-exclusion' && /sin herencia/.test(sin.r.motivo) && (await Entrega.estadoLegado(m3.runId)).estado === 'pendiente', 'navegador sin Web Locks: bloqueado con aviso, la herencia intacta', JSON.stringify(sin.r));
 });
 
 console.log('\n── Fotos de la versión 1 y registro ilegible ──');
 await caso(async () => {
-  limpiarTodo();
+  await limpiarTodo();
   const v1 = (run, xp, estado = 'pendiente', extra = {}) => ({ version: 1, runOrigen: run, origen: { nombre: `N-${run}`, clase: 'filo', nivel: 2 }, fraccion: 0.35,
     base: { xpAcumulada: xp, xpHeredadaIncluida: 0, puntosHabilidadDisponibles: 3, habilidades: {} }, modalidad: 'pendiente', estado, destinatario: null, creado: 5, ...extra });
   original.setItem(Registro.CLAVE_LEGADOS, JSON.stringify({
@@ -437,15 +478,15 @@ await caso(async () => {
     'run-v1-roto': v1('run-v1-roto', null),
   }));
   original.setItem(Registro.CLAVE_MUERTOS, JSON.stringify({ 'run-v1-ok': { nombre: 'a' }, 'run-v1-aplicado': { nombre: 'b' }, 'run-v1-roto': { nombre: 'c' } }));
-  const lista = Object.fromEntries(Entrega.listarLegados().map((v) => [v.runOrigen, v]));
+  const lista = Object.fromEntries((await Entrega.listarLegados()).map((v) => [v.runOrigen, v]));
   comprobar(lista['run-v1-ok'].estado === 'pendiente' && lista['run-v1-ok'].cantidad === 70, 'v1 pendiente con 200 XP: se lee como 70 (35 % hacia abajo)', JSON.stringify(lista['run-v1-ok']));
   comprobar(lista['run-v1-aplicado'].estado === 'aplicado', 'v1 ya aplicada: sigue aplicada (no vuelve a pendiente al leerla)');
   comprobar(lista['run-v1-roto'].estado === 'bloqueado' && /no es un número válido/.test(lista['run-v1-roto'].motivo), 'v1 sin experiencia válida: bloqueada con motivo; las demás siguen', lista['run-v1-roto'].motivo);
   const { r } = await sucesor('run-v1-ok', BORRADOR.B, { ranura: '2' });
-  const f = Registro.legado('run-v1-ok');
+  const f = (await Entrega.estadoLegado('run-v1-ok'));
   comprobar(r.ok && r.cantidad === 70 && f.estado === 'aplicado' && f.version === 1 && f.base.puntosHabilidadDisponibles === 3, 'la v1 se entrega una vez y conserva sus datos originales', JSON.stringify(f).slice(0, 300));
   const r2 = await sucesor('run-v1-roto', BORRADOR.B, { ranura: '3' });
-  comprobar(!r2.r.ok && r2.r.codigo === 'bloqueado' && Registro.legado('run-v1-roto').base.xpAcumulada === null, 'la rota no se entrega ni se reescribe', JSON.stringify(r2.r));
+  comprobar(!r2.r.ok && r2.r.codigo === 'bloqueado' && (await Entrega.estadoLegado('run-v1-roto')).base.xpAcumulada === null, 'la rota no se entrega ni se reescribe', JSON.stringify(r2.r));
 
   original.setItem(Registro.CLAVE_LEGADOS, '{esto no es json');
   const ilegible = Registro.registroIlegible();

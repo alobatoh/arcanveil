@@ -150,7 +150,7 @@ try {
   await evaluar(`document.querySelector('#personajes-comenzar').click(); true`);
   await hasta('document.body.dataset.activeScreen === "juego" || !document.getElementById("salida-modal").hidden', 15000);
   const sucesor = await evaluar(`({ xp: ARCANVEIL.ver('player.xp'), origen: ARCANVEIL.ver('player.legadoRecibido.nombreOrigen'), modal: document.getElementById('salida-modal').hidden ? null : document.getElementById('salida-nota').textContent })`);
-  comprobar(sucesor.xp === 140 && sucesor.origen === 'Brisa' && !sucesor.modal, 'el sucesor recibe 140 XP con su origen (Web Locks también desde file://)', JSON.stringify(sucesor));
+  comprobar(sucesor.xp === 140 && sucesor.origen === 'Brisa' && !sucesor.modal, 'el sucesor recibe 140 XP con su origen (Web Locks e IndexedDB también desde file://)', JSON.stringify(sucesor));
   await foto('03-sucesor.png');
 
   comprobar(!externos.length, 'ninguna petición de red', externos.slice(0, 3).join(' · '));
