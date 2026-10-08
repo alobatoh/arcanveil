@@ -26,6 +26,9 @@ const desktop = process.argv.includes('--desktop');
  * en pie y con cara, el respaldo funciona de verdad y no de palabra.
  */
 const sinIA = process.argv.includes('--sin-ia');
+/** `--semilla N`: la semilla del azar de la página (FIXTURE; ver más abajo). */
+const semilla = Number(process.argv[process.argv.indexOf('--semilla') + 1]) || (process.argv.includes('--semilla') ? 0 : 20261008);
+console.log(`semilla de la partida: ${semilla}`);
 const viewport = desktop ? { width: 1440, height: 900, label: '1440x900' } : { width: 390, height: 844, label: '390x844' };
 // Antes de abrir el navegador: ¿el trabajador de servicio conoce el código
 // actual?
@@ -272,7 +275,9 @@ const herenciaFicticia = (run, nombre, xp) => `(() => {
   localStorage.setItem('arcanveil:legados', JSON.stringify(l)); return true; })()`;
 /** Cuántos sucesores guardados hay de un muerto (lectura de las ranuras). */
 const sucesoresDe = (run) => `Object.keys(localStorage).filter((k) => k.startsWith('arcanveil:partida:')).map((k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } }).filter((g) => g?.estado?.player?.legadoRecibido?.runOrigen === ${JSON.stringify(run)}).map((g) => ({ run: g.estado.meta.runId, xp: g.estado.player.xp, nivel: g.estado.player.nivel }))`;
-const legadoDe = (run) => `(JSON.parse(localStorage.getItem('arcanveil:legados') ?? '{}')[${JSON.stringify(run)}] ?? null)`;
+// #7: el estado de la herencia vive en el almacén coordinado (IndexedDB),
+// no en la foto de localStorage. Se lee con el mismo módulo que usa la app.
+const legadoDe = (run) => `(await import('/src/persistence/EntregaLegado.js').then((m) => m.estadoLegado(${JSON.stringify(run)})))`;
 
 /** Desde el menú de inicio, «Continuar» la partida guardada. */
 async function continuarPartida(runId) {
@@ -330,6 +335,20 @@ try {
     }
   };
   await cdp('Runtime.enable'); await cdp('Page.enable'); await cdp('Network.enable');
+
+  // FIXTURE de semilla (#7): el azar de la página (la ficha aleatoria, la
+  // semilla maestra del motor, las variantes del narrador) sale de
+  // `--semilla N`, sembrado ANTES de que cargue nada. Misma semilla, misma
+  // partida: así una prueba que depende del dado se puede repetir igual en
+  // la base y en el HEAD. No toca reglas: solo de dónde sale el azar.
+  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    let s = ${semilla} >>> 0;
+    const azar = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    Math.random = azar;
+    const original = crypto.getRandomValues.bind(crypto);
+    crypto.getRandomValues = (a) => { if (a instanceof Uint32Array) { for (let i = 0; i < a.length; i++) a[i] = (azar() * 4294967296) >>> 0; return a; } return original(a); };
+  })();` });
+  await cdp('Page.reload', { ignoreCache: false });
 
   // `--sin-ia`: sin generador de imágenes en el equipo. El juego tiene que
   // seguir igual, con marcadores, y el estudio decir por qué no pinta.
@@ -973,22 +992,65 @@ try {
   if (await evaluate(`ARCANVEIL.ver('player.xp')`) !== xpAntesDeMorir) throw new Error('la experiencia de prueba no entró');
   const herenciaEsperada = Math.trunc((xpAntesDeMorir * 35) / 100);
 
-  etapa('muerte entre el clic y la frontera');
-  if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) throw new Error(`no hay pelea para probar la muerte con la salida pendiente: ${JSON.stringify(await evaluate(DIAGNOSTICO))}`);
-  {
-    // FIXTURE de cadencia: el turno enemigo no termina hasta que la prueba
-    // lo suelta. Sin esto, si el turno acababa antes de llegar el daño, la
-    // salida se hacía (bien) y la prueba fallaba según el reloj.
-    await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); window.__soltar = null; c._pausa = (ms) => new Promise((ok) => { window.__soltar = ok; }); return true; })()`);
-    await evaluate(`window.__sigo = 1; ${enVuelo}`);
-    // FIXTURE: el daño que lo mata llega mientras la salida espera.
-    await evaluate(`ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' }); true`);
-    await evaluate(`ARCANVEIL.sistema('combat')._pausa = window.__pausaReal ?? ARCANVEIL.sistema('combat')._pausa; window.__soltar?.(); true`);
+  /**
+   * Muerte con la salida pendiente, con el daño por el canal real y la
+   * protección FIJADA (FIXTURE de ficha: `player._rasgoTrasfondo`), no
+   * neutralizada en el juego. Golpes acotados: con protección, el primero lo
+   * para el rasgo (vida 1, una vez) y el segundo mata; sin ella, mata el
+   * primero. Se comprueba después de CADA golpe (vida, fase, eventos, que la
+   * salida sigue esperando y que no se ha navegado) y la muerte se confirma
+   * ANTES de soltar la frontera. La pausa (FIXTURE de cadencia) se restaura
+   * en `finally` aunque falle.
+   */
+  async function muerteConSalidaPendiente({ proteccion, etiqueta }) {
+    const PROTECCION = { nombre: 'Instinto de conservación', descripcion: 'FIXTURE de la regresión: el rasgo del trasfondo superviviente.', efecto: { tipo: 'evitarMuerte', usos: 1, recarga: 'descansoLargo' } };
+    await evaluate(`(() => {
+      window.__salvados = 0; window.__finRun = 0;
+      if (!window.__oyentesMuerte) { window.__oyentesMuerte = true; ARCANVEIL.bus.on('player:saved', () => { window.__salvados += 1; }); ARCANVEIL.bus.on('run:ended', () => { window.__finRun += 1; }); }
+      ARCANVEIL.store.fijar('player._rasgoTrasfondo', ${proteccion ? JSON.stringify(PROTECCION) : 'null'});
+      ARCANVEIL.store.fijar('player.usosRasgos', { ...(ARCANVEIL.ver('player.usosRasgos') ?? {}), instinto_de_conservacion: 0 });
+      const c = ARCANVEIL.sistema('combat'); window.__pausaReal = window.__pausaReal ?? c._pausa; window.__soltar = null;
+      c._pausa = (ms) => new Promise((ok) => { window.__soltar = ok; });
+      return true; })()`);
+    const golpes = [];
+    try {
+      const espera = await evaluate(`window.__sigo = 1; ${enVuelo}`);
+      if (espera.esperando || !espera.visible || espera.titulo !== 'Esperando para salir') throw new Error(`${etiqueta}: Menú con el enemigo actuando no espera: ${JSON.stringify(espera)}`);
+      // Límite: protección (1) + golpe letal (1) + uno de margen que NO debe hacer falta.
+      for (let i = 0; i < 3; i++) {
+        await evaluate(`ARCANVEIL.store.dispatch('player/danar', { cantidad: 999, origen: 'regresion' }); true`);
+        await wait(200);
+        const e = await evaluate(`({ vida: ARCANVEIL.ver('player.vida.actual'), fase: ARCANVEIL.ver('meta.fase'), salvados: window.__salvados, fin: window.__finRun, esperando: !document.getElementById('salida-modal').hidden && document.getElementById('salida-titulo').textContent === 'Esperando para salir', sigo: window.__sigo })`);
+        golpes.push(e);
+        if (e.fase === 'fin') break;
+        if (!proteccion || e.salvados !== 1 || e.vida !== 1 || !e.esperando || e.sigo !== 1 || e.fin) throw new Error(`${etiqueta}: tras el golpe ${i + 1} sigue vivo sin una protección que lo explique, o la salida dejó de esperar: ${JSON.stringify(golpes)}`);
+      }
+      const ultimo = golpes.at(-1);
+      if (ultimo.fase !== 'fin' || ultimo.sigo !== 1 || ultimo.fin !== 1) throw new Error(`${etiqueta}: la muerte no se confirmó antes de soltar la frontera: ${JSON.stringify(golpes)}`);
+      if (proteccion ? (golpes.length !== 2 || golpes[0].salvados !== 1) : golpes.length !== 1) throw new Error(`${etiqueta}: golpes inesperados: ${JSON.stringify(golpes)}`);
+      const reg = await evaluate(`(() => { const run = ARCANVEIL.ver('meta.runId'); const l = JSON.parse(localStorage.getItem('arcanveil:legados') ?? '{}'); const m = JSON.parse(localStorage.getItem('arcanveil:runs-muertos') ?? '{}'); return { run, legado: l[run]?.estado ?? null, marca: Boolean(m[run]) }; })()`);
+      if (!reg.marca || reg.legado !== 'pendiente') throw new Error(`${etiqueta}: marca o herencia no persistidas antes de soltar: ${JSON.stringify(reg)}`);
+    } finally {
+      await evaluate(`(() => { const c = ARCANVEIL.sistema('combat'); if (window.__pausaReal) c._pausa = window.__pausaReal; window.__soltar?.(); return true; })()`).catch(() => {});
+    }
     await until('!document.getElementById("caida-modal").hidden', 8000);
     await wait(500);
-    const muertoEsperando = await evaluate(`({ sigo: window.__sigo, salida: document.getElementById('salida-modal').hidden, fase: ARCANVEIL.ver('meta.fase') })`);
-    if (muertoEsperando.sigo !== 1 || !muertoEsperando.salida || muertoEsperando.fase !== 'fin') throw new Error(`morir con la salida pendiente: ${JSON.stringify(muertoEsperando)}`);
+    // Los eventos de caída repetidos no crean otra muerte ni otra herencia.
+    await evaluate(`ARCANVEIL.bus.emit('player:defeated', { origen: 'combate' }); ARCANVEIL.bus.emit('player:down', {}); true`);
+    await wait(250);
+    const fin = await evaluate(`(() => { const run = ARCANVEIL.ver('meta.runId'); const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + ARCANVEIL.ver('meta.ranura')) ?? 'null'); return { sigo: window.__sigo, salida: document.getElementById('salida-modal').hidden, fase: ARCANVEIL.ver('meta.fase'), fin: window.__finRun, herencias: Object.keys(JSON.parse(localStorage.getItem('arcanveil:legados') ?? '{}')).filter((k) => k === run).length, finalGuardado: g?.estado?.meta?.muerte?.runId === run }; })()`);
+    if (fin.sigo !== 1 || !fin.salida || fin.fase !== 'fin' || fin.fin !== 1 || fin.herencias !== 1) throw new Error(`${etiqueta}: tras morir con la salida pendiente: ${JSON.stringify(fin)}`);
+    await until(`JSON.parse(localStorage.getItem('arcanveil:partida:' + ARCANVEIL.ver('meta.ranura')) ?? 'null')?.estado?.meta?.muerte?.runId === ARCANVEIL.ver('meta.runId')`, 8000);
+    console.log(`  ${etiqueta}: ${golpes.length} golpe(s)${proteccion ? ' (el primero lo paró la protección: vida 1)' : ''}; muerte confirmada antes de soltar la frontera; sin navegar; una sola herencia; final guardado`);
   }
+
+  etapa('muerte entre el clic y la frontera');
+  if (!await evaluate('ARCANVEIL.ver("combat.activo", false)')) throw new Error(`no hay pelea para probar la muerte con la salida pendiente: ${JSON.stringify(await evaluate(DIAGNOSTICO))}`);
+  // Caso B (con protección): el trasfondo «superviviente» trae «Instinto de
+  // conservación» (evitarMuerte, una vez). El #6 mataba con UN golpe de 999 y,
+  // si el dado de la ficha daba ese trasfondo, el personaje quedaba a 1, la
+  // salida pendiente se completaba y la prueba fallaba (visto en la base).
+  await muerteConSalidaPendiente({ proteccion: true, etiqueta: 'caso B (con protección)' });
 
   etapa('muerte');
   // ─── Caer detiene la partida de verdad ──────────────────────────────
@@ -1049,7 +1111,9 @@ try {
 
   // Muerte permanente (7-oct-2026): pantalla final con la causa, la herencia
   // pendiente dicha sin prometerla, y «Nueva partida». Ni «Volver en ti» ni
-  // ninguna forma de curar la derrota.
+  // ninguna forma de curar la derrota. La cifra llega del estado compartido
+  // (asíncrono, #7): se espera a que esté escrita.
+  await until('!/Comprobando/.test(document.getElementById("caida-legado")?.textContent ?? "Comprobando")', 8000);
   const final = await evaluate(`({
     titulo: document.getElementById('caida-titulo')?.textContent ?? '',
     nota: document.getElementById('caida-nota')?.textContent ?? '',
@@ -1085,7 +1149,7 @@ try {
   etapa('legado: elegir herencia, vista previa cancelable, confirmar y recargar');
   {
     // La pantalla de herencia: el caído primero, con su cifra, y el foco en él.
-    const pantalla = await evaluate(`({ tarjetas: [...document.querySelectorAll('.tarjeta-herencia')].map((b) => ({ origen: b.dataset.origen, texto: b.textContent, activa: !b.disabled })), foco: document.activeElement?.dataset?.origen ?? document.activeElement?.id ?? null, legado: ${legadoDe(runCaido)} })`);
+    const pantalla = await evaluate(`(async () => ({ tarjetas: [...document.querySelectorAll('.tarjeta-herencia')].map((b) => ({ origen: b.dataset.origen, texto: b.textContent, activa: !b.disabled })), foco: document.activeElement?.dataset?.origen ?? document.activeElement?.id ?? null, legado: ${legadoDe(runCaido)} }))()`);
     const suya = pantalla.tarjetas[0];
     if (!suya || suya.origen !== runCaido || !suya.activa || !suya.texto.includes('acaba de caer') || !suya.texto.includes(`${herenciaEsperada} XP`)) throw new Error(`la herencia del caído no sale primero con su cifra: ${JSON.stringify(pantalla.tarjetas)}`);
     if (pantalla.foco !== runCaido) throw new Error(`el foco no está en la herencia del caído: ${pantalla.foco}`);
@@ -1119,7 +1183,7 @@ try {
     await evaluate(`(() => { const b = document.querySelector('#personajes-comenzar'); b.click(); b.click(); return true; })()`);
     await until('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.legadoRecibido.runOrigen") === ' + JSON.stringify(runCaido), 15000);
     await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
-    const sucesor = await evaluate(`({ xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), nivel: ARCANVEIL.ver('player.nivel'), vida: ARCANVEIL.ver('player.vida.max'), puntos: ARCANVEIL.ver('player.puntosHabilidad'), run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), recibido: ARCANVEIL.ver('player.legadoRecibido'), procedencia: document.querySelector('#pj-xp-procedencia')?.textContent ?? '', legado: ${legadoDe(runCaido)}, sucesores: ${sucesoresDe(runCaido)} })`);
+    const sucesor = await evaluate(`(async () => ({ xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), nivel: ARCANVEIL.ver('player.nivel'), vida: ARCANVEIL.ver('player.vida.max'), puntos: ARCANVEIL.ver('player.puntosHabilidad'), run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), recibido: ARCANVEIL.ver('player.legadoRecibido'), procedencia: document.querySelector('#pj-xp-procedencia')?.textContent ?? '', legado: ${legadoDe(runCaido)}, sucesores: ${sucesoresDe(runCaido)} }))()`);
     if (sucesor.xp !== herenciaEsperada || sucesor.heredada !== herenciaEsperada || sucesor.run === runCaido || sucesor.nivel !== nivelParaXP(herenciaEsperada)) throw new Error(`el sucesor no tiene la herencia exacta y su nivel normal (${nivelParaXP(herenciaEsperada)}): ${JSON.stringify(sucesor)}`);
     if (sucesor.legado?.estado !== 'aplicado' || sucesor.legado.destinatario !== sucesor.run || sucesor.sucesores.length !== 1) throw new Error(`la entrega no quedó apuntada una sola vez (doble clic): ${JSON.stringify({ legado: sucesor.legado, sucesores: sucesor.sucesores })}`);
     if (!sucesor.procedencia.includes(`${herenciaEsperada} heredada`) || !/0 ganada jugando/.test(sucesor.procedencia)) throw new Error(`la ficha no separa lo heredado: «${sucesor.procedencia}»`);
@@ -1156,14 +1220,14 @@ try {
     // FIXTURE: la ranura no se puede escribir (cuota llena).
     await evaluate(`(() => { const o = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (String(k).startsWith('arcanveil:partida:')) { const e = new Error('lleno'); e.name = 'QuotaExceededError'; throw e; } return o.call(this, k, v); }; document.querySelector('#personajes-comenzar').click(); return true; })()`);
     await until('!document.getElementById("salida-modal").hidden', 10000);
-    const error = await evaluate(`({ titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()), foco: document.activeElement?.textContent?.trim(), legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)}, pantalla: document.body.dataset.activeScreen })`);
+    const error = await evaluate(`(async () => ({ titulo: document.getElementById('salida-titulo').textContent, nota: document.getElementById('salida-nota').textContent, botones: [...document.querySelectorAll('#salida-acciones button')].map((b) => b.textContent.trim()), foco: document.activeElement?.textContent?.trim(), legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)}, pantalla: document.body.dataset.activeScreen }))()`);
     if (!/No se ha podido empezar con la herencia/.test(error.titulo) || !/sigue pendiente/.test(error.nota) || !/No queda espacio/.test(error.nota) || error.legado?.estado !== 'pendiente' || error.sucesores.length || error.pantalla === 'juego') throw new Error(`fallo al guardar el sucesor: ${JSON.stringify(error)}`);
     if (!error.botones.includes('Reintentar') || error.foco !== 'Reintentar') throw new Error(`el aviso no ofrece Reintentar con el foco: ${JSON.stringify(error)}`);
     await shot(`09e-herencia-error-${viewport.label}.png`);
     // Reintentar recarga (sin el doble) y repite la MISMA creación.
     await pulsarYNavegar(`[...document.querySelectorAll('#salida-acciones button')].find((b) => b.textContent.trim() === 'Reintentar')`,
       `window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.legadoRecibido.runOrigen") === ${JSON.stringify(run)}`);
-    const bien = await evaluate(`({ xp: ARCANVEIL.ver('player.xp'), legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)} })`);
+    const bien = await evaluate(`(async () => ({ xp: ARCANVEIL.ver('player.xp'), legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)} }))()`);
     if (bien.xp !== 105 || bien.legado?.estado !== 'aplicado' || bien.sucesores.length !== 1) throw new Error(`reintentar no entregó una vez: ${JSON.stringify(bien)}`);
     await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
   }
@@ -1188,7 +1252,7 @@ try {
       const estado = (ev) => ev(`({ juego: document.body.dataset.activeScreen === 'juego' && ARCANVEIL.ver('player.legadoRecibido.runOrigen') === ${JSON.stringify(run)}, aviso: document.getElementById('salida-modal').hidden ? null : document.getElementById('salida-nota').textContent })`);
       const a = await estado(evaluate);
       const b = await estado(otra.ev);
-      const total = await evaluate(`({ legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)} })`);
+      const total = await evaluate(`(async () => ({ legado: ${legadoDe(run)}, sucesores: ${sucesoresDe(run)} }))()`);
       const ganadoras = [a, b].filter((x) => x.juego).length;
       const perdedora = [a, b].find((x) => !x.juego);
       if (ganadoras !== 1 || total.sucesores.length !== 1 || total.legado?.estado !== 'aplicado' || !/Otra pestaña|ya la recibió/.test(perdedora?.aviso ?? '')) throw new Error(`dos pestañas: ${JSON.stringify({ a, b, total })}`);
@@ -1201,6 +1265,152 @@ try {
     } finally {
       await otra.cerrar();
     }
+  }
+
+  /** Volver al menú desde donde se esté (partida: con salida segura). */
+  const alMenu = async () => {
+    if (await evaluate(`document.body.dataset.activeScreen === 'juego'`)) {
+      await pulsarYNavegar(`document.querySelector('#menu')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
+    } else {
+      await cdp('Page.reload', { ignoreCache: false });
+      await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
+    }
+  };
+  /** Hasta «Comenzar partida» con una herencia (o ninguna) y el primer personaje. */
+  const hastaConfirmarCon = (run) => `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); await new Promise((r) => setTimeout(r, 300));
+    if (document.body.dataset.activeScreen === 'herencia') { ${run ? `document.querySelector('.tarjeta-herencia[data-origen="${run}"]').click();` : `document.querySelector('#herencia-sin').click();`} await new Promise((r) => setTimeout(r, 200)); }
+    document.querySelector('.tarjeta-pj[data-personaje]').click(); await new Promise((r) => setTimeout(r, 200));
+    return Boolean(document.querySelector('#personajes-comenzar')); })()`;
+  const bytesRanuras = `Object.fromEntries(Array.from({ length: 8 }, (_, i) => [i + 1, localStorage.getItem('arcanveil:partida:' + (i + 1))]))`;
+
+  etapa('legado: dos herencias DISTINTAS en dos pestañas a la vez (ranuras distintas)');
+  {
+    const x = `run-fixture-x-${viewport.label}`;
+    const y = `run-fixture-y-${viewport.label}`;
+    await evaluate(herenciaFicticia(x, 'Uxo', 400));
+    await evaluate(herenciaFicticia(y, 'Vela', 600));
+    await alMenu();
+    const otra = await abrirPestana(URL_APP);
+    try {
+      await otra.hasta('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")');
+      const listas = [await evaluate(hastaConfirmarCon(x)), await otra.ev(hastaConfirmarCon(y))];
+      if (!listas.every(Boolean)) throw new Error(`no llegaron a confirmar: ${JSON.stringify(listas)}`);
+      await Promise.all([evaluate(`document.querySelector('#personajes-comenzar').click(); true`), otra.ev(`document.querySelector('#personajes-comenzar').click(); true`)]);
+      await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.legadoRecibido.runOrigen") === ${JSON.stringify(x)}`, 20000);
+      await otra.hasta(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.legadoRecibido.runOrigen") === ${JSON.stringify(y)}`, 20000);
+      const a = await evaluate(`({ run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), xp: ARCANVEIL.ver('player.xp') })`);
+      const b = await otra.ev(`({ run: ARCANVEIL.ver('meta.runId'), ranura: ARCANVEIL.ver('meta.ranura'), xp: ARCANVEIL.ver('player.xp') })`);
+      const disco = await evaluate(`(async () => ({ x: ${sucesoresDe(x)}, y: ${sucesoresDe(y)}, lx: ${legadoDe(x)}, ly: ${legadoDe(y)} }))()`);
+      if (a.ranura === b.ranura || a.xp !== 140 || b.xp !== 210 || disco.x.length !== 1 || disco.y.length !== 1 || disco.lx?.destinatario !== a.run || disco.ly?.destinatario !== b.run || disco.lx?.ranura !== a.ranura || disco.ly?.ranura !== b.ranura) {
+        throw new Error(`dos herencias distintas a la vez: ${JSON.stringify({ a, b, disco })}`);
+      }
+      console.log(`  dos herencias a la vez: Uxo → ranura ${a.ranura} (140 XP), Vela → ranura ${b.ranura} (210 XP); ninguna pisa a la otra`);
+    } finally {
+      await otra.cerrar();
+    }
+    // Recargar y verlas las dos en «Cargar», y abrir cada una.
+    await alMenu();
+    await evaluate(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await until('document.body.dataset.activeScreen === "cargar"', 5000);
+    const lista = await evaluate(`[...document.querySelectorAll('#cargar-lista .tarjeta-pj__abrir')].map((b) => ({ ranura: b.dataset.ranura, texto: b.textContent }))`);
+    const ambos = await evaluate(`({ x: ${sucesoresDe(x)}, y: ${sucesoresDe(y)} })`);
+    await shot(`09g-dos-herencias-cargar-${viewport.label}.png`);
+    for (const s of [...ambos.x, ...ambos.y]) {
+      const fila = lista.find((l) => l.ranura && JSON.stringify(ambos).includes(s.run));
+      if (!fila) throw new Error(`tras recargar no se ve el sucesor ${s.run}: ${JSON.stringify(lista)}`);
+    }
+    const r = await evaluate(`(() => { const out = []; for (const n of ['1','2','3','4','5','6','7','8']) { const g = JSON.parse(localStorage.getItem('arcanveil:partida:' + n) ?? 'null'); const o = g?.estado?.player?.legadoRecibido?.runOrigen; if (o === ${JSON.stringify(x)} || o === ${JSON.stringify(y)}) { const c = ARCANVEIL.sistema('saves').cargar(n); out.push({ n, ok: c.exito, xp: ARCANVEIL.ver('player.xp'), heredada: ARCANVEIL.ver('player.xpHeredada'), origen: ARCANVEIL.ver('player.legadoRecibido.runOrigen'), token: ARCANVEIL.ver('player.legadoRecibido.transaccion') }); } } return out; })()`);
+    if (r.length !== 2 || !r.every((s) => s.ok && s.xp === s.heredada && s.token)) throw new Error(`abrir los dos sucesores tras recargar: ${JSON.stringify(r)}`);
+    await cdp('Page.reload', { ignoreCache: false });
+    await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
+  }
+
+  etapa('legado: recuperación bloqueada por una ranura reservada dañada');
+  let ranuraDanada = null;
+  {
+    const z = `run-fixture-z-${viewport.label}`;
+    await evaluate(herenciaFicticia(z, 'Zoe', 1000));
+    // FIXTURE: el corte del #7 (Caso A de la revisión): reserva hacia una
+    // ranura libre que contiene JSON roto.
+    ranuraDanada = await evaluate(`(() => { const n = ['1','2','3','4','5','6','7','8'].find((k) => localStorage.getItem('arcanveil:partida:' + k) === null);
+      const l = JSON.parse(localStorage.getItem('arcanveil:legados')); l[${JSON.stringify(z)}] = { ...l[${JSON.stringify(z)}], estado: 'reservado', transaccion: 'leg-fixture-z', reserva: { runDestino: 'run-z-sucesor', ranura: n, cantidad: 350, momento: Date.now() } };
+      localStorage.setItem('arcanveil:legados', JSON.stringify(l)); localStorage.setItem('arcanveil:partida:' + n, '{"version":'); return n; })()`);
+    if (!ranuraDanada) throw new Error('no quedaba ranura libre para el fixture de recuperación');
+    await cdp('Page.reload', { ignoreCache: false });
+    await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
+    await until('/no se (puede|pueden) comprobar/.test(document.getElementById("avisos")?.textContent ?? "")', 8000);
+    await evaluate(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); true`);
+    await until('document.body.dataset.activeScreen === "herencia"', 5000);
+    const tarjeta = await evaluate(`(() => { const b = document.querySelector('.tarjeta-herencia[data-origen="${z}"]'); return b ? { activa: !b.disabled, texto: b.textContent } : null; })()`);
+    if (!tarjeta || tarjeta.activa || !/dañada/.test(tarjeta.texto) || !/No he vuelto a entregar la herencia ni he borrado ninguna partida/.test(tarjeta.texto) || !await evaluate(`Boolean(document.querySelector('#herencia-comprobar'))`)) {
+      throw new Error(`la herencia bloqueada no se enseña con su motivo y «Volver a comprobar»: ${JSON.stringify(tarjeta)}`);
+    }
+    await shot(`09h-recuperacion-bloqueada-${viewport.label}.png`);
+    await evaluate(`document.querySelector('#herencia-comprobar').click(); true`);
+    await wait(500);
+    const tras = await evaluate(`(async () => ({ estado: ${legadoDe(z)}?.estado, bytes: localStorage.getItem('arcanveil:partida:${ranuraDanada}'), activa: !document.querySelector('.tarjeta-herencia[data-origen="${z}"]')?.disabled }))()`);
+    if (tras.estado !== 'reservado' || tras.bytes !== '{"version":' || tras.activa) throw new Error(`volver a comprobar liberó o tocó algo: ${JSON.stringify(tras)}`);
+    await evaluate(`document.querySelector('#herencia-atras').click(); true`);
+  }
+
+  etapa('ranuras llenas: selector, Escape, permiso caducado y reemplazo concreto');
+  {
+    // FIXTURE: campañas de relleno (copias válidas con otro run) hasta llenar.
+    await evaluate(`(() => { const base = ['1','2','3','4','5','6','7','8'].map((n) => localStorage.getItem('arcanveil:partida:' + n)).find((t) => { try { return JSON.parse(t)?.estado?.meta?.runId; } catch { return false; } });
+      let i = 0; for (const n of ['1','2','3','4','5','6','7','8']) { if (localStorage.getItem('arcanveil:partida:' + n) !== null) continue; const g = JSON.parse(base); i += 1; g.estado.meta.runId = 'run-relleno-' + n; g.estado.meta.muerte = null; g.estado.player.nombre = 'Relleno ' + n; g.estado.player.legadoRecibido = undefined; g.estado.player.xpHeredada = 0; g.cabecera = { ...g.cabecera, nombre: 'Relleno ' + n, runId: 'run-relleno-' + n, muerto: false }; g.guardadoEn = Date.now() - i * 60000; localStorage.setItem('arcanveil:partida:' + n, JSON.stringify(g)); } return i; })()`);
+    const antes = await evaluate(bytesRanuras);
+    if (Object.values(antes).some((b) => b === null)) throw new Error('no se llenaron las ocho ranuras');
+    const listo = await evaluate(hastaConfirmarCon(null));
+    if (!listo) throw new Error('no se llegó a «Comenzar partida» para probar ranuras llenas');
+    await evaluate(`document.querySelector('#personajes-comenzar').click(); true`);
+    await until('!document.getElementById("ranuras-modal").hidden', 10000);
+    const modal = await evaluate(`({ filas: [...document.querySelectorAll('#ranuras-lista .ranura-fila')].map((f) => ({ ranura: f.dataset.ranura, texto: f.textContent, bloqueada: f.classList.contains('ranura-fila--bloqueada') })), foco: document.activeElement?.id })`);
+    if (modal.filas.length !== 8 || modal.foco !== 'ranuras-cancelar' || !modal.filas.find((f) => f.ranura === ranuraDanada)?.bloqueada) throw new Error(`selector de ranuras llenas: ${JSON.stringify(modal)}`);
+    await shot(`09i-ranuras-llenas-${viewport.label}.png`);
+    // Escape cancela: nada tocado, el borrador sigue.
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await wait(200);
+    const tras = await evaluate(`({ oculto: document.getElementById('ranuras-modal').hidden, pantalla: document.body.dataset.activeScreen, comenzar: Boolean(document.querySelector('#personajes-comenzar')), bytes: ${bytesRanuras}, jugador: ARCANVEIL.ver('player.raza') ?? null })`);
+    if (!tras.oculto || tras.pantalla !== 'personajes' || !tras.comenzar || JSON.stringify(tras.bytes) !== JSON.stringify(antes) || tras.jugador) throw new Error(`Escape en ranuras llenas: ${JSON.stringify({ ...tras, bytes: undefined })}`);
+    // Elegir una para reemplazar; la confirmación nombra la campaña y el foco va a «Volver».
+    const elegida = modal.filas.find((f) => /Relleno/.test(f.texto) && !f.bloqueada).ranura;
+    await evaluate(`document.querySelector('#personajes-comenzar').click(); true`);
+    await until('!document.getElementById("ranuras-modal").hidden', 10000);
+    await evaluate(`document.querySelector('[data-reemplazar="${elegida}"]').click(); true`);
+    const conf = await evaluate(`({ titulo: document.getElementById('ranuras-titulo').textContent, nota: document.getElementById('ranuras-nota').textContent, foco: document.activeElement?.id })`);
+    if (!new RegExp(`ranura ${elegida}`).test(conf.titulo) || !new RegExp(`Relleno ${elegida}`).test(conf.nota) || !/no se puede deshacer/.test(conf.nota) || conf.foco !== 'ranuras-volver') throw new Error(`confirmación de reemplazo: ${JSON.stringify(conf)}`);
+    await shot(`09j-ranuras-confirmar-${viewport.label}.png`);
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await wait(150);
+    if (await evaluate(`document.getElementById('ranuras-modal').dataset.etapa`) !== 'lista') throw new Error('Escape en la confirmación no vuelve a la lista');
+    // Otra pestaña cambia esa campaña DESPUÉS de elegirla: el permiso caduca.
+    await evaluate(`document.querySelector('[data-reemplazar="${elegida}"]').click(); true`);
+    await evaluate(`(() => { const k = 'arcanveil:partida:${elegida}'; const g = JSON.parse(localStorage.getItem(k)); g.guardadoEn += 1000; localStorage.setItem(k, JSON.stringify(g)); return true; })()`);
+    const cambiada = await evaluate(`localStorage.getItem('arcanveil:partida:${elegida}')`);
+    await evaluate(`document.querySelector('#ranuras-confirmar').click(); true`);
+    await until('!document.getElementById("ranuras-modal").hidden && document.getElementById("ranuras-modal").dataset.etapa === "lista"', 10000);
+    const caducado = await evaluate(`({ aviso: document.getElementById('avisos')?.textContent ?? '', bytes: localStorage.getItem('arcanveil:partida:${elegida}'), jugador: ARCANVEIL.ver('player.raza') ?? null })`);
+    if (!/ha cambiado/.test(caducado.aviso) || caducado.bytes !== cambiada || caducado.jugador) throw new Error(`permiso caducado: ${JSON.stringify({ ...caducado, bytes: caducado.bytes === cambiada })}`);
+    // Ahora sí, con permiso leído de nuevo: solo esa ranura cambia.
+    await evaluate(`document.querySelector('[data-reemplazar="${elegida}"]').click(); true`);
+    await evaluate(`document.querySelector('#ranuras-confirmar').click(); true`);
+    await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(elegida)}`, 15000);
+    await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    const despues = await evaluate(bytesRanuras);
+    const tocadas = Object.keys(antes).filter((n) => despues[n] !== antes[n]);
+    if (tocadas.length !== 1 || tocadas[0] !== String(elegida)) throw new Error(`el reemplazo tocó otras ranuras: ${tocadas}`);
+    console.log(`  ranuras llenas: Escape no toca nada; permiso caducado al cambiar la ${elegida}; reemplazo solo de la ${elegida}`);
+    await shot(`09k-reemplazo-${viewport.label}.png`);
+  }
+
+  etapa('muerte con la salida pendiente, caso A (sin protección)');
+  {
+    await evaluate(`ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'guardia_corrupto', count: 1 }] }); true`);
+    await until('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador', 10000);
+    await muerteConSalidaPendiente({ proteccion: false, etiqueta: 'caso A (sin protección)' });
+    await shot(`08b-muerte-sin-proteccion-${viewport.label}.png`);
   }
 
   // ─── Interfaz clásica: RETIRADA. La dirección vieja lleva a la vigente ──
