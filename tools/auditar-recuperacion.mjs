@@ -256,7 +256,7 @@ await caso('Entregada sigue entregada; reintentos con el mismo token', async () 
   const T = Entrega.nuevaTransaccion();
   const op = { runOrigen: A, transaccion: T, runDestino: 'run-B', ranura: '2',
     crear: ({ cantidad, legado }) => Entrega.crearEnMotor(motor.store, { borrador: BORR_B, runDestino: 'run-B', cantidad, legado }),
-    guardar: () => { const r = motor.sistema('saves').guardar('2', { silencioso: true }); return { ok: r.exito, motivo: r.motivo, texto: r.texto }; } };
+    guardar: async ({ lease, op } = {}) => { const r = await motor.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: r.exito, motivo: r.motivo, texto: r.texto }; } };
   const r1 = await Entrega.entregarLegado(op);
   comprobar(r1.ok && (await estadoDe(A)) === 'aplicado', 'entrega normal', JSON.stringify(r1));
   const r2 = await Entrega.entregarLegado({ ...op, crear: () => { throw new Error('no'); } });
@@ -292,9 +292,13 @@ await caso('Deshacer: no borra lo ajeno ni lo que cambió desde la escritura', a
   motor2.bus.emit('settings:change', { id: 'persistencia', valor: true });
   // La relectura no coincide con lo escrito (otra cosa cambió la ranura).
   LS.getItem = function (k) { const v = orig.getItem.call(this, k); if (k === 'arcanveil:partida:2' && v) { const g = JSON.parse(v); g.estado.player.xp = 9999; return JSON.stringify(g); } return v; };
+  // Desde el #8 se relee la copia autoritativa: también ahí.
+  const realCoord = Coordinacion.motorActual();
+  Coordinacion.usarCoordinacion({ ...realCoord, async leer(a, k) { const v = await realCoord.leer(a, k); if (a === Coordinacion.ALMACENES.PARTIDAS && k === '2' && v) { const g = JSON.parse(v.texto); g.estado.player.xp = 9999; return { ...v, texto: JSON.stringify(g) }; } return v; } });
   const r2 = await Entrega.entregarLegado({ runOrigen: A2, transaccion: Entrega.nuevaTransaccion(), runDestino: 'run-B', ranura: '2',
     crear: ({ cantidad, legado }) => Entrega.crearEnMotor(motor2.store, { borrador: BORR_B, runDestino: 'run-B', cantidad, legado }),
-    guardar: () => { const x = motor2.sistema('saves').guardar('2', { silencioso: true }); return { ok: x.exito, motivo: x.motivo, texto: x.texto }; } });
+    guardar: async ({ lease, op } = {}) => { const x = await motor2.sistema('saves').guardar('2', { silencioso: true, lease, op }); return { ok: x.exito, motivo: x.motivo, texto: x.texto }; } });
+  Coordinacion.usarCoordinacion(realCoord);
   restaurar();
   const quedan = crudo('arcanveil:partida:2');
   comprobar(!r2.ok && quedan !== null && (await estadoDe(A2)) === 'reservado' && !(await pendienteVisible(A2)), `relectura distinta: no se borra la ranura escrita ni se libera la herencia (dudoso → se conserva y se bloquea; queda ${(await estadoDe(A2))})`, JSON.stringify({ r2, hay: quedan !== null }));

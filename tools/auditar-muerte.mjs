@@ -110,22 +110,22 @@ await caso(async () => {
   const p = await partida();
   const saves = p.m.sistema('saves');
   const runId = p.m.ver('meta.runId');
-  saves.guardar('2', { silencioso: true }); // ranura anterior, viva, del mismo run
+  await saves.guardar('2', { silencioso: true }); // ranura anterior, viva, del mismo run
   p.m.store.dispatch('player/danar', { cantidad: 999, origen: 'combate' });
   await espera(20);
-  saves.guardar('1', { silencioso: true }); // el final
+  await saves.guardar('1', { silencioso: true }); // el final
   const lista = saves.listar();
   comprobar(lista.find((r) => r.ranura === '1')?.muerto && lista.find((r) => r.ranura === '2')?.muerto, 'la lista marca muertas las dos ranuras del run (final y anterior)');
-  let r = saves.cargar('1');
+  let r = await saves.cargar('1');
   comprobar(!r.exito && r.motivo === 'muerto', 'cargar el final: no reabre la exploración', JSON.stringify(r));
-  r = saves.cargar('2');
+  r = await saves.cargar('2');
   comprobar(!r.exito && r.motivo === 'muerto', 'cargar la ranura ANTERIOR del mismo run: no resucita', JSON.stringify(r));
 
   // Otro personaje, mismo nombre, otro run: sigue vivo y carga.
   const q = await partida(9303, 'rastreador', 'Sive');
   comprobar(q.m.ver('meta.runId') !== runId, 'otra «Sive»: otro run');
-  q.m.sistema('saves').guardar('3', { silencioso: true });
-  r = q.m.sistema('saves').cargar('3');
+  await q.m.sistema('saves').guardar('3', { silencioso: true });
+  r = await q.m.sistema('saves').cargar('3');
   comprobar(r.exito && q.m.ver('player.vida.actual') > 0, '  y su partida carga: el nombre no la mata', JSON.stringify(r));
 });
 
@@ -151,8 +151,14 @@ await caso(async () => {
   const p = await partida();
   const original = globalThis.localStorage.setItem;
   globalThis.localStorage.setItem = (k, v) => { if (String(k).startsWith('arcanveil:runs') || String(k).startsWith('arcanveil:legados')) { const e = new Error('lleno'); e.name = 'QuotaExceededError'; throw e; } return original.call(globalThis.localStorage, k, v); };
+  // Desde el #8 la marca y la foto van al registro coordinado: también lleno.
+  const Coordinacion = await import('../src/persistence/Coordinacion.js');
+  const realCoord = Coordinacion.motorActual();
+  Coordinacion.usarCoordinacion({ ...realCoord, async casVarios(claves, decidir) { if (claves.some(([a]) => a === Coordinacion.ALMACENES.MUERTOS)) { const e = new Error('lleno'); e.name = 'QuotaExceededError'; throw e; } return realCoord.casVarios(claves, decidir); } });
   p.m.store.dispatch('player/danar', { cantidad: 999, origen: 'combate' });
   await espera(20);
+  await p.m.sistema('muerte').registro;
+  Coordinacion.usarCoordinacion(realCoord);
   globalThis.localStorage.setItem = original;
   const g = p.m.ver('meta.muerte.guardado');
   comprobar(g && g.marca === false && /lleno/.test(g.error ?? ''), 'FIXTURE almacenamiento lleno: no se promete la marca (queda dicho)', JSON.stringify(g));

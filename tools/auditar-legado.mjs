@@ -145,8 +145,11 @@ async function empezar(borrador, semilla = 9303, ranura = '1') {
 async function morirCon(m, xp, ranura = m.ver('meta.ranura') ?? '1') {
   if (xp > 0) { m.store.dispatch('player/xp', { cantidad: xp, motivo: 'fixture' }); await new Promise((r) => setTimeout(r, 0)); }
   const muerte = m.sistema('muerte').morir({ origen: 'combate' });
-  m.sistema('saves').guardar(ranura, { silencioso: true });
-  return muerte;
+  // Desde el #8 la marca y la foto se registran después (asíncrono): se
+  // espera a ese registro real y al guardado del final.
+  const guardado = muerte ? await m.sistema('muerte').registro : null;
+  await m.sistema('saves').guardar(ranura, { silencioso: true });
+  return muerte ? { ...muerte, guardado } : muerte;
 }
 
 /**
@@ -162,7 +165,7 @@ async function sucesor(runOrigen, borrador, { ranura = '2', transaccion = Entreg
   const r = await Entrega.entregarLegado({
     runOrigen, transaccion, runDestino, ranura,
     crear: async ({ cantidad, legado }) => { await Entrega.crearEnMotor(m.store, { borrador, runDestino, cantidad, legado }); if (alCrear) await alCrear(); },
-    guardar: () => { const g = m.sistema('saves').guardar(ranura, { silencioso: true }); return { ok: g.exito, motivo: g.motivo }; },
+    guardar: async ({ lease, op } = {}) => { const g = await m.sistema('saves').guardar(ranura, { silencioso: true, lease, op }); return { ok: g.exito, motivo: g.motivo }; },
   });
   return { m, r, transaccion, runDestino };
 }
@@ -249,11 +252,11 @@ await caso(async () => {
   const m2 = await crearMotor({ semilla: 1 });
   m2.store.fijar('settings.persistencia', true);
   m2.bus.emit('settings:change', { id: 'persistencia', valor: true });
-  const c = m2.sistema('saves').cargar('2');
+  const c = await m2.sistema('saves').cargar('2');
   comprobar(c.exito && m2.ver('player.xp') === 36 && m2.ver('player.nivel') === pB.nivel && m2.ver('player.legadoRecibido.runOrigen') === runA, 'recargar: misma experiencia, nivel y procedencia', JSON.stringify(c));
   const texto = Ser.aTexto(m2.sistema('saves')._construir('exportada'));
-  for (let i = 0; i < 3; i++) m2.sistema('saves').importar(texto);
-  m2.sistema('saves').cargar('2');
+  for (let i = 0; i < 3; i++) await m2.sistema('saves').importar(texto);
+  await m2.sistema('saves').cargar('2');
   comprobar(m2.ver('player.xp') === 36 && m2.ver('player.xpHeredada') === 36 && m2.ver('player.puntosHabilidad') === pB.puntosHabilidad, 'exportar, importar tres veces y cargar otra vez: no se reotorga nada');
   m2.store.dispatch('player/xp', { cantidad: 36, motivo: 'legado', legado: { runOrigen: runA, transaccion: 'otra' } });
   await new Promise((rr) => setTimeout(rr, 0));
@@ -276,7 +279,7 @@ await caso(async () => {
   comprobar(rB.ok && rB.cantidad === 350, 'A (1000) → B recibe 350', JSON.stringify(rB));
   const b = await crearMotor({ semilla: 2 });
   b.store.fijar('settings.persistencia', true); b.bus.emit('settings:change', { id: 'persistencia', valor: true });
-  b.sistema('saves').cargar('2');
+  await b.sistema('saves').cargar('2');
   b.store.fijar('meta.ranura', '2');
   const mB = await morirCon(b, 650);
   const fB = (await Entrega.estadoLegado(mB.runId));
@@ -406,10 +409,15 @@ await caso(async () => {
   await limpiarTodo();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const mA = await morirCon(a, 1000);
-  // La ranura se escribe, pero lo que se relee no es lo escrito.
+  // La ranura se escribe, pero lo que se relee no es lo escrito (en el
+  // espejo local y, desde el #8, en la copia autoritativa, que es la que se
+  // relee).
   const getItem = LS.getItem;
   LS.getItem = (k) => { const v = getItem.call(LS, k); if (k === 'arcanveil:partida:2' && v) { const g = JSON.parse(v); g.estado.player.xp = 9999; return JSON.stringify(g); } return v; };
+  const realCoord = Coordinacion.motorActual();
+  Coordinacion.usarCoordinacion({ ...realCoord, async leer(a, k) { const v = await realCoord.leer(a, k); if (a === Coordinacion.ALMACENES.PARTIDAS && k === '2' && v) { const g = JSON.parse(v.texto); g.estado.player.xp = 9999; return { ...v, texto: JSON.stringify(g) }; } return v; } });
   const { r } = await sucesor(mA.runId, BORRADOR.B, { ranura: '2' });
+  Coordinacion.usarCoordinacion(realCoord);
   LS.getItem = getItem;
   // Contrato #7 (más estricto que el del #6, que retiraba la ranura y
   // devolvía la herencia): si lo releído no es lo escrito, el estado es
@@ -492,7 +500,13 @@ await caso(async () => {
   const ilegible = Registro.registroIlegible();
   const a = await empezar(BORRADOR.A, 9303, '1');
   const muerte = await morirCon(a, 100);
-  comprobar(ilegible && !muerte.guardado.legado && original.getItem(Registro.CLAVE_LEGADOS) === '{esto no es json', 'registro ilegible: no se escribe encima (se avisa al morir) y su contenido se conserva', JSON.stringify(muerte.guardado));
+  // Contrato #8: la autoridad es el registro coordinado (una clave por run):
+  // el mapa local dañado se conserva byte a byte y no se escribe encima, se
+  // avisa al morir, y la herencia NO se pierde por él (antes, #6/#7, se
+  // renunciaba a guardarla para no pisar el mapa).
+  const fotoIlegible = await Entrega.estadoLegado(muerte.runId);
+  comprobar(ilegible && muerte.guardado.marca && muerte.guardado.legado && /dañado/.test(muerte.guardado.aviso ?? '') && fotoIlegible?.cantidad === 35 && original.getItem(Registro.CLAVE_LEGADOS) === '{esto no es json',
+    'registro local ilegible: no se escribe encima y su contenido se conserva; se avisa al morir y la herencia queda en el registro coordinado', JSON.stringify({ guardado: muerte.guardado, cantidad: fotoIlegible?.cantidad ?? null }));
 });
 
 }

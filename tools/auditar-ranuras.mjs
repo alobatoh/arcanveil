@@ -94,7 +94,7 @@ function herencia(m, runOrigen, { ranura = null, reemplazo = null, pausa = null,
       m.store.fijar('meta.ranura', elegida ?? ranura);
       await Entrega.crearEnMotor(m.store, { borrador: BORR(nombre, 'glifista'), runDestino, cantidad, legado });
     },
-    guardar: ({ ranura: elegida, reemplazo: permiso } = {}) => { const g = m.sistema('saves').guardar(elegida ?? ranura, { silencioso: true, reemplazo: permiso ?? reemplazo }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; },
+    guardar: async ({ ranura: elegida, reemplazo: permiso, lease, op } = {}) => { const g = await m.sistema('saves').guardar(elegida ?? ranura, { silencioso: true, reemplazo: permiso ?? reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; },
   });
 }
 
@@ -147,7 +147,7 @@ await caso('Con y sin herencia a la vez', async () => {
   const pausa = new Promise((r) => { soltar = r; });
   const sin = Entrega.crearPartidaNueva({ runDestino: 'run-sin', ranura: null,
     crear: async ({ ranura }) => { await pausa; m.store.reiniciar?.(); m.store.fijar('settings.persistencia', true); m.store.fijar('meta.ranura', ranura); m.store.dispatch('player/crear', { borrador: BORR('Sola'), runId: 'run-sin' }); await tic(); },
-    guardar: ({ ranura, reemplazo }) => { const g = m.sistema('saves').guardar(ranura, { silencioso: true, reemplazo }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; } });
+    guardar: async ({ ranura, reemplazo, lease, op }) => { const g = await m.sistema('saves').guardar(ranura, { silencioso: true, reemplazo, lease, op }); return { ok: g.exito, motivo: g.motivo, texto: g.texto }; } });
   await tic(20);
   const con = herencia(m, A, { nombre: 'Dara' });
   await tic(20);
@@ -161,20 +161,20 @@ await caso('Pestaña vieja: guardar con una ranura que ya es de otra campaña', 
   const x = await motorNuevo(4);
   await x.empezar(BORR('Xena'));
   x.store.fijar('meta.ranura', '2');
-  x.sistema('saves').guardar('2', { silencioso: true });
+  await x.sistema('saves').guardar('2', { silencioso: true });
   const bytesX = crudo('arcanveil:partida:2');
   const runX = runDe('2');
   // Otra campaña cuyo estado aún cree que su ranura es la 2.
   const y = await motorNuevo(5);
   await y.empezar(BORR('Yago'));
   y.store.fijar('meta.ranura', '2');
-  const g = y.sistema('saves').guardar('2', { silencioso: true });
+  const g = await y.sistema('saves').guardar('2', { silencioso: true });
   comprobar(!g.exito && crudo('arcanveil:partida:2') === bytesX && runDe('2') === runX, 'no escribe encima de otra campaña: avisa y la deja intacta', JSON.stringify(g));
   comprobar(/otra partida|otra campaña|de otra/i.test(g.motivo ?? ''), 'el aviso dice que la ranura es de otra campaña', g.motivo);
   // La misma campaña sí guarda en su ranura (actualizar no se bloquea).
   y.store.fijar('meta.ranura', '3');
-  const g3a = y.sistema('saves').guardar('3', { silencioso: true });
-  const g3b = y.sistema('saves').guardar('3', { silencioso: true });
+  const g3a = await y.sistema('saves').guardar('3', { silencioso: true });
+  const g3b = await y.sistema('saves').guardar('3', { silencioso: true });
   comprobar(g3a.exito && g3b.exito, 'actualizar la MISMA campaña sigue funcionando');
 });
 
@@ -186,7 +186,7 @@ await caso('Todas llenas: ni la más antigua ni a ciegas', async () => {
   for (let i = 1; i <= 8; i++) {
     relleno.store.fijar('meta.runId', `run-lleno-${i}`);
     relleno.store.fijar('meta.ranura', String(i));
-    relleno.sistema('saves').guardar(String(i), { silencioso: true });
+    await relleno.sistema('saves').guardar(String(i), { silencioso: true });
   }
   const antes = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [i + 1, crudo(`arcanveil:partida:${i + 1}`)]));
   const m = await motorNuevo(7);
@@ -198,18 +198,23 @@ await caso('Todas llenas: ni la más antigua ni a ciegas', async () => {
   comprobar(c3?.runId === 'run-lleno-3' && Number.isFinite(c3?.guardadoEn) && 'muerto' in c3, 'cada campaña trae run, fecha y si está viva o muerta', JSON.stringify(c3));
 
   // Permiso caducado: la ranura cambia (otra pestaña guarda) tras elegirla.
-  const permiso = { ranura: '3', runId: c3.runId, guardadoEn: c3.guardadoEn };
+  // (Con la revisión que enseña el selector: desde el #8 el permiso se ata
+  // al dueño y la revisión del registro coordinado.)
+  const permiso = { ranura: '3', runId: c3.runId, guardadoEn: c3.guardadoEn, rev: c3.rev ?? null };
   // Lo que haría otra pestaña al guardar esa campaña: la misma partida, una
   // versión más nueva (un motor por proceso: se reescribe la ranura tal cual).
+  // Desde el #8 «guardar» es la escritura coordinada (sube la revisión) y
+  // su espejo local; una escritura local suelta no cambia la autoridad.
   const g3 = JSON.parse(crudo('arcanveil:partida:3'));
   g3.guardadoEn += 1000;
-  LS.setItem('arcanveil:partida:3', JSON.stringify(g3));
+  const otraPestana = await Ranuras.conCandadoGlobal((lease) => Ranuras.escribirPartida({ lease, ranura: '3', runId: 'run-lleno-3', texto: JSON.stringify(g3), guardadoEn: g3.guardadoEn }));
+  if (otraPestana.ok) LS.setItem('arcanveil:partida:3', JSON.stringify(g3));
   const cambiada = crudo('arcanveil:partida:3');
   const rc = await herencia(m, A, { nombre: 'Dara', ranura: '3', reemplazo: permiso });
   comprobar(!rc.ok && rc.codigo === 'permiso-caducado' && crudo('arcanveil:partida:3') === cambiada && (await Entrega.estadoLegado(A))?.estado === 'pendiente', 'la ranura cambió tras elegirla: el permiso caduca y no se borra nada', JSON.stringify(rc));
 
   // Permiso vigente: reemplaza SOLO esa.
-  const vigente = { ranura: '3', runId: 'run-lleno-3', guardadoEn: JSON.parse(cambiada).guardadoEn };
+  const vigente = { ranura: '3', runId: 'run-lleno-3', guardadoEn: JSON.parse(cambiada).guardadoEn, rev: (await Ranuras.duenoRanura('3'))?.rev ?? null };
   const ok = await herencia(m, A, { nombre: 'Dara', ranura: '3', reemplazo: vigente });
   comprobar(ok.ok && runDe('3') === ok.runDestino && [1, 2, 4, 5, 6, 7, 8].every((n) => crudo(`arcanveil:partida:${n}`) === antes[n]), 'con permiso concreto se reemplaza solo la 3; las otras siete intactas', JSON.stringify(ok));
   // Un número a secas no es permiso.
@@ -227,7 +232,7 @@ await caso('Cuota llena al reemplazar: lo anterior sigue', async () => {
   await relleno.empezar(BORR('Rell'));
   relleno.store.fijar('meta.runId', 'run-viejo');
   relleno.store.fijar('meta.ranura', '4');
-  relleno.sistema('saves').guardar('4', { silencioso: true });
+  await relleno.sistema('saves').guardar('4', { silencioso: true });
   const viejo = crudo('arcanveil:partida:4');
   const permiso = { ranura: '4', runId: 'run-viejo', guardadoEn: JSON.parse(viejo).guardadoEn };
   const m = await motorNuevo(9);
