@@ -434,6 +434,20 @@ await caso('17 · Borrar con un guardado en cola: el tardío no la recrea', asyn
   const bytesR = crudo('arcanveil:partida:4');
   await m.sistema('saves').borrar('3');
   comprobar(crudo('arcanveil:partida:4') === bytesR, 'borrar una ranura no toca las demás');
+
+  // «Borrar partidas y personajes» con un guardado en cola (otra pestaña
+  // retiene el candado): sea cual sea el orden, nada vuelve.
+  const soltar2 = retener(Ranuras.CANDADO_GLOBAL);
+  const enCola = guardar(m, '4');
+  await tic(10);
+  const vaciado = m.sistema('saves').borrarTodo();
+  await tic(10);
+  await soltar2();
+  const [gCola, rTodo] = await Promise.all([enCola, vaciado]);
+  const tardio2 = await guardar(m, '4');
+  const copia4 = await Coordinacion.leer(Coordinacion.ALMACENES.PARTIDAS, '4');
+  comprobar(rTodo?.borradas >= 0 && crudo('arcanveil:partida:4') === null && !copia4 && !tardio2.exito,
+    `«Borrar todo» con un guardado en cola: ni el de la cola ni uno tardío la recrean (${gCola.exito ? 'la cola guardó antes del vaciado' : 'la cola se rechazó'}; tardío: ${tardio2.motivo})`, JSON.stringify({ gCola: gCola.motivo, rTodo, copia4: Boolean(copia4) }));
 });
 
 restaurarLS();

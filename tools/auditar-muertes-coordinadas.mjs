@@ -175,6 +175,27 @@ await caso('10 · Corte o cuota en cada escritura de la muerte', async () => {
     }
   }
   Coordinacion.usarCoordinacion(Coordinacion.crearEnMemoria());
+
+  // El registro falló (cuota): «Reintentar» registra la MISMA muerte, con la
+  // foto congelada al morir (no un cadáver nuevo ni la XP de después).
+  await limpiar();
+  const mr = await crearMotor({ semilla: 9303 });
+  await mr.empezar(BORR('Ana'));
+  mr.store.dispatch('player/xp', { cantidad: 1000, motivo: 'fixture' }); await tic();
+  const runR = mr.ver('meta.runId');
+  const realR = Coordinacion.motorActual();
+  let llena = true;
+  Coordinacion.usarCoordinacion({ ...realR, async casVarios(claves, decidir) { if (llena) throw Object.assign(new Error('lleno'), { name: 'QuotaExceededError' }); return realR.casVarios(claves, decidir); } });
+  const muerteR = mr.sistema('muerte').morir({ origen: 'combate' });
+  const g1 = await registrada(mr);
+  llena = false;
+  const sinNada = !(await muerto(runR)) && !(await Entrega.estadoLegado(runR));
+  mr.store.dispatch('player/xp', { cantidad: 500, motivo: 'tardía' }); await tic();
+  const g2 = await mr.sistema('muerte').reintentarRegistro();
+  const fotoR = await Entrega.estadoLegado(runR);
+  Coordinacion.usarCoordinacion(realR);
+  comprobar(g1?.estado === 'error' && sinNada && g2?.estado === 'registrada' && await muerto(runR) && fotoR?.cantidad === 350 && fotoR?.creado === muerteR.legado.creado && mr.ver('meta.muerte.guardado.estado') === 'registrada',
+    'registro fallido: nada apuntado y se dice; «Reintentar» apunta la misma muerte con la foto de entonces (350, no la XP tardía)', JSON.stringify({ g1, g2, cantidad: fotoR?.cantidad }));
 });
 
 await caso('11 · Una pestaña vieja intenta cargar a un muerto', async () => {
