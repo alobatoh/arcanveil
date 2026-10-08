@@ -66,6 +66,7 @@ import {
   listarPersonajes, obtenerPersonaje, guardarPersonaje,
 } from '../src/persistence/CharacterRoster.js';
 import * as Entrega from '../src/persistence/EntregaLegado.js';
+import * as Ranuras from '../src/persistence/Ranuras.js';
 import { explicarLegado, procedenciaXP } from '../src/player/Legado.js';
 import { nuevoRunId } from '../src/player/Muerte.js';
 import { nivelParaXP } from '../src/player/Progression.js';
@@ -344,20 +345,27 @@ function partidaMasReciente() {
   return partidasGuardadas()[0] ?? null;
 }
 
-/** Primera ranura libre; si no queda ninguna, la más antigua. */
-function ranuraParaPartidaNueva() {
-  const todas = (sistema('saves')?.listar?.() ?? []).filter((r) => !r.automatica);
-  const libre = todas.find((r) => r.vacia);
-  if (libre) return libre.ranura;
-  return [...todas].sort((a, b) => (a.guardadoEn ?? 0) - (b.guardadoEn ?? 0))[0]?.ranura ?? '1';
-}
-
-/** Guarda la partida en curso en su ranura, sin avisos. */
-function guardarPartidaActual({ silencioso = true } = {}) {
+/**
+ * Guarda la partida en curso en SU ranura, sin avisos.
+ *
+ * Una partida sin ranura asignada (importada, por ejemplo) toma una LIBRE;
+ * si no hay ninguna, no guarda y lo dice. Antes se quedaba con la más
+ * antigua y borraba otra campaña sin preguntar. Escribir encima de otra
+ * campaña también se niega (`SaveManager.guardar` comprueba el dueño).
+ */
+function guardarPartidaActual({ silencioso = true, reemplazo = null } = {}) {
   if (!ver('player.raza')) return null;
-  const ranura = ver('meta.ranura') ?? ranuraParaPartidaNueva();
-  store.fijar('meta.ranura', ranura);
-  return sistema('saves')?.guardar(ranura, { silencioso, nota: 'crónica' }) ?? null;
+  let ranura = ver('meta.ranura');
+  if (!ranura) {
+    ranura = Ranuras.ranuraLibreLocal();
+    if (!ranura) {
+      const motivo = 'No queda ninguna ranura libre para esta partida. Exporta o borra alguna desde «Cargar»; no se escribe encima de otra.';
+      if (!silencioso) avisar(motivo, 'aviso');
+      return { exito: false, motivo };
+    }
+    store.fijar('meta.ranura', ranura);
+  }
+  return sistema('saves')?.guardar(ranura, { silencioso, nota: 'crónica', reemplazo }) ?? null;
 }
 
 /**
@@ -546,7 +554,7 @@ function pintarCargar() {
  * nada: se entrega al confirmar la creación (`comenzarPartida`), con una
  * transacción que se conserva en cada reintento de ESTA creación.
  */
-const herencia = { elegida: null, transaccion: null };
+const herencia = { elegida: null, transaccion: null, runDestino: null };
 
 /**
  * «Nueva partida». Si hay herencias pendientes (o se viene de una muerte),
@@ -555,11 +563,16 @@ const herencia = { elegida: null, transaccion: null };
  *
  * @param {{origen?: string|null}} [opciones] El run que acaba de morir.
  */
-function abrirNuevaPartida({ origen = null } = {}) {
+async function abrirNuevaPartida({ origen = null } = {}) {
   herencia.elegida = null;
   herencia.transaccion = null;
-  const todas = Entrega.listarLegados();
-  const hay = todas.some((v) => v.estado === 'pendiente' && v.muerto && v.cantidad !== null) || todas.some((v) => v.runOrigen === origen);
+  herencia.runDestino = null;
+  const todas = await Entrega.listarLegados();
+  // También se enseña la pantalla si hay una entrega bloqueada: el jugador
+  // tiene que saber por qué esa herencia no está disponible.
+  const hay = todas.some((v) => v.estado === 'pendiente' && v.muerto && v.cantidad !== null)
+    || todas.some((v) => v.runOrigen === origen)
+    || todas.some((v) => v.estado === 'reservado' && v.bloqueo);
   if (hay) {
     mostrar('herencia');
     pintarHerencia(todas, origen);
@@ -583,7 +596,10 @@ function seguirNuevaPartida() {
 
 function elegirHerencia(v) {
   herencia.elegida = v;
+  // La operación (token) y su destino se fijan aquí y se conservan en cada
+  // reintento: el mismo token nunca va a otro personaje.
   herencia.transaccion = v ? Entrega.nuevaTransaccion() : null;
+  herencia.runDestino = v ? nuevoRunId() : null;
   seguirNuevaPartida();
 }
 
@@ -593,6 +609,7 @@ function detalleHerencia(v) {
     return `Hereda ${explicarLegado(v)}. Estimación: empezaría en el nivel ${nivelParaXP(v.cantidad)} (vida, maná y puntos, según su clase).`;
   }
   if (v.estado === 'aplicado') return 'Esta herencia ya la recibió otro personaje.';
+  if (v.estado === 'reservado' && v.bloqueo) return `${v.bloqueo.motivo} No he vuelto a entregar la herencia ni he borrado ninguna partida.`;
   if (v.estado === 'reservado') return 'Se está creando un sucesor con esta herencia (en otra pestaña).';
   if (!v.muerto) return 'No consta su muerte en este navegador: no se puede heredar.';
   return v.motivo ?? 'No se puede heredar.';
@@ -624,6 +641,16 @@ function pintarHerencia(todas, origen) {
   }
   pie.append(
     el('button', { class: 'btn btn--fantasma', id: 'herencia-atras', onClick: () => mostrar('inicio') }, 'Atrás'),
+    // Una entrega que no se pudo comprobar se puede volver a comprobar (no
+    // se libera a ciegas ni se borra nada).
+    lista.some((v) => v.estado === 'reservado' && v.bloqueo)
+      ? el('button', { class: 'btn btn--fantasma', id: 'herencia-comprobar', onClick: protegido('volver a comprobar', async () => {
+        const r = await Entrega.recuperarLegados();
+        const siguen = r.filter((x) => x.bloqueado).length;
+        avisar(siguen ? `Sigue sin poder comprobarse (${siguen}). No se ha tocado nada.` : 'Comprobado.', siguen ? 'aviso' : 'exito');
+        pintarHerencia(await Entrega.listarLegados(), origen);
+      }) }, 'Volver a comprobar')
+      : null,
     el('button', { class: 'btn', id: 'herencia-sin', onClick: protegido('sin herencia', () => elegirHerencia(null)) }, 'Empezar sin herencia'),
   );
   (caja.querySelector('button:not([disabled])') ?? $('#herencia-sin'))?.focus();
@@ -1073,22 +1100,37 @@ function corregirPersonaje(p, texto) {
 
 /**
  * Una creación a la vez en esta pestaña: el doble clic o un Enter repetido
- * no crean dos personajes. (Entre pestañas manda el candado de la entrega.)
- * Si una entrega con herencia falla después de crear en memoria, se queda
- * puesto: ese personaje no se puede jugar ni guardar, solo recargar.
+ * no crean dos personajes. Entre pestañas mandan los candados (el de la
+ * herencia y el GLOBAL de ranuras, en `persistence/Ranuras.js`). Si algo
+ * falla después de crear en memoria, se queda puesto: ese personaje no se
+ * puede jugar ni guardar, solo recargar.
  */
 let creandoPartida = false;
+
+/** El run de una partida SIN herencia mientras se elige ranura (sin recargar). */
+let runSinHerencia = null;
 
 /** Lo que hay que recordar para reintentar ESTA creación tras recargar. */
 function recordarCreacion(p) {
   try {
     sessionStorage.setItem('arcanveil:comenzar', p.id);
-    if (herencia.elegida) sessionStorage.setItem('arcanveil:comenzar-legado', JSON.stringify({ runOrigen: herencia.elegida.runOrigen, transaccion: herencia.transaccion }));
-    else sessionStorage.removeItem('arcanveil:comenzar-legado');
+    if (herencia.elegida) {
+      sessionStorage.setItem('arcanveil:comenzar-legado', JSON.stringify({ runOrigen: herencia.elegida.runOrigen, transaccion: herencia.transaccion, runDestino: herencia.runDestino }));
+    } else sessionStorage.removeItem('arcanveil:comenzar-legado');
   } catch { /* sin sesión: se vuelve al menú */ }
 }
 
-async function comenzarPartida(p) {
+/**
+ * Empieza una crónica nueva con un personaje del plantel, con o sin herencia.
+ *
+ * La ranura NO se elige aquí: la elige el protocolo bajo el candado global
+ * (la primera libre, releída en ese momento). Si no queda ninguna, se abre
+ * el selector de ranuras llenas y se vuelve aquí con un permiso concreto.
+ *
+ * @param {Object} p
+ * @param {{ranura?: string|null, reemplazo?: Object|null}} [destino]
+ */
+async function comenzarPartida(p, { ranura = null, reemplazo = null } = {}) {
   if (creandoPartida) return;
   if (ver('player.raza')) {
     // Con otra partida cargada: se guarda (comprobado) antes de recargar.
@@ -1101,8 +1143,6 @@ async function comenzarPartida(p) {
   creandoPartida = true;
 
   activarPersistencia();
-  const ranura = ranuraParaPartidaNueva();
-  store.fijar('meta.ranura', ranura);
   store.fijar('meta.personajeId', p.id);
   // La intensidad elegida al crear es de esta partida: la leen los encuentros,
   // el tamaño de los grupos, la caída y el tono del narrador.
@@ -1113,14 +1153,55 @@ async function comenzarPartida(p) {
     retrato: p.retrato ?? '', lore: p.lore ?? '',
     genero: p.genero, semillaRetrato: p.semillaRetrato,
   };
+  const guardar = ({ ranura: slot, reemplazo: permiso }) => {
+    const g = sistema('saves')?.guardar(slot, { silencioso: true, nota: 'crónica', reemplazo: permiso });
+    return { ok: Boolean(g?.exito), motivo: g?.motivo ?? 'no hay partida que guardar', texto: g?.texto };
+  };
 
-  let entregada = null;
+  let r;
   if (herencia.elegida) {
-    entregada = await comenzarConHerencia(p, borrador, ranura);
-    if (!entregada) return;  // el aviso ya está en pantalla; `creandoPartida` sigue puesto
+    herencia.runDestino ??= nuevoRunId();
+    const runDestino = herencia.runDestino;
+    r = await Entrega.entregarLegado({
+      runOrigen: herencia.elegida.runOrigen, transaccion: herencia.transaccion, runDestino, ranura, reemplazo,
+      crear: async ({ cantidad, legado, ranura: slot }) => {
+        store.fijar('meta.ranura', slot);
+        await Entrega.crearEnMotor(store, { borrador, runDestino, cantidad, legado });
+      },
+      guardar,
+    });
   } else {
-    store.dispatch('player/crear', { borrador });
-    await new Promise((r) => setTimeout(r, 0));
+    runSinHerencia ??= nuevoRunId();
+    const runDestino = runSinHerencia;
+    r = await Entrega.crearPartidaNueva({
+      runDestino, ranura, reemplazo,
+      crear: async ({ ranura: slot }) => {
+        store.fijar('meta.ranura', slot);
+        store.dispatch('player/crear', { borrador, runId: runDestino });
+        await new Promise((ok) => setTimeout(ok, 0));
+      },
+      guardar,
+    });
+  }
+
+  if (r.ok && r.yaHecho) {
+    // Esta misma creación ya se entregó antes (recarga tras guardarse): se
+    // abre ese personaje, no se crea otro.
+    creandoPartida = false;
+    Object.assign(herencia, { elegida: null, transaccion: null, runDestino: null });
+    cargarRanura(r.ranura);
+    return;
+  }
+  if (!r.ok) {
+    // Sin sitio (o el elegido cambió): nada se ha creado todavía, se elige.
+    if (['sin-ranura', 'ranura-ocupada', 'permiso-caducado'].includes(r.codigo)) {
+      creandoPartida = false;
+      if (r.codigo !== 'sin-ranura') avisar(r.motivo, 'aviso');
+      abrirRanurasLlenas(p, r.codigo === 'sin-ranura' ? r.campanas : await Ranuras.ocupacion());
+      return;
+    }
+    mostrarFalloCreacion(p, r);
+    return;
   }
 
   mostrar('juego');
@@ -1132,72 +1213,134 @@ async function comenzarPartida(p) {
   refrescarTodo();
   guardarPartidaActual();
   programarSugerencias();
-  if (entregada) {
-    avisar(`Has heredado ${entregada.cantidad} XP de ${herencia.elegida.origen.nombre ?? 'tu personaje anterior'}: empiezas en el nivel ${ver('player.nivel') ?? 1}.`, 'exito');
+  if (herencia.elegida) {
+    avisar(`Has heredado ${r.cantidad} XP de ${herencia.elegida.origen.nombre ?? 'tu personaje anterior'}: empiezas en el nivel ${ver('player.nivel') ?? 1}.`, 'exito');
   }
-  herencia.elegida = null;
-  herencia.transaccion = null;
+  Object.assign(herencia, { elegida: null, transaccion: null, runDestino: null });
+  runSinHerencia = null;
   creandoPartida = false;
 }
 
 /**
- * Crea el sucesor con la herencia elegida, con el protocolo de entrega
- * (`persistence/EntregaLegado.js`): reserva, creación por el flujo normal,
- * guardado RELEÍDO y confirmación. Si algo falla, el personaje en memoria no
- * se da por bueno: se explica y se ofrece reintentar (misma transacción) o
- * volver al menú, recargando en ambos casos.
- *
- * @returns {Promise<Object|null>} El resultado, o null si no se ha entregado.
+ * Lo que se dice cuando la creación falla. El texto sale del estado
+ * VERIFICADO: si la herencia volvió a pendiente, se dice; si no se puede
+ * comprobar, se dice eso y nada más (sin prometer «no has perdido nada»).
  */
-async function comenzarConHerencia(p, borrador, ranura) {
+function mostrarFalloCreacion(p, r) {
   const v = herencia.elegida;
-  const runDestino = nuevoRunId();
-  const r = await Entrega.entregarLegado({
-    runOrigen: v.runOrigen,
-    transaccion: herencia.transaccion,
-    runDestino,
-    ranura,
-    crear: ({ cantidad, legado }) => Entrega.crearEnMotor(store, { borrador, runDestino, cantidad, legado }),
-    guardar: () => {
-      const g = guardarPartidaActual({ silencioso: true });
-      return { ok: Boolean(g?.exito), motivo: g?.motivo ?? 'no hay partida que guardar' };
-    },
-  });
-  if (r.ok && r.yaHecho) {
-    // Esta misma creación ya se entregó antes (recarga tras guardarse): se
-    // abre ese personaje, no se crea otro.
-    creandoPartida = false;
-    herencia.elegida = null;
-    herencia.transaccion = null;
-    cargarRanura(r.ranura);
-    return null;
-  }
-  if (r.ok) return r;
-
-  const nombre = v.origen.nombre ?? 'tu personaje anterior';
+  const nombre = v?.origen?.nombre ?? 'tu personaje anterior';
   const recargar = (conCreacion) => {
     if (conCreacion) recordarCreacion(p);
     else { try { sessionStorage.setItem('arcanveil:abrir-menu', '1'); } catch { /* portada */ } }
     location.reload();
   };
   const botones = [];
-  if (r.codigo === 'entregado' && r.ranura) {
+  let titulo = v ? 'No se ha podido empezar con la herencia' : 'No se ha podido empezar la partida';
+  let nota = `${r.motivo ?? ''} ${r.nota ?? ''}`.trim();
+  if (r.bloqueado || r.codigo === 'verificacion' || r.codigo === 'bloqueado-verificacion') {
+    titulo = 'No puedo comprobar la entrega';
+    nota = `${r.nota ?? r.motivo} La herencia de ${nombre} queda apartada hasta poder comprobarla.`;
+    botones.push(['Volver a comprobar', async () => {
+      const res = await Entrega.recuperarLegados();
+      const sigue = res.some((x) => x.bloqueado);
+      avisar(sigue ? 'Sigue sin poder comprobarse. No se ha tocado nada.' : 'Comprobado: ya se puede seguir desde el menú.', sigue ? 'aviso' : 'exito');
+      if (!sigue) recargar(false);
+    }, 'btn btn--grande']);
+  } else if (r.codigo === 'entregado' && r.ranura) {
     botones.push(['Continuar con ese personaje', () => { try { sessionStorage.setItem('arcanveil:cargar', r.ranura); } catch { /* menú */ } location.reload(); }, 'btn btn--grande']);
+  } else if (['ocupado', 'ocupado-global', 'guardado', 'almacenamiento', 'conflicto', 'crear'].includes(r.codigo)) {
+    botones.push(['Reintentar', () => recargar(true), 'btn btn--grande']);
   }
-  if (['ocupado', 'guardado', 'almacenamiento', 'conflicto'].includes(r.codigo)) botones.push(['Reintentar', () => recargar(true), 'btn btn--grande']);
-  if (['sin-exclusion', 'bloqueado', 'no-muerto', 'sin-legado', 'entregado'].includes(r.codigo)) {
-    botones.push(['Empezar sin herencia', () => { herencia.elegida = null; herencia.transaccion = null; recargar(true); }, 'btn']);
+  if (v && ['sin-exclusion', 'bloqueado', 'no-muerto', 'sin-legado', 'entregado', 'token-destino'].includes(r.codigo)) {
+    botones.push(['Empezar sin herencia', () => { Object.assign(herencia, { elegida: null, transaccion: null, runDestino: null }); recargar(true); }, 'btn']);
   }
   botones.push(['Volver al menú', () => recargar(false), 'btn btn--fantasma']);
-  const estado = r.codigo === 'guardado'
-    ? ` ${r.nota ?? ''} ${nombre} no ha perdido nada: el personaje nuevo no se ha creado.`
-    : '';
-  mostrarSalida('No se ha podido empezar con la herencia', `${r.motivo}${estado}`.trim(), botones);
-  return null;
+  mostrarSalida(titulo, nota, botones);
+}
+
+/* ── ranuras llenas: elegir cuál reemplazar, con permiso concreto ─────── */
+
+/** Fecha corta de una campaña. */
+const fechaCampana = (t) => (Number.isFinite(t) ? new Date(t).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' }) : 'sin fecha');
+
+/** Descarga una copia LOCAL de los bytes de una ranura (nada sale del equipo). */
+function descargarCopiaRanura(ranura, nombre = 'partida') {
+  let texto = null;
+  try { texto = localStorage.getItem(`${Ranuras.PREFIJO}${ranura}`); } catch { /* abajo */ }
+  if (texto === null) { avisar('No se ha podido leer esa ranura.', 'aviso'); return; }
+  const url = URL.createObjectURL(new Blob([texto], { type: 'application/json' }));
+  const a = el('a', { href: url, download: `arcanveil-ranura-${ranura}-${String(nombre).replace(/[^\p{L}\p{N}_-]+/gu, '_')}.json` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * No queda ranura libre: se enseñan las campañas y se elige una para
+ * reemplazar, o se cancela. Abrir esto no gasta nada ni toca ninguna ranura.
+ * El permiso queda atado a la ranura, el run, la fecha y la huella de lo que
+ * se leyó: si otra pestaña la cambia antes de confirmar, caduca.
+ */
+function abrirRanurasLlenas(p, campanas) {
+  const modal = $('#ranuras-modal');
+  const lista = $('#ranuras-lista');
+  const acciones = $('#ranuras-acciones');
+  const nota = $('#ranuras-nota');
+  const cerrar = () => { modal.hidden = true; modal.dataset.etapa = ''; };
+  const pintarLista = () => {
+    modal.dataset.etapa = 'lista';
+    $('#ranuras-titulo').textContent = 'No queda ninguna ranura libre';
+    nota.textContent = 'Para empezar esta partida hay que reemplazar una campaña guardada. Elige cuál, descarga antes una copia si la quieres conservar, o cancela: no se ha tocado nada.';
+    vaciar(lista);
+    vaciar(acciones);
+    for (const c of campanas) {
+      const elegible = c.estado === 'ocupada' || c.estado === 'ilegible';
+      const texto = c.estado === 'ocupada'
+        ? `${c.nombre} · nivel ${c.nivel ?? '?'} · ${c.muerto ? 'muerto' : 'vivo'} · ${fechaCampana(c.guardadoEn)}${c.vinculo ? ` · ${c.vinculo}` : ''}`
+        : c.estado === 'ilegible' ? `Datos dañados (${c.motivo ?? 'no se pueden leer'})`
+          : c.estado === 'reservada' ? 'Apartada por una entrega de herencia sin cerrar' : (c.motivo ?? c.estado);
+      lista.append(el('div', { class: `ranura-fila${elegible ? '' : ' ranura-fila--bloqueada'}`, dataset: { ranura: c.ranura } },
+        el('span', { class: 'ranura-fila__texto' },
+          el('strong', { text: `Ranura ${c.ranura}` }),
+          el('span', { text: texto }),
+          c.runId ? el('span', { class: 'ranura-fila__run', text: c.runId }) : null,
+        ),
+        el('span', { class: 'ranura-fila__botones' },
+          elegible ? el('button', { class: 'btn btn--pequeno btn--fantasma', type: 'button', onClick: protegido('descargar copia', () => descargarCopiaRanura(c.ranura, c.nombre)) }, 'Descargar copia') : null,
+          elegible ? el('button', { class: 'btn btn--pequeno', type: 'button', dataset: { reemplazar: c.ranura }, onClick: protegido('elegir ranura', () => pintarConfirmar(c)) }, 'Reemplazar…') : null,
+        ),
+      ));
+    }
+    acciones.append(el('button', { class: 'btn', id: 'ranuras-cancelar', type: 'button', onClick: () => { cerrar(); $('#personajes-comenzar, #creacion-empezar')?.focus(); } }, 'Cancelar'));
+    // El foco, en lo que no toca nada. Después del gestor genérico de
+    // modales (que al abrir enfoca el primer botón, aquí «Descargar copia»).
+    $('#ranuras-cancelar').focus();
+    setTimeout(() => $('#ranuras-cancelar')?.focus(), 0);
+  };
+  const pintarConfirmar = (c) => {
+    modal.dataset.etapa = 'confirmar';
+    $('#ranuras-titulo').textContent = `Reemplazar la ranura ${c.ranura}`;
+    nota.textContent = c.estado === 'ocupada'
+      ? `Se borrará para siempre la campaña de ${c.nombre} (nivel ${c.nivel ?? '?'}, ${c.muerto ? 'muerto' : 'vivo'}, guardada ${fechaCampana(c.guardadoEn)}) y en su lugar empezará la de ${p.nombre}. Esto no se puede deshacer.`
+      : `Se borrarán para siempre los datos dañados de la ranura ${c.ranura} y en su lugar empezará la de ${p.nombre}. Esto no se puede deshacer.`;
+    vaciar(lista);
+    vaciar(acciones);
+    acciones.append(
+      el('button', { class: 'btn', id: 'ranuras-volver', type: 'button', onClick: () => pintarLista() }, 'Volver'),
+      el('button', { class: 'btn btn--peligro', id: 'ranuras-confirmar', type: 'button', onClick: protegido('reemplazar ranura', () => {
+        cerrar();
+        comenzarPartida(p, { ranura: c.ranura, reemplazo: { ranura: c.ranura, runId: c.runId ?? null, guardadoEn: c.guardadoEn ?? null, huella: c.huella ?? null } });
+      }) }, 'Reemplazar y empezar'),
+    );
+    $('#ranuras-volver').focus();
+  };
+  modal.hidden = false;
+  pintarLista();
 }
 
 /** Tras la recarga de `comenzarPartida`, arranca directamente la crónica. */
-function comenzarPendiente() {
+async function comenzarPendiente() {
   let id = null;
   let legado = null;
   try {
@@ -1207,10 +1350,10 @@ function comenzarPendiente() {
   const p = id ? obtenerPersonaje(id) : null;
   if (!p) return false;
   if (legado?.runOrigen && legado.transaccion) {
-    const v = Entrega.listarLegados().find((x) => x.runOrigen === legado.runOrigen);
-    // La misma transacción: si la entrega anterior llegó a guardarse, se
-    // reconoce como hecha; si no, se intenta de nuevo, una vez.
-    if (v) { herencia.elegida = v; herencia.transaccion = legado.transaccion; }
+    const v = (await Entrega.listarLegados()).find((x) => x.runOrigen === legado.runOrigen);
+    // La misma operación (token y destino): si la entrega anterior llegó a
+    // guardarse, se reconoce como hecha; si no, se intenta de nuevo, una vez.
+    if (v) Object.assign(herencia, { elegida: v, transaccion: legado.transaccion, runDestino: legado.runDestino ?? null });
   }
   comenzarPartida(p);
   return true;
@@ -1864,11 +2007,15 @@ function abrirMuerte(muerte) {
   nota.append(
     el('p', { text: `${muerte.causa ?? ''} ${cuando}`.trim() }),
     el('p', { class: 'caida__resumen', text: `Nivel ${muerte.nivel ?? 1} · ${muerte.resumen?.turnos ?? muerte.turno ?? 0} turnos. La crónica termina aquí.` }),
-    el('p', { class: 'caida__legado', id: 'caida-legado', text: textoLegadoMuerte(muerte) }),
+    el('p', { class: 'caida__legado', id: 'caida-legado', text: 'Comprobando su herencia…' }),
   );
   if (muerte.guardado && !muerte.guardado.marca) {
     nota.append(el('p', { class: 'caida__aviso', text: `No se ha podido guardar la marca de esta muerte en el navegador (${muerte.guardado.error ?? 'error'}).` }));
   }
+  // La cifra sale del estado compartido (asíncrono): se escribe al llegar.
+  textoLegadoMuerte(muerte)
+    .then((t) => { const p = $('#caida-legado'); if (p) p.textContent = t; })
+    .catch(() => { const p = $('#caida-legado'); if (p) p.textContent = 'No se ha podido comprobar su herencia ahora; se verá en «Nueva partida».'; });
 
   const acciones = $('#caida-acciones');
   vaciar(acciones);
@@ -1888,11 +2035,11 @@ function abrirMuerte(muerte) {
  * Lo que deja el caído, dicho con la cifra real. Solo se promete si la
  * herencia quedó escrita; si no, se dice que no.
  */
-function textoLegadoMuerte(muerte) {
+async function textoLegadoMuerte(muerte) {
   if (muerte.guardado && !muerte.guardado.legado) {
     return `No se ha podido guardar su herencia en este navegador (${muerte.guardado.error ?? 'error'}): tu próximo personaje no heredará su experiencia.`;
   }
-  const v = Entrega.listarLegados().find((x) => x.runOrigen === muerte.runId);
+  const v = (await Entrega.listarLegados()).find((x) => x.runOrigen === muerte.runId);
   if (!v) return 'No ha quedado herencia guardada de este personaje.';
   if (v.estado === 'aplicado') return 'Su herencia ya la recibió otro personaje.';
   if (v.cantidad === null) return `Su herencia no se puede calcular: ${v.motivo ?? 'la experiencia guardada no es válida'}.`;
@@ -3356,6 +3503,12 @@ function conectarEventos() {
     // Volver al título recargando deja el motor limpio para la próxima partida.
     location.reload();
   })));
+  // Escape en el selector de ranuras llenas: de la confirmación vuelve a la
+  // lista; de la lista, cancela. Nunca reemplaza nada.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || $('#ranuras-modal')?.hidden !== false) return;
+    ($('#ranuras-volver') ?? $('#ranuras-cancelar'))?.click();
+  });
   // Escape en el aviso de salida: quedarse (nunca salir sin guardar).
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || $('#salida-modal')?.hidden !== false) return;
@@ -3544,7 +3697,11 @@ async function arrancar() {
     recuperarPersistencia();
     // Una entrega de herencia que se cortó a medias (pestaña cerrada,
     // corte de luz) se termina o se devuelve ANTES de enseñar nada.
-    try { await Entrega.recuperarLegados(); } catch (e) { console.warn('[arcanveil] no se ha podido revisar las herencias', e); }
+    // Las que no se pueden comprobar quedan apartadas (sin liberar ni borrar
+    // nada) y se dice: el jugador las ve en «Nueva partida».
+    let bloqueadas = 0;
+    try { bloqueadas = (await Entrega.recuperarLegados()).filter((x) => x.bloqueado).length; } catch (e) { console.warn('[arcanveil] no se ha podido revisar las herencias', e); }
+    if (bloqueadas) setTimeout(() => avisar(`Hay ${bloqueadas === 1 ? 'una herencia' : `${bloqueadas} herencias`} que no se ${bloqueadas === 1 ? 'puede' : 'pueden'} comprobar. No he vuelto a entregarla ni he borrado ninguna partida: está en «Nueva partida».`, 'aviso'), 600);
     conectarEventos();
     pintarInicio();
     mostrar('inicio');
@@ -3555,7 +3712,7 @@ async function arrancar() {
     try { nueva = sessionStorage.getItem('arcanveil:nueva-partida') === '1'; sessionStorage.removeItem('arcanveil:nueva-partida'); } catch { /* sin sesión */ }
     let origen = null;
     try { origen = sessionStorage.getItem('arcanveil:legado-origen'); sessionStorage.removeItem('arcanveil:legado-origen'); } catch { /* sin sesión */ }
-    if (nueva) abrirNuevaPartida({ origen });
+    if (nueva) await abrirNuevaPartida({ origen });
     let cargarTras = null;
     try { cargarTras = sessionStorage.getItem('arcanveil:cargar'); sessionStorage.removeItem('arcanveil:cargar'); } catch { /* sin sesión */ }
     if (cargarTras) cargarRanura(cargarTras);

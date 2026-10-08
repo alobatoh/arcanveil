@@ -805,6 +805,15 @@ body::before{content:'';position:fixed;inset:-12%;z-index:-1;pointer-events:none
 .aviso-herencia p{margin:0 0 .4rem}
 .aviso-herencia__estimacion{color:var(--texto-2);font-size:.8rem}
 .revelacion .aviso-herencia,#creacion-cuerpo>.aviso-herencia{margin:1rem auto}
+/* ── ranuras llenas ─────────────────────────────────────────────────── */
+.modal__panel--ancho{max-width:min(42rem,calc(100vw - 2rem))}
+.ranuras-lista{display:flex;flex-direction:column;gap:.5rem;max-height:min(55vh,28rem);overflow:auto;margin:.2rem 0 .8rem}
+.ranura-fila{display:flex;gap:.6rem;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:.55rem .7rem;background:#1b140e;border:1px solid #73552B;border-radius:3px 10px 3px 10px}
+.ranura-fila--bloqueada{opacity:.6}
+.ranura-fila__texto{display:flex;flex-direction:column;gap:.15rem;min-width:0;color:#E8D9B5;font-size:.86rem;line-height:1.4}
+.ranura-fila__texto strong{font-family:var(--display);color:#F0D995}
+.ranura-fila__run{font:.62rem/1.3 var(--mono);color:var(--texto-2);word-break:break-all}
+.ranura-fila__botones{display:flex;gap:.4rem;flex-wrap:wrap}
 .xp-pj{margin-top:.35rem}
 .xp-pj__procedencia{margin:.25rem 0 0;font:.66rem/1.35 var(--mono);color:var(--texto-2)}
 /* ── ficha aleatoria ────────────────────────────────────────────────── */
@@ -1292,6 +1301,17 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 <!-- ═══ has caído ═════════════════════════════════════════════════════
      Sin botón de cerrar a propósito: caer no es un aviso que se descarta,
      es una bifurcación. Se sale por una de las tres salidas. -->
+<!-- Ranuras llenas: elegir qué campaña reemplazar (o cancelar). Fijo: Escape
+     lo gestiona app.js (vuelve atrás o cancela, nunca reemplaza). -->
+<div class="modal" id="ranuras-modal" data-fijo hidden>
+  <section class="modal__panel modal__panel--ancho" role="dialog" aria-modal="true" aria-labelledby="ranuras-titulo" aria-describedby="ranuras-nota">
+    <header class="modal__cab"><h2 id="ranuras-titulo">Ranuras</h2></header>
+    <p class="modal__nota" id="ranuras-nota"></p>
+    <div class="ranuras-lista" id="ranuras-lista"></div>
+    <div class="modal__acciones" id="ranuras-acciones"></div>
+  </section>
+</div>
+
 <div class="modal" id="salida-modal" data-fijo hidden>
   <section class="modal__panel" role="alertdialog" aria-modal="true" aria-labelledby="salida-titulo" aria-describedby="salida-nota">
     <header class="modal__cab"><h2 id="salida-titulo">Salir</h2></header>
