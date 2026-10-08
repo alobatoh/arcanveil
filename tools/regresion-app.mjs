@@ -1251,7 +1251,7 @@ try {
     const run = `run-fixture-pestanas-${viewport.label}`;
     await evaluate(herenciaFicticia(run, 'Tesa', 200));
     await pulsarYNavegar(`document.querySelector('#menu')`, 'window.ARCANVEIL?.motor?.listo && document.body.dataset.activeScreen === "inicio"');
-    const hastaConfirmar = `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); await new Promise((r) => setTimeout(r, 300)); document.querySelector('.tarjeta-herencia[data-origen="${run}"]').click(); await new Promise((r) => setTimeout(r, 200)); document.querySelector('.tarjeta-pj[data-personaje]').click(); await new Promise((r) => setTimeout(r, 200)); return Boolean(document.querySelector('#personajes-comenzar') && document.querySelector('#aviso-herencia')); })()`;
+    const hastaConfirmar = `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); await (async () => { for (let i = 0; i < 100 && !['herencia', 'personajes', 'creacion'].includes(document.body.dataset.activeScreen); i++) await new Promise((r) => setTimeout(r, 50)); })(); document.querySelector('.tarjeta-herencia[data-origen="${run}"]').click(); await new Promise((r) => setTimeout(r, 200)); document.querySelector('.tarjeta-pj[data-personaje]').click(); await new Promise((r) => setTimeout(r, 200)); return Boolean(document.querySelector('#personajes-comenzar') && document.querySelector('#aviso-herencia')); })()`;
     const otra = await abrirPestana(URL_APP);
     try {
       await otra.hasta('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")');
@@ -1291,7 +1291,7 @@ try {
     }
   };
   /** Hasta «Comenzar partida» con una herencia (o ninguna) y el primer personaje. */
-  const hastaConfirmarCon = (run) => `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); await new Promise((r) => setTimeout(r, 300));
+  const hastaConfirmarCon = (run) => `(async () => { document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); await (async () => { for (let i = 0; i < 100 && !['herencia', 'personajes', 'creacion'].includes(document.body.dataset.activeScreen); i++) await new Promise((r) => setTimeout(r, 50)); })();
     if (document.body.dataset.activeScreen === 'herencia') { ${run ? `document.querySelector('.tarjeta-herencia[data-origen="${run}"]').click();` : `document.querySelector('#herencia-sin').click();`} await new Promise((r) => setTimeout(r, 200)); }
     document.querySelector('.tarjeta-pj[data-personaje]').click(); await new Promise((r) => setTimeout(r, 200));
     return Boolean(document.querySelector('#personajes-comenzar')); })()`;
@@ -1462,6 +1462,7 @@ try {
     // Y se ve: en la lista de personajes, con su imagen y no con el marcador.
     await evaluate(`document.querySelector('#menu-nueva').click()`);
     // Si queda alguna herencia pendiente, antes se elige: aquí, ninguna.
+    await until('["herencia", "personajes", "creacion"].includes(document.body.dataset.activeScreen)', 8000);
     if (await evaluate(`document.body.dataset.activeScreen === 'herencia'`)) await evaluate(`document.querySelector('#herencia-sin').click()`);
     await until('document.querySelector("img.arte--aprobada")?.complete && document.querySelector("img.arte--aprobada").naturalWidth > 0', 8000);
     await shot(`06-retrato-sin-red-${viewport.label}.png`);
