@@ -2,31 +2,37 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * ARCANVEIL · persistence/Ranuras.js
  * ---------------------------------------------------------------------------
- * Las ranuras de partida (`arcanveil:partida:<n>`) vistas con honestidad:
- * qué hay en cada una, sin confundir «no puedo leerla» con «está vacía», y
- * quién puede escribir dónde.
+ * Las ranuras de partida: de quién es cada una, en qué revisión va y qué
+ * bytes valen, con una sola regla para TODOS los que escriben.
  *
- * Lecturas discriminadas (`leerRanura`):
- *   · `ausente`      → la clave no existe (comprobado);
- *   · `inaccesible`  → el navegador no deja leerla;
- *   · `ilegible`     → hay bytes, pero no son JSON;
- *   · `invalida`     → JSON, pero no un guardado que el juego pueda abrir
- *                      (se valida con la migración y la deserialización
- *                      reales, no con una forma inventada);
- *   · `valida`       → un guardado abrible, con su run.
- * `enumerarPartidas` dice también si NO se ha podido enumerar.
+ * AUTORIDAD (IndexedDB, `Coordinacion`):
+ *   · `ranuras[n]`  → dueño y revisión: `{estado: 'ocupada', runId, rev}`,
+ *                     `{estado: 'reservada', op, runId, previo}` mientras una
+ *                     creación la tiene apartada, o `{estado: 'borrada'}`
+ *                     (lápida: lo borrado no se resucita desde una caché).
+ *   · `partidas[n]` → los bytes autoritativos de esa revisión.
+ *   `localStorage` (`arcanveil:partida:<n>`) es un ESPEJO: se escribe después,
+ *   sirve para listar sin esperar y para compatibilidad. Si va atrasado o
+ *   miente (caché vieja de otra pestaña), manda IndexedDB.
  *
- * Exclusión global (`conCandadoGlobal`): elegir ranura, reservarla y
- * escribir una campaña NUEVA (con o sin herencia) va bajo un candado Web
- * Locks único para todo el almacenamiento, que ESPERA (con tope) en vez de
- * fallar. Orden fijo: primero el candado de la herencia (si hay), después
- * este. Así dos creaciones nunca eligen la misma ranura libre.
+ * ESCRIBIR (`escribirPartida`), siempre bajo el candado GLOBAL de Web Locks y
+ * en UNA transacción coordinada sobre `ranuras[n]` + `partidas[n]`:
+ *   · ocupada por OTRO run → no (aunque los bytes locales digan lo contrario);
+ *   · ocupada por el mismo run → sí, si la revisión en la que se basa es la
+ *     vigente (otra pestaña del mismo run no queda tapada por una vieja); un
+ *     token repetido no crea otra revisión;
+ *   · reservada → solo la operación que la reservó;
+ *   · libre (sin registro, sin bytes y sin lápida) → la escritura la ocupa;
+ *   · sin registro pero con bytes de antes del #8 → se importa (una vez) y se
+ *     aplica la regla de dueño.
  *
- * Una ranura ocupada solo se reemplaza con un permiso concreto: la ranura, el
- * run, la fecha de guardado y la huella de los bytes leídos al elegirla. Si
- * algo cambió desde entonces, el permiso caduca.
+ * El candado global se pide UNA vez por operación. Quien ya lo tiene (una
+ * creación que guarda dentro) pasa su «arriendo»: un objeto que solo existe
+ * mientras el candado está tomado; no hay atajo por bandera.
  *
- * Coherencia local, no antifraude.
+ * Lecturas discriminadas (ausente / inaccesible / ilegible / inválida /
+ * válida), también para la copia autoritativa. Coherencia LOCAL, no
+ * antifraude.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -39,6 +45,9 @@ import { PERSISTENCIA } from '../config/app.config.js';
 
 export const PREFIJO = 'arcanveil:partida:';
 export const CANDADO_GLOBAL = 'arcanveil:ranuras';
+export const RANURA_AUTO = 'auto';
+const R = Coordinacion.ALMACENES.RANURAS;
+const P = Coordinacion.ALMACENES.PARTIDAS;
 
 /** Para las pruebas: sustituir Web Locks (dos «pestañas» en un proceso). */
 let candados = null;
@@ -57,7 +66,7 @@ export function ranurasManuales() {
   return Array.from({ length: PERSISTENCIA.ranuras }, (_, i) => String(i + 1));
 }
 
-/** Huella corta de unos bytes (para atar un permiso a lo que se leyó). */
+/** Huella corta de unos bytes (para atar un permiso o una comprobación). */
 export function huella(texto) {
   let h = 5381;
   const s = String(texto ?? '');
@@ -65,10 +74,43 @@ export function huella(texto) {
   return `${s.length.toString(36)}-${h.toString(36)}`;
 }
 
+/* ── el candado global y su arriendo ────────────────────────────────────── */
+
+const arriendos = new Set();
+
+/** ¿Este arriendo es de un candado global tomado AHORA en esta pestaña? */
+export function leaseValido(lease) {
+  return Boolean(lease && arriendos.has(lease) && lease.activo === true);
+}
+
+/**
+ * Ejecuta `fn(lease)` con el candado global de ranuras. Espera a que lo
+ * suelte otra pestaña (con tope); sin Web Locks o sin estado coordinado no se
+ * puede asegurar y se dice.
+ */
+export async function conCandadoGlobal(fn, { espera = 15000 } = {}) {
+  const locks = proveedorCandados();
+  if (!locks?.request || !Coordinacion.disponible()) {
+    return { ok: false, exito: false, codigo: 'sin-exclusion', motivo: 'Este navegador no permite coordinar el guardado entre pestañas (falta Web Locks o IndexedDB): no se escribe sin coordinar.' };
+  }
+  const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(espera) : undefined;
+  try {
+    return await locks.request(CANDADO_GLOBAL, signal ? { signal } : {}, async () => {
+      const lease = { id: `arriendo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, activo: true };
+      arriendos.add(lease);
+      try { return await fn(lease); } finally { lease.activo = false; arriendos.delete(lease); }
+    });
+  } catch (e) {
+    if (e?.name === 'AbortError' || e?.name === 'TimeoutError') return { ok: false, exito: false, codigo: 'ocupado-global', motivo: 'Otra pestaña está guardando o creando una partida ahora mismo. Vuelve a intentarlo en un momento.' };
+    throw e;
+  }
+}
+
+/* ── lecturas ───────────────────────────────────────────────────────────── */
+
 /**
  * ¿Es un guardado que el juego puede abrir? Con la migración y la
  * deserialización de verdad.
- * @returns {{ok: true, estado: Object}|{ok: false, motivo: string}}
  */
 export function validarGuardado(g) {
   if (!g || typeof g !== 'object' || Array.isArray(g)) return { ok: false, motivo: 'no es un guardado' };
@@ -86,51 +128,78 @@ export function validarGuardado(g) {
   return { ok: true, estado: d.estado };
 }
 
-/**
- * Lee una ranura y dice exactamente qué hay.
- * @param {string} ranura
- */
+/** Clasifica unos bytes ya leídos. */
+function clasificar(ranura, texto, extra = {}) {
+  if (texto === null || texto === undefined) return { tipo: 'ausente', ranura, ...extra };
+  const { objeto, error } = Ser.parsearSeguro(String(texto));
+  if (error) return { tipo: 'ilegible', ranura, texto, huella: huella(texto), motivo: 'no es JSON válido', ...extra };
+  const v = validarGuardado(objeto);
+  if (!v.ok) return { tipo: 'invalida', ranura, texto, huella: huella(texto), motivo: `no es una partida que se pueda abrir: ${v.motivo}`, ...extra };
+  return { tipo: 'valida', ranura, texto, huella: huella(texto), guardado: objeto, estado: v.estado, runId: v.estado.meta.runId, guardadoEn: objeto.guardadoEn ?? null, ...extra };
+}
+
+/** Lo que dice el ESPEJO local (`localStorage`), sin coordinar. */
 export function leerRanura(ranura) {
   const a = almacen();
   if (!a) return { tipo: 'inaccesible', ranura, motivo: 'el navegador no deja usar el almacenamiento' };
   let texto;
   try { texto = a.getItem(`${PREFIJO}${ranura}`); } catch (e) { return { tipo: 'inaccesible', ranura, motivo: `no se puede leer (${e?.message ?? e})` }; }
-  if (texto === null || texto === undefined) return { tipo: 'ausente', ranura };
-  const { objeto, error } = Ser.parsearSeguro(String(texto));
-  if (error) return { tipo: 'ilegible', ranura, texto, huella: huella(texto), motivo: 'no es JSON válido' };
-  const v = validarGuardado(objeto);
-  if (!v.ok) return { tipo: 'invalida', ranura, texto, huella: huella(texto), motivo: `no es una partida que se pueda abrir: ${v.motivo}` };
-  return { tipo: 'valida', ranura, texto, huella: huella(texto), guardado: objeto, estado: v.estado, runId: v.estado.meta.runId, guardadoEn: objeto.guardadoEn ?? null };
+  return clasificar(ranura, texto, { fuente: 'local' });
+}
+
+/** Dueño y revisión coordinados de una ranura (o undefined). */
+export async function duenoRanura(ranura) {
+  return Coordinacion.leer(R, String(ranura));
 }
 
 /**
- * Las ranuras con partida, o por qué no se ha podido saber.
- * @returns {{ok: true, ranuras: string[]}|{ok: false, motivo: string}}
+ * Lo que vale de una ranura: la copia AUTORITATIVA si la hay; si la ranura
+ * no está coordinada (de antes del #8), el espejo local.
  */
-export function enumerarPartidas() {
+export async function leerRanuraCoordinada(ranura) {
+  const n = String(ranura);
+  const [rec, snap] = await Promise.all([Coordinacion.leer(R, n), Coordinacion.leer(P, n)]);
+  if (rec?.estado === 'borrada') return { tipo: 'ausente', ranura: n, fuente: 'coordinada', registro: rec };
+  // Reservada sin copia: una creación en curso (o una del #7, que escribía
+  // primero la ranura local): se adjunta lo que diga el espejo.
+  if (rec?.estado === 'reservada' && !snap) return { tipo: 'reservada', ranura: n, fuente: 'coordinada', registro: rec, local: leerRanura(n) };
+  if (snap) {
+    const l = clasificar(n, snap.texto, { fuente: 'coordinada', registro: rec ?? null, rev: snap.rev ?? null });
+    return l;
+  }
+  if (rec) return { tipo: 'inaccesible', ranura: n, fuente: 'coordinada', registro: rec, motivo: 'el registro dice que tiene dueño, pero falta su copia' };
+  return { ...leerRanura(n), legado: true };
+}
+
+/**
+ * Las ranuras con partida, o por qué no se ha podido saber: las coordinadas
+ * y las de antes del #8 que solo están en el espejo local.
+ * @returns {Promise<{ok: true, ranuras: string[]}|{ok: false, motivo: string}>}
+ */
+export async function enumerarPartidas() {
   const a = almacen();
   if (!a) return { ok: false, motivo: 'el navegador no deja usar el almacenamiento' };
+  const ranuras = new Set();
+  try {
+    for (const [k] of await Coordinacion.listar(P)) ranuras.add(String(k));
+  } catch (e) {
+    return { ok: false, motivo: `no se puede leer el estado compartido (${e?.message ?? e})` };
+  }
   try {
     const n = a.length;
     if (!Number.isInteger(n) || n < 0) return { ok: false, motivo: 'el almacenamiento no dice cuántas claves tiene' };
-    const ranuras = [];
     for (let i = 0; i < n; i++) {
       const k = a.key(i);
       if (k === null || k === undefined) return { ok: false, motivo: 'el almacenamiento cambió mientras se leía' };
-      if (k.startsWith(PREFIJO)) ranuras.push(k.slice(PREFIJO.length));
+      if (k.startsWith(PREFIJO)) ranuras.add(k.slice(PREFIJO.length));
     }
-    return { ok: true, ranuras: ranuras.sort() };
   } catch (e) {
     return { ok: false, motivo: `no se pueden enumerar las partidas (${e?.message ?? e})` };
   }
+  return { ok: true, ranuras: [...ranuras].sort() };
 }
 
-/**
- * Ventana de propagación entre pestañas: lo que otra pestaña acaba de
- * escribir en `localStorage` puede tardar en verse aquí. Un registro
- * reciente de IndexedDB manda sobre una ranura que aquí aún parece vacía.
- */
-export const VENTANA_PROPAGACION_MS = 30000;
+/* ── ocupación y reclamo ────────────────────────────────────────────────── */
 
 /** Ranuras apartadas por entregas de herencia sin cerrar (diario coordinado). */
 async function reservadasPorEntregas() {
@@ -141,49 +210,48 @@ async function reservadasPorEntregas() {
   return s;
 }
 
-/** El registro coordinado de ranuras de campañas nuevas. */
-async function registroRanuras() {
-  return new Map(await Coordinacion.listar(Coordinacion.ALMACENES.RANURAS));
-}
-
-/** Herencias (vista mínima) para describir el vínculo de una campaña. */
-async function estadosDeHerencia() {
-  const m = new Map(Object.entries(Registro.legados()).map(([k, v]) => [k, v?.estado ?? 'pendiente']));
-  for (const [k, v] of await Coordinacion.listar(Coordinacion.ALMACENES.LEGADOS)) m.set(k, v?.estado ?? 'pendiente');
-  return m;
+/** Herencias y muertes (vista mínima) para describir una campaña. */
+async function contexto() {
+  const herencias = new Map(Object.entries(Registro.legados()).map(([k, v]) => [k, v?.estado ?? 'pendiente']));
+  for (const [k, v] of await Coordinacion.listar(Coordinacion.ALMACENES.LEGADOS)) herencias.set(k, v?.estado ?? 'pendiente');
+  const muertos = new Set(Object.keys(Registro.runsMuertos()));
+  for (const [k] of await Coordinacion.listar(Coordinacion.ALMACENES.MUERTOS)) muertos.add(k);
+  return { herencias, muertos };
 }
 
 /**
- * Qué hay en cada ranura manual, para elegir o reemplazar. Mezcla lo que se
- * ve en `localStorage` con el registro coordinado (IndexedDB): una ranura que
- * otra pestaña acaba de ocupar o está ocupando no sale como libre aunque aquí
- * aún no se vean sus bytes.
+ * Qué hay en cada ranura manual, para elegir o reemplazar. Manda el registro
+ * coordinado; las ranuras sin registro (de antes del #8) se leen del espejo.
+ * La ocupación es DURABLE: no caduca con el tiempo.
  */
-export async function ocupacion({ ahora = Date.now() } = {}) {
-  const [reservas, registro, herencias] = await Promise.all([reservadasPorEntregas(), registroRanuras(), estadosDeHerencia()]);
+export async function ocupacion() {
+  const [reservas, registros, copias, ctx] = await Promise.all([
+    reservadasPorEntregas(), Coordinacion.listar(R).then((l) => new Map(l)), Coordinacion.listar(P).then((l) => new Map(l)), contexto(),
+  ]);
   return ranurasManuales().map((ranura) => {
-    const l = leerRanura(ranura);
-    const r = registro.get(ranura);
-    // Apartada por una entrega sin cerrar: manda sobre lo que haya dentro
-    // (aunque esté dañado, es la prueba que hay que poder volver a comprobar).
-    if (reservas.has(ranura)) return { ranura, estado: 'reservada', motivo: 'apartada por una entrega de herencia sin cerrar', runId: l.runId ?? null };
-    if (l.tipo === 'ausente') {
-      if (r && ahora - (r.momento ?? 0) < VENTANA_PROPAGACION_MS) return { ranura, estado: 'reservada', motivo: 'otra pestaña acaba de crear una partida aquí', runId: r.runId ?? null, registro: r };
-      return { ranura, estado: 'libre', registro: r ?? null };
-    }
-    if (l.tipo !== 'valida') return { ranura, estado: l.tipo === 'inaccesible' ? 'inaccesible' : 'ilegible', huella: l.huella ?? null, motivo: l.motivo, registro: r ?? null };
+    const rec = registros.get(ranura) ?? null;
+    const snap = copias.get(ranura) ?? null;
+    if (reservas.has(ranura)) return { ranura, estado: 'reservada', motivo: 'apartada por una entrega de herencia sin cerrar', registro: rec };
+    if (rec?.estado === 'reservada') return { ranura, estado: 'reservada', motivo: 'otra pestaña está creando una partida aquí', registro: rec, runId: rec.runId ?? null };
+    let l;
+    if (rec?.estado === 'borrada' || (!rec && !snap && leerRanura(ranura).tipo === 'ausente')) return { ranura, estado: 'libre', registro: rec };
+    if (snap) l = clasificar(ranura, snap.texto, { rev: snap.rev ?? null });
+    else if (rec) return { ranura, estado: 'inaccesible', motivo: 'el registro dice que tiene dueño, pero falta su copia', registro: rec };
+    else l = leerRanura(ranura);
+    if (l.tipo === 'ausente') return { ranura, estado: 'libre', registro: rec };
+    if (l.tipo !== 'valida') return { ranura, estado: l.tipo === 'inaccesible' ? 'inaccesible' : 'ilegible', huella: l.huella ?? null, motivo: l.motivo, registro: rec, rev: rec?.rev ?? null };
     const p = l.estado.player ?? {};
     const runId = l.runId;
-    const suya = herencias.get(runId);
+    const suya = ctx.herencias.get(runId);
     const vinculo = [
       p.legadoRecibido ? `heredó ${p.legadoRecibido.xp} XP de ${p.legadoRecibido.nombreOrigen ?? 'otro personaje'}` : null,
       suya === 'pendiente' ? 'su herencia está pendiente' : null,
       suya === 'aplicado' ? 'su herencia ya la recibió otro' : null,
     ].filter(Boolean).join(' · ');
     return {
-      ranura, estado: 'ocupada', runId, huella: l.huella, registro: r ?? null,
+      ranura, estado: 'ocupada', runId, huella: l.huella, registro: rec, rev: rec?.rev ?? null,
       nombre: p.nombre ?? l.guardado.cabecera?.nombre ?? 'Sin nombre', nivel: p.nivel ?? null,
-      guardadoEn: l.guardadoEn, muerto: Boolean(l.estado.meta?.muerte) || Registro.estaMuerto(runId), vinculo,
+      guardadoEn: l.guardadoEn, muerto: Boolean(l.estado.meta?.muerte) || ctx.muertos.has(runId), vinculo,
     };
   });
 }
@@ -194,19 +262,22 @@ export async function ranuraLibre(ocup = null) {
 }
 
 /**
- * Lo mismo, solo con lo que se ve aquí (síncrono, sin coordinar). Para la
- * partida que se guarda sin ranura asignada: nunca la más antigua.
+ * La primera ranura manual libre según el ESPEJO local (sin esperar), o
+ * null; nunca la más antigua. Solo informativa (listados): no autoriza
+ * ninguna escritura, que decide siempre el registro coordinado.
  */
 export function ranuraLibreLocal() {
   return ranurasManuales().find((n) => leerRanura(n).tipo === 'ausente') ?? null;
 }
 
 /**
- * Elige o comprueba (bajo el candado global) dónde va una campaña NUEVA, y
- * la RECLAMA en el registro coordinado en la misma operación: otra pestaña
- * ya no la verá libre aunque su `localStorage` vaya con retraso.
+ * Elige o comprueba (bajo el candado global) dónde va una campaña NUEVA y la
+ * RECLAMA en el registro coordinado: queda «reservada» para esa operación
+ * (con lo que hubiera antes guardado en `previo`, para poder devolverlo).
  *
- * @param {{ranura?: string|null, reemplazo?: Object|null, op: string, runDestino: string}} pedido
+ * El permiso de reemplazo se compara con el dueño y la REVISIÓN vigentes del
+ * registro (y, para ranuras de antes del #8, con lo que se ve): un permiso
+ * leído de una caché vieja no vale.
  */
 export async function reclamarDestino({ ranura = null, reemplazo = null, op, runDestino }) {
   const ocup = await ocupacion();
@@ -219,7 +290,7 @@ export async function reclamarDestino({ ranura = null, reemplazo = null, op, run
     const o = ocup.find((x) => x.ranura === String(ranura));
     if (!o) return { ok: false, codigo: 'ranura-invalida', motivo: `No existe la ranura ${ranura}.` };
     if (o.estado === 'reservada') return { ok: false, codigo: 'ranura-ocupada', motivo: `La ranura ${ranura}: ${o.motivo ?? 'está apartada'}.` };
-    if (o.estado === 'inaccesible') return { ok: false, codigo: 'ranura-ocupada', motivo: `No se puede leer la ranura ${ranura}: no se escribe encima.` };
+    if (o.estado === 'inaccesible') return { ok: false, codigo: 'ranura-ocupada', motivo: `No se puede comprobar la ranura ${ranura}: no se escribe encima.` };
     if (o.estado !== 'libre') {
       if (!reemplazo || String(reemplazo.ranura) !== o.ranura) {
         return { ok: false, codigo: 'ranura-ocupada', motivo: `La ranura ${ranura} ya es de otra campaña${o.nombre ? ` (${o.nombre})` : ''}: no se escribe encima sin elegirla para reemplazar.`, campana: o };
@@ -227,86 +298,177 @@ export async function reclamarDestino({ ranura = null, reemplazo = null, op, run
       const coincide = (reemplazo.runId ?? null) === (o.runId ?? null)
         && (reemplazo.guardadoEn ?? null) === (o.guardadoEn ?? null)
         && (!reemplazo.huella || reemplazo.huella === o.huella)
-        // Lo creado hace poco en otra pestaña manda sobre lo que se ve aquí.
-        && (!o.registro || o.registro.runId === (o.runId ?? null));
+        && ((reemplazo.rev ?? null) === (o.rev ?? null));
       if (!coincide) return { ok: false, codigo: 'permiso-caducado', motivo: `La ranura ${ranura} ha cambiado desde que la elegiste: vuelve a elegir.`, campana: o };
-      permiso = { ranura: o.ranura, runId: o.runId ?? null, guardadoEn: o.guardadoEn ?? null, huella: o.huella ?? null };
+      permiso = { ranura: o.ranura, runId: o.runId ?? null, guardadoEn: o.guardadoEn ?? null, huella: o.huella ?? null, rev: o.rev ?? null };
     }
     elegida = o.ranura;
   }
-  // La reclamación, atómica y coordinada: si el registro cambió desde que
-  // se miró, otra pestaña se adelantó.
   let porque = null;
   const visto = ocup.find((x) => x.ranura === elegida)?.registro ?? null;
-  const r = await Coordinacion.cas(Coordinacion.ALMACENES.RANURAS, elegida, (actual) => {
+  const r = await Coordinacion.cas(R, elegida, (actual) => {
     if (JSON.stringify(actual ?? null) !== JSON.stringify(visto)) { porque = 'otra pestaña acaba de usar esa ranura'; return null; }
-    return { nuevo: { estado: 'reservada', op, runId: runDestino, momento: Date.now(), reemplaza: permiso } };
+    return { nuevo: { estado: 'reservada', op, runId: runDestino, momento: Date.now(), reemplaza: permiso, previo: actual ?? null } };
   });
   if (!r.cambiado) return { ok: false, codigo: 'ranura-ocupada', motivo: `La ranura ${elegida}: ${porque ?? 'no se ha podido reclamar'}.` };
   return { ok: true, ranura: elegida, reemplazo: permiso };
 }
 
-/** La campaña quedó escrita: la ranura pasa a ocupada por ese run. */
-export async function confirmarRanura(ranura, op, runId) {
-  return Coordinacion.cas(Coordinacion.ALMACENES.RANURAS, ranura, (actual) => (actual?.op === op ? { nuevo: { estado: 'ocupada', runId, momento: Date.now() } } : null));
-}
-
-/** No se llegó a escribir nada propio: se suelta la reclamación (solo la nuestra). */
+/**
+ * No se llegó a escribir nada propio: se suelta la reclamación (solo la
+ * nuestra) y vuelve lo que hubiera antes.
+ */
 export async function soltarRanura(ranura, op) {
-  return Coordinacion.cas(Coordinacion.ALMACENES.RANURAS, ranura, (actual) => (actual?.op === op ? { borrar: true } : null));
+  return Coordinacion.cas(R, String(ranura), (actual) => {
+    if (actual?.estado !== 'reservada' || actual.op !== op) return null;
+    return actual.previo ? { nuevo: actual.previo } : { borrar: true };
+  });
 }
 
-/** La campaña se borró conscientemente: la ranura queda libre en el registro. */
-export async function liberarRegistro(ranura) {
-  if (!Coordinacion.disponible()) return null;
-  return Coordinacion.cas(Coordinacion.ALMACENES.RANURAS, String(ranura), (actual) => (actual ? { borrar: true } : null));
+/* ── escribir ───────────────────────────────────────────────────────────── */
+
+/**
+ * Escribe una partida en su ranura, coordinadamente. SOLO bajo el candado
+ * global (con su arriendo). Ver la regla en la cabecera.
+ *
+ * @param {Object} p
+ * @param {Object} p.lease Arriendo del candado global.
+ * @param {string} p.ranura
+ * @param {string} p.runId El run de la foto que se escribe.
+ * @param {string} p.texto Los bytes.
+ * @param {string} [p.op] Operación que reservó la ranura (creación).
+ * @param {number|null} [p.revBase] Revisión en la que se basa (si se conoce).
+ * @param {string} [p.token] Para que un reintento no cree otra revisión.
+ * @param {boolean} [p.compartida] La ranura automática (de cualquiera).
+ * @returns {Promise<{ok: true, rev: number, repetido?: boolean}|{ok: false, codigo: string, motivo: string}>}
+ */
+export async function escribirPartida({ lease, ranura, runId, texto, op = null, revBase = null, token = null, compartida = false, guardadoEn = Date.now() }) {
+  if (!leaseValido(lease)) return { ok: false, codigo: 'sin-candado', motivo: 'Escritura sin el candado global: no se hace.' };
+  const n = String(ranura);
+  // Una ranura sin registro con bytes de antes del #8: se importa una vez
+  // (el espejo local es lo único que hay de ella).
+  const local = leerRanura(n);
+  let motivo = null;
+  let codigo = null;
+  let repetido = false;
+  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+    let base = rec;
+    if (!base && !snap && local.tipo === 'valida') base = { estado: 'ocupada', runId: local.runId, rev: 0, importada: true };
+    if (!base && !snap && (local.tipo === 'ilegible' || local.tipo === 'invalida' || local.tipo === 'inaccesible') && !compartida) {
+      codigo = 'ranura-ilegible'; motivo = `La ranura ${n} tiene datos que no se pueden leer (${local.motivo}). No se escribe encima.`; return null;
+    }
+    if (compartida) {
+      // La automática es de todos: se ordena por revisión, sin dueño.
+      const rev = (base?.rev ?? 0) + 1;
+      return [{ nuevo: { estado: 'ocupada', runId, rev, compartida: true, momento: Date.now(), ultimoToken: token } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+    }
+    if (!base || base.estado === 'borrada') {
+      // Lo que el jugador borró no lo resucita un guardado tardío de esa
+      // misma campaña (sí puede ocuparla otra, o una creación).
+      if (base?.estado === 'borrada' && base.runId && base.runId === runId && !op) { codigo = 'borrada'; motivo = `La ranura ${n} se borró: esta partida ya no está guardada ahí. No se ha recreado; guárdala en otra ranura desde el menú si quieres conservarla.`; return null; }
+      if (snap) { codigo = 'otro-dueno'; motivo = `La ranura ${n} no tiene un dueño claro. No se escribe encima.`; return null; }
+      // Libre de verdad: la escritura la ocupa (la revisión sigue subiendo).
+      const rev = (base?.rev ?? 0) + 1;
+      return [{ nuevo: { estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+    }
+    if (base.estado === 'reservada') {
+      if (!op || base.op !== op || base.runId !== runId) { codigo = 'otro-dueno'; motivo = `La ranura ${n} está apartada por otra operación: no se escribe encima.`; return null; }
+      const rev = (base.previo?.rev ?? 0) + 1;
+      return [{ nuevo: { estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token, creadaPor: op } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+    }
+    if (base.runId !== runId) {
+      codigo = 'otro-dueno';
+      motivo = `La ranura ${n} ahora es de otra partida. No se ha guardado encima: esta partida sigue abierta; guárdala en otra ranura desde el menú.`;
+      return null;
+    }
+    if (token && base.ultimoToken === token) { repetido = true; return null; }
+    if (revBase !== null && revBase !== undefined && revBase !== base.rev) {
+      codigo = 'revision';
+      motivo = `Esta campaña se ha guardado desde otra pestaña después (revisión ${base.rev}, aquí ${revBase}). No se ha tapado: recarga para seguir desde la más reciente.`;
+      return null;
+    }
+    const rev = (base.rev ?? 0) + 1;
+    return [{ nuevo: { ...base, estado: 'ocupada', runId, rev, momento: Date.now(), ultimoToken: token, importada: undefined } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn } }];
+  });
+  if (repetido) return { ok: true, rev: r.actuales[0]?.rev ?? null, repetido: true };
+  if (!r.cambiado) return { ok: false, codigo: codigo ?? 'otro-dueno', motivo: motivo ?? `No se ha podido escribir la ranura ${n}.` };
+  return { ok: true, rev: r.nuevos[0].rev, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null } };
 }
 
 /**
- * Ejecuta `fn` con el candado global de ranuras. Espera a que lo suelte otra
- * pestaña (con tope); sin Web Locks no se puede asegurar y se dice.
+ * Deshace una escritura PROPIA si sigue siendo la vigente (los mismos bytes
+ * del mismo run en la copia autoritativa): vuelve exactamente lo de antes.
+ * Si alguien escribió después, no se toca.
  */
-export async function conCandadoGlobal(fn, { espera = 15000 } = {}) {
-  const locks = proveedorCandados();
-  if (!locks?.request) {
-    return { ok: false, codigo: 'sin-exclusion', motivo: 'Este navegador no permite asegurar que dos pestañas no creen una partida en la misma ranura. Usa un navegador actual (Chrome, Edge, Firefox o Safari recientes) o una sola pestaña sin crear partidas nuevas.' };
-  }
-  const signal = typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(espera) : undefined;
-  try {
-    return await locks.request(CANDADO_GLOBAL, signal ? { signal } : {}, async () => fn());
-  } catch (e) {
-    if (e?.name === 'AbortError' || e?.name === 'TimeoutError') return { ok: false, codigo: 'ocupado-global', motivo: 'Otra pestaña está creando una partida ahora mismo. Vuelve a intentarlo en un momento.' };
-    throw e;
-  }
+export async function deshacerEscritura({ lease, ranura, runId, texto, previo }) {
+  if (!leaseValido(lease)) return { ok: false, motivo: 'sin el candado global' };
+  const n = String(ranura);
+  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+    if (snap?.texto !== texto || rec?.runId !== runId || rec?.estado !== 'ocupada') return null;
+    return [previo?.rec ? { nuevo: previo.rec } : { borrar: true }, previo?.snap ? { nuevo: previo.snap } : { borrar: true }];
+  });
+  return { ok: r.cambiado };
+}
+
+/** El registro y la copia autoritativa de una ranura, tal cual (para poder volver). */
+export async function instantanea(ranura) {
+  const n = String(ranura);
+  const [rec, snap] = await Promise.all([Coordinacion.leer(R, n), Coordinacion.leer(P, n)]);
+  return { rec: rec ?? null, snap: snap ?? null };
 }
 
 /**
- * ¿Puede ESTA partida (run) escribir en esa ranura? Para el guardado normal:
- * actualizar la misma campaña sí; escribir encima de otra, no (salvo un
- * permiso de reemplazo que siga vigente).
- * @returns {{ok: true}|{ok: false, motivo: string}}
+ * Compatibilidad con reservas del #7 (escribían primero la ranura local y
+ * después confirmaban): si la reserva de esta operación sigue abierta y hay
+ * copia del sucesor, pasa a ocupada con ella. Desde el #8 la escritura ya
+ * ocupa la ranura en la misma transacción y esto no cambia nada.
  */
-export function puedeEscribir(ranura, runId, reemplazo = null) {
-  // Camino corto del caso de siempre (guardar la misma campaña cada turno):
-  // si la ranura dice ser de este run, no hace falta validarla entera.
-  try {
-    const t = almacen()?.getItem(`${PREFIJO}${ranura}`);
-    if (t === null) return { ok: true };
-    if (runId && JSON.parse(t)?.estado?.meta?.runId === runId) return { ok: true };
-  } catch { /* abajo, con la lectura completa */ }
-  const l = leerRanura(ranura);
-  if (l.tipo === 'ausente') return { ok: true };
-  if (l.tipo === 'valida' && l.runId === runId) return { ok: true };
-  const permiso = reemplazo && String(reemplazo.ranura) === String(ranura)
-    && (reemplazo.runId ?? null) === (l.runId ?? null)
-    && (l.tipo === 'valida' ? (reemplazo.guardadoEn ?? null) === (l.guardadoEn ?? null) : true)
-    && (!reemplazo.huella || reemplazo.huella === l.huella);
-  if (permiso && l.tipo !== 'inaccesible') return { ok: true };
-  if (l.tipo === 'valida') {
-    const nombre = l.estado.player?.nombre ?? 'otra partida';
-    return { ok: false, motivo: `La ranura ${ranura} ahora es de otra partida (${nombre}). No se ha guardado encima: tu partida sigue abierta; guárdala en otra ranura desde el menú.` };
-  }
-  return { ok: false, motivo: `La ranura ${ranura} tiene datos que no se pueden leer (${l.motivo}). No se escribe encima.` };
+export async function confirmarRanura(ranura, op, runId) {
+  const n = String(ranura);
+  const local = leerRanura(n);
+  return Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+    if (rec?.estado !== 'reservada' || rec.op !== op) return null;
+    const texto = snap?.runId === runId ? snap.texto : (local.tipo === 'valida' && local.runId === runId ? local.texto : null);
+    if (!texto) return null;
+    const rev = (rec.previo?.rev ?? 0) + 1;
+    return [{ nuevo: { estado: 'ocupada', runId, rev, momento: Date.now(), creadaPor: op } }, { nuevo: { runId, rev, texto, huella: huella(texto), guardadoEn: Date.now() } }];
+  });
 }
 
-export default { PREFIJO, CANDADO_GLOBAL, VENTANA_PROPAGACION_MS, usarCandados, ranurasManuales, huella, validarGuardado, leerRanura, enumerarPartidas, ocupacion, ranuraLibre, ranuraLibreLocal, reclamarDestino, confirmarRanura, soltarRanura, liberarRegistro, conCandadoGlobal, puedeEscribir };
+/**
+ * Borrar una campaña: solo la que el jugador eligió (mismo run, si se dice)
+ * y dejando una lápida: un guardado tardío de esa campaña no la recrea.
+ */
+export async function borrarRanura({ lease, ranura, runId = null }) {
+  if (!leaseValido(lease)) return { ok: false, motivo: 'sin el candado global' };
+  const n = String(ranura);
+  const local = leerRanura(n);
+  let motivo = null;
+  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
+    const dueno = rec?.runId ?? (local.tipo === 'valida' ? local.runId : null);
+    if (runId && dueno && dueno !== runId) { motivo = 'la ranura ya es de otra campaña'; return null; }
+    if (rec?.estado === 'reservada') { motivo = 'la ranura está apartada por una operación en curso'; return null; }
+    return [{ nuevo: { estado: 'borrada', momento: Date.now(), runId: dueno, rev: rec?.rev ?? 0 } }, snap ? { borrar: true } : null];
+  });
+  if (!r.cambiado) return { ok: false, motivo: motivo ?? 'no se ha podido borrar' };
+  try { almacen()?.removeItem(`${PREFIJO}${n}`); } catch { /* el espejo; la autoridad ya dice borrada */ }
+  return { ok: true };
+}
+
+/**
+ * «Borrar partidas y personajes»: tras vaciar, cada ranura que tenía dueño
+ * queda con su lápida (un guardado tardío de esa campaña no la recrea).
+ * @param {Array<[string, Object]>} antes Los registros de antes de vaciar.
+ */
+export async function lapidasTodas(antes) {
+  for (const [n, rec] of antes) {
+    if (!rec?.runId) continue;
+    await Coordinacion.cas(R, String(n), (a) => (a ? null : { nuevo: { estado: 'borrada', momento: Date.now(), runId: rec.runId, rev: rec.rev ?? 0 } }));
+  }
+}
+
+export default {
+  PREFIJO, CANDADO_GLOBAL, RANURA_AUTO, usarCandados, ranurasManuales, huella, leaseValido, conCandadoGlobal,
+  validarGuardado, leerRanura, duenoRanura, leerRanuraCoordinada, enumerarPartidas, ocupacion, ranuraLibre, ranuraLibreLocal,
+  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
+};
