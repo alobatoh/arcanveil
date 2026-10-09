@@ -1503,8 +1503,19 @@ function abrirAjustes() {
         class: 'btn btn--peligro', id: 'ajustes-borrar',
         onClick: protegido('borrar datos', async () => {
           if (!confirm('¿Borrar todas las partidas, personajes y retratos elegidos guardados en este navegador?')) return;
-          await sistema('saves')?.borrarTodo?.();
-          try { Object.keys(localStorage).filter((k) => k.startsWith('arcanveil:')).forEach((k) => localStorage.removeItem(k)); } catch { /* nada */ }
+          // El resultado dice lo que de verdad pasó; el aviso, uno solo, lo
+          // compone esta pantalla con él. Si el estado del juego no se pudo
+          // borrar, no se sigue con nada más: no se ha borrado nada y se
+          // puede reintentar.
+          const r = await sistema('saves')?.borrarTodo?.({ silencioso: true });
+          if (!r || (!r.ok && !r.autoridad && !r.sinCoordinacion)) {
+            $('#ajustes-modal').hidden = true;
+            pintarInicio();
+            avisar(r?.aviso?.mensaje ?? 'No se ha podido borrar nada. Vuelve a intentarlo.', 'error');
+            return;
+          }
+          const parcial = !r.ok;
+          const cuantas = `partidas (${r.partidas})`;
           // Los retratos elegidos viven en IndexedDB: se esperan, y si el
           // navegador no deja, se dice. Antes se quedaban y volvían al recargar.
           const galeria = await borrarGaleria();
@@ -1513,13 +1524,17 @@ function abrirAjustes() {
           const puente = await olvidarCandidatas({ todas: true });
           $('#ajustes-modal').hidden = true;
           pintarInicio();
-          if (!galeria.ok) {
-            avisar(`Partidas y personajes borrados, pero no los retratos elegidos: ${galeria.motivo}. Prueba otra vez.`, 'aviso');
+          if (parcial) {
+            avisar(`${r.aviso.mensaje} ${galeria.ok ? 'Los retratos elegidos sí se han borrado.' : `Tampoco los retratos elegidos: ${galeria.motivo}.`}`, 'aviso');
             return;
           }
-          avisar(puente.ok
-            ? 'Borrados partidas, personajes, retratos elegidos y las candidatas del generador.'
-            : 'Borrados partidas, personajes y retratos elegidos. Si usaste el generador de imágenes, sus candidatas (en este PC) caducan en 24 h o se borran con: node tools/imagen-local-proxy.mjs --limpiar', puente.ok ? 'exito' : 'info');
+          if (!galeria.ok) {
+            avisar(`Borrados ${cuantas} y personajes, pero no los retratos elegidos: ${galeria.motivo}. Prueba otra vez.${r.limite}`, 'aviso');
+            return;
+          }
+          avisar(`${puente.ok
+            ? `Borrados ${cuantas}, personajes, retratos elegidos y las candidatas del generador.`
+            : `Borrados ${cuantas}, personajes y retratos elegidos. Si usaste el generador de imágenes, sus candidatas (en este PC) caducan en 24 h o se borran con: node tools/imagen-local-proxy.mjs --limpiar`}${r.limite}`, r.limite ? 'aviso' : puente.ok ? 'exito' : 'info');
         }),
       }, 'Borrar partidas y personajes'),
     ),
