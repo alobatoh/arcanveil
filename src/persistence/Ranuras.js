@@ -45,6 +45,18 @@
  * huella. Turno, XP, inventario, vida, combate o cualquier otro campo
  * distinto es contenido distinto.
  *
+ * LOS RECIBOS SON DURABLES (#10). No se borran nunca: el token es opaco y,
+ * sin su recibo, «nunca usado» y «usado hace mucho» serían indistinguibles
+ * (en el #9 una poda de los 200 más recientes volvía a aceptar un token
+ * superado como operación NUEVA). Coste: un recibo por guardado CON token
+ * (~150 B; los «deshechos» guardan además su contenido canónico, del tamaño
+ * de una partida, hasta que se rehacen). La interfaz no usa tokens: solo
+ * crece con quien los pasa por la API. Sin compactación: almacenamiento NO
+ * acotado para ese uso. Un token cuyo recibo ya borró la poda del #9 no se
+ * puede reconocer (no queda evidencia): ese límite es anterior a esta versión.
+ * No hay estado «pendiente»: recibo, dueño y bytes se escriben en UNA
+ * transacción; una escritura no confirmada no deja recibo (no se usó).
+ *
  * El candado global se pide UNA vez por operación. Quien ya lo tiene (una
  * creación que guarda dentro) pasa su «arriendo»: un objeto que solo existe
  * mientras el candado está tomado; no hay atajo por bandera.
@@ -455,7 +467,6 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
   });
   if (repetido) return { ok: true, repetido: true, rev: repetido.rev, texto: repetido.texto };
   if (!r.cambiado) return { ok: false, codigo: codigo ?? 'otro-dueno', motivo: motivo ?? `No se ha podido escribir la ranura ${n}.` };
-  if (token) podarOperacionesDeVezEnCuando();
   return { ok: true, rev: r.nuevos[0].rev, texto, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null, recibo: token ? (r.actuales[2] ?? null) : undefined } };
 }
 
@@ -489,26 +500,6 @@ export function contenidoCanonico(texto) {
   const ordenar = (v) => (Array.isArray(v) ? v.map(ordenar)
     : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, ordenar(v[k])])) : v);
   return JSON.stringify(ordenar(resto));
-}
-
-/**
- * Los recibos de operaciones no crecen sin fin: de vez en cuando se quedan
- * los 200 más recientes (los viejos ya están superados por guardados
- * posteriores: un token antiguo sin recibo daría una escritura NUEVA, que
- * sigue sujeta a dueño y revisión).
- */
-let escriturasConToken = 0;
-function podarOperacionesDeVezEnCuando() {
-  escriturasConToken += 1;
-  if (escriturasConToken % 25) return;
-  podarOperaciones().catch(() => null);
-}
-export async function podarOperaciones(maximo = 200) {
-  const todos = await Coordinacion.listar(O);
-  if (todos.length <= maximo) return 0;
-  const viejos = todos.sort((a, b) => (a[1]?.momento ?? 0) - (b[1]?.momento ?? 0)).slice(0, todos.length - maximo);
-  for (const [k] of viejos) await Coordinacion.cas(O, k, () => ({ borrar: true }));
-  return viejos.length;
 }
 
 /** El registro y la copia autoritativa de una ranura, tal cual (para poder volver). */
@@ -571,5 +562,5 @@ export async function lapidasTodas(antes) {
 export default {
   PREFIJO, CANDADO_GLOBAL, RANURA_AUTO, usarCandados, ranurasManuales, huella, leaseValido, conCandadoGlobal,
   validarGuardado, leerRanura, duenoRanura, leerRanuraCoordinada, enumerarPartidas, ocupacion, ranuraLibre, ranuraLibreLocal,
-  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, contenidoCanonico, podarOperaciones, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
+  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, contenidoCanonico, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
 };
