@@ -164,6 +164,9 @@ const externos = [];
  */
 const EVENTOS_NAVEGACION = new Set(['Page.frameNavigated', 'Page.loadEventFired', 'Runtime.executionContextCreated', 'Inspector.detached', 'Target.detachedFromTarget']);
 const eventosPrincipal = [];
+/** Últimas incidencias de la pestaña principal (texto del error y URL; nada de la partida). */
+const incidenciasPrincipal = [];
+const apuntarPrincipal = (x) => { incidenciasPrincipal.push({ ...x, t: Date.now() }); if (incidenciasPrincipal.length > 30) incidenciasPrincipal.shift(); };
 function cdp(method, params = {}) {
   const id = ++seq;
   ws.send(JSON.stringify({ id, method, params }));
@@ -189,7 +192,7 @@ async function evaluate(expression, awaitPromise = true) {
   return r.result?.value;
 }
 /** El estado del motor cuando algo no llega: para saber POR QUÉ. */
-const DIAGNOSTICO = `(() => { try { const A = window.ARCANVEIL; if (!A?.motor?.listo) return { motor: 'sin arrancar', pantalla: document.body?.dataset?.activeScreen };
+const DIAGNOSTICO = `(() => { try { const A = window.ARCANVEIL; if (!A?.motor?.listo) return { motor: 'sin arrancar', arcanveil: typeof A, url: location.href, readyState: document.readyState, pantalla: document.body?.dataset?.activeScreen ?? null, clases: document.body?.className ?? null, rotulo: document.getElementById('arranque-texto')?.textContent ?? null, fallos: document.querySelector('#fallos')?.textContent?.slice(0, 300) ?? null, controlada: Boolean(navigator.serviceWorker?.controller) };
   const c = A.sistema('combat'); return { pantalla: document.body.dataset.activeScreen, fase: A.ver('meta.fase'), run: A.ver('meta.runId'), muerte: A.ver('meta.muerte')?.causa ?? null,
   vida: A.ver('player.vida.actual'), combate: A.ver('combat.activo', false), esperando: c?.esperandoJugador ?? null, encuentro: Boolean(A.sistema('exploration')?.encuentroActivo),
   viaje: A.sistema('travel')?.paraInterfaz?.() ?? null, ultimas: A.ver('narrative.entradas', []).slice(-4).map((e) => e.voz + ': ' + String(e.texto ?? '').slice(0, 90)) }; } catch (e) { return { error: String(e) }; } })()`;
@@ -201,7 +204,11 @@ async function until(expression, timeout = 12000) {
   }
   let estado = null;
   try { estado = await evaluate(DIAGNOSTICO); } catch (e) { estado = { sinDiagnostico: e.message }; }
-  throw new Error(`Tiempo agotado (${timeout} ms, etapa «${etapaActual}») esperando: ${expression}\n  estado: ${JSON.stringify(estado)}`);
+  const recientes = incidenciasPrincipal.filter((x) => x.t >= start - 5000).map(({ t, ...x }) => x);
+  const navs = eventosPrincipal.filter((e) => e.t >= start - 5000 && e.method === 'Page.frameNavigated' && !e.params.frame.parentId).map((e) => e.params.frame.url);
+  const nombreFoto = `principal-fallo-${viewport.label}.png`;
+  await fotoRapida(nombreFoto).catch(() => null);
+  throw new Error(`Tiempo agotado (${timeout} ms, etapa «${etapaActual}») esperando: ${expression}\n  estado: ${JSON.stringify(estado)}\n  navegaciones recientes: ${JSON.stringify(navs)}\n  incidencias recientes: ${JSON.stringify(recientes)}${out ? `\n  captura: ${nombreFoto}` : ''}`);
 }
 /**
  * Pulsar algo que NAVEGA (recarga). Se pulsa desde un temporizador de la
@@ -818,6 +825,11 @@ try {
       if (eventosPrincipal.length > 2000) eventosPrincipal.splice(0, 1000);
     } else if (m.method === 'Runtime.exceptionThrown') {
       exceptions.push(m.params.exceptionDetails?.text ?? 'excepción');
+      apuntarPrincipal({ tipo: 'excepción', texto: String(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').slice(0, 200) });
+    } else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) {
+      apuntarPrincipal({ tipo: `consola ${m.params.type}`, texto: (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200) });
+    } else if (m.method === 'Network.loadingFailed') {
+      apuntarPrincipal({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}`, id: m.params.requestId });
     } else if (m.method === 'Network.requestWillBeSent') {
       const url = m.params.request.url;
       if (/^(?:https?|wss?):/.test(url) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(url)) externos.push(url.slice(0, 120));
