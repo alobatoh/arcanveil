@@ -84,7 +84,7 @@
  * termina (la pestaña se cierra, el navegador falla), se termina al arrancar
  * (`recuperarBorradoPendiente`) sin tocar claves que hayan cambiado desde
  * entonces. Si la transacción falla, no se toca nada.
- * Crecimiento: un invalidado (~90 B) por cada run y ranura borrados o
+ * Crecimiento: un invalidado (~110 B) por cada run y ranura borrados o
  * reemplazados, y un número de época. No se podan: podar uno devolvería a
  * ese run la capacidad de revivir.
  *
