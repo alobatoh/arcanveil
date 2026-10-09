@@ -18,6 +18,14 @@
  *   · `operaciones` → el recibo de cada token de guardado (#9): qué ranura,
  *                  run, operación y revisión nombra, para que un reintento no
  *                  pase por otro contenido.
+ *   · `invalidados` → (#11) qué run ya NO puede volver a guardarse en qué
+ *                  ranura (`<ranura>|<run>`): la borró el jugador, otra campaña
+ *                  la reemplazó o se borró todo. Durable: ni el borrado total ni
+ *                  los dueños siguientes lo quitan. Solo metadatos (ranura,
+ *                  run, motivo, momento), nada de la partida.
+ *   · `meta`     → (#11) la ÉPOCA de borrado total (sube con cada «Borrar
+ *                  partidas y personajes») y la intención de un borrado total a
+ *                  medias, para terminarlo al arrancar.
  *
  * Por qué no en `localStorage`: en Chrome cada pestaña lee `localStorage` de
  * su propia caché y los cambios de otra llegan un poco después (medido, #7:
@@ -36,8 +44,8 @@
  */
 
 export const BASE = 'arcanveil-coordinacion';
-export const VERSION_BASE = 3;
-export const ALMACENES = Object.freeze({ LEGADOS: 'legados', RANURAS: 'ranuras', PARTIDAS: 'partidas', MUERTOS: 'muertos', OPERACIONES: 'operaciones' });
+export const VERSION_BASE = 4;
+export const ALMACENES = Object.freeze({ LEGADOS: 'legados', RANURAS: 'ranuras', PARTIDAS: 'partidas', MUERTOS: 'muertos', OPERACIONES: 'operaciones', INVALIDADOS: 'invalidados', META: 'meta' });
 
 /** undefined = automático (IndexedDB si existe); null = ninguno; objeto = el dado. */
 let elegido;
@@ -60,7 +68,8 @@ function motor() {
 let abierta = null;
 function abrir() {
   abierta ??= new Promise((ok, mal) => {
-    // v1 (#7): legados y ranuras. v2 (#8): + partidas y muertos. v3 (#9): + operaciones. Subir de
+    // v1 (#7): legados y ranuras. v2 (#8): + partidas y muertos. v3 (#9): +
+    // operaciones. v4 (#11): + invalidados y meta. Subir de
     // versión solo AÑADE almacenes: lo que ya había se conserva.
     const p = globalThis.indexedDB.open(BASE, VERSION_BASE);
     p.onupgradeneeded = () => {
@@ -141,6 +150,39 @@ const idb = {
       terminar(t, ok, mal, () => salida);
     });
   },
+  /**
+   * Una transacción de lectura-escritura sobre TODOS los almacenes: lee todo,
+   * `decidir(datos)` dice qué vaciar, poner y borrar, y se aplica entero o nada.
+   * @param {(datos: Object<string, Map<any, any>>) => ({vaciar?: string[], poner?: Array<[string, any, any]>, borrar?: Array<[string, any]>})|null} decidir
+   */
+  async transaccionCompleta(decidir) {
+    const db = await abrir();
+    const almacenes = Object.values(ALMACENES);
+    return new Promise((ok, mal) => {
+      const t = db.transaction(almacenes, 'readwrite');
+      const datos = {};
+      let pendientes = almacenes.length;
+      let salida = { cambiado: false };
+      for (const a of almacenes) {
+        const st = t.objectStore(a);
+        const ks = st.getAllKeys();
+        const vs = st.getAll();
+        vs.onsuccess = () => {
+          datos[a] = new Map(ks.result.map((k, i) => [k, vs.result[i]]));
+          pendientes -= 1;
+          if (pendientes) return;
+          let d;
+          try { d = decidir(datos); } catch (e) { try { t.abort(); } catch { /* ya */ } mal(e); return; }
+          if (!d) return;
+          for (const v of d.vaciar ?? []) t.objectStore(v).clear();
+          for (const [a2, k, v] of d.poner ?? []) t.objectStore(a2).put(v, k);
+          for (const [a2, k] of d.borrar ?? []) t.objectStore(a2).delete(k);
+          salida = { cambiado: true, datos };
+        };
+      }
+      terminar(t, ok, mal, () => salida);
+    });
+  },
   async vaciar() {
     const db = await abrir();
     return new Promise((ok, mal) => {
@@ -176,6 +218,15 @@ export function crearEnMemoria() {
       const r = await impl.casVarios([[a, k]], (actuales) => [decidir(actuales[0])]);
       return { cambiado: r.cambiado, actual: r.actuales[0], nuevo: r.nuevos[0] };
     },
+    async transaccionCompleta(decidir) {
+      const vista = Object.fromEntries([...datos.entries()].map(([a, m]) => [a, new Map([...m.entries()].map(([k, v]) => [k, copia(v)]))]));
+      const d = decidir(vista);
+      if (!d) return { cambiado: false };
+      for (const v of d.vaciar ?? []) datos.get(v).clear();
+      for (const [a, k, v] of d.poner ?? []) datos.get(a).set(k, copia(v));
+      for (const [a, k] of d.borrar ?? []) datos.get(a).delete(k);
+      return { cambiado: true, datos: vista };
+    },
     async vaciar() { for (const m of datos.values()) m.clear(); return true; },
   };
   return impl;
@@ -202,5 +253,11 @@ export const casVarios = (claves, decidir) => {
 };
 /** «Borrar partidas»: también el estado compartido. */
 export async function vaciar() { const m = motor(); if (m) await m.vaciar(); }
+/** Una transacción sobre todos los almacenes (borrado total): todo o nada. */
+export const transaccionCompleta = (decidir) => {
+  const m = exigir();
+  if (m.transaccionCompleta) return m.transaccionCompleta(decidir);
+  throw Object.assign(new Error('el estado compartido no admite una transacción completa'), { codigo: 'sin-coordinacion' });
+};
 
-export default { BASE, VERSION_BASE, ALMACENES, usarCoordinacion, disponible, motorActual, crearEnMemoria, leer, listar, cas, casVarios, vaciar };
+export default { BASE, VERSION_BASE, ALMACENES, usarCoordinacion, disponible, motorActual, crearEnMemoria, leer, listar, cas, casVarios, vaciar, transaccionCompleta };
