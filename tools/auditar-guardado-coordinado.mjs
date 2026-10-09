@@ -446,7 +446,7 @@ await caso('17 · Borrar con un guardado en cola: el tardío no la recrea', asyn
   const [gCola, rTodo] = await Promise.all([enCola, vaciado]);
   const tardio2 = await guardar(m, '4');
   const copia4 = await Coordinacion.leer(Coordinacion.ALMACENES.PARTIDAS, '4');
-  comprobar(rTodo?.borradas >= 0 && crudo('arcanveil:partida:4') === null && !copia4 && !tardio2.exito,
+  comprobar(rTodo?.ok === true && rTodo?.completo === true && crudo('arcanveil:partida:4') === null && !copia4 && !tardio2.exito,
     `«Borrar todo» con un guardado en cola: ni el de la cola ni uno tardío la recrean (${gCola.exito ? 'la cola guardó antes del vaciado' : 'la cola se rechazó'}; tardío: ${tardio2.motivo})`, JSON.stringify({ gCola: gCola.motivo, rTodo, copia4: Boolean(copia4) }));
 });
 

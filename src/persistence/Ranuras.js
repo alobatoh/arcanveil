@@ -57,6 +57,37 @@
  * No hay estado «pendiente»: recibo, dueño y bytes se escriben en UNA
  * transacción; una escritura no confirmada no deja recibo (no se usó).
  *
+ * LO BORRADO NO VUELVE (#11). Una lápida en `ranuras[n]` solo recuerda al
+ * ÚLTIMO dueño; por eso cada run que deja de valer en una ranura se apunta
+ * en `invalidados[<n>|<run>]` (durable, solo metadatos: ranura, run, motivo
+ * y momento):
+ *   · el jugador borró esa ranura (`borrarRanura`) → «borrada»;
+ *   · una creación reemplazó esa campaña (escritura sobre una reserva cuyo
+ *     `previo` era de otro run) → «reemplazada» (si la creación se deshace,
+ *     la marca se quita con ella);
+ *   · «Borrar partidas y personajes» (`borrarTodo`) → «borrado-todo» para
+ *     cada run que aparezca en registros, copias, recibos o el espejo; y sube
+ *     la ÉPOCA (`meta.epoca`). Cada pestaña recuerda en qué época conoció
+ *     cada run (al cargarlo, importarlo o guardarlo) y la manda al escribir:
+ *     un run de una época anterior ya no se escribe en NINGUNA ranura (cubre
+ *     la automática y las ranuras que ese run nunca ocupó).
+ * `escribirPartida` lo comprueba en la MISMA transacción que escribe y antes
+ * que nada (también en la automática, con token y con operación). Una
+ * operación (`op`) solo vale para la reserva que hizo esa operación (o para
+ * la ranura que esa misma creación ya ocupó): un `op` inventado no salta
+ * ninguna regla. Una creación NUEVA (un run sin época, que nunca se guardó
+ * ni se cargó) sí puede usar una ranura liberada: lo invalidado es el run,
+ * no la ranura.
+ * El borrado total es UNA transacción sobre todo el estado coordinado que
+ * deja apuntada la intención (`meta.borradoPendiente`: qué claves del espejo
+ * quitar y su huella, sin contenido). Después se quita el espejo; si eso no
+ * termina (la pestaña se cierra, el navegador falla), se termina al arrancar
+ * (`recuperarBorradoPendiente`) sin tocar claves que hayan cambiado desde
+ * entonces. Si la transacción falla, no se toca nada.
+ * Crecimiento: un invalidado (~90 B) por cada run y ranura borrados o
+ * reemplazados, y un número de época. No se podan: podar uno devolvería a
+ * ese run la capacidad de revivir.
+ *
  * El candado global se pide UNA vez por operación. Quien ya lo tiene (una
  * creación que guarda dentro) pasa su «arriendo»: un objeto que solo existe
  * mientras el candado está tomado; no hay atajo por bandera.
@@ -80,6 +111,21 @@ export const RANURA_AUTO = 'auto';
 const R = Coordinacion.ALMACENES.RANURAS;
 const P = Coordinacion.ALMACENES.PARTIDAS;
 const O = Coordinacion.ALMACENES.OPERACIONES;
+const I = Coordinacion.ALMACENES.INVALIDADOS;
+const M = Coordinacion.ALMACENES.META;
+/** Clave de «este run ya no se escribe en esta ranura». */
+const inv = (ranura, runId) => `${ranura}|${runId}`;
+
+/** Lo que se le dice a la pestaña cuya partida ya no se puede guardar ahí. */
+function motivoInvalidada(n, porque) {
+  if (porque === 'reemplazada') return `Esta partida fue reemplazada en la ranura ${n} por otra partida (desde otra pestaña o al crear una nueva): ya no se puede guardar ahí. Puedes seguir jugando en esta pestaña, pero no se guardará en esa ranura.`;
+  return 'Esta partida se borró (desde otra pestaña o en Ajustes): ya no se puede guardar aquí. Puedes seguir jugando en esta pestaña, pero no se guardará.';
+}
+
+/** La época de borrado total vigente (0 si nunca se borró todo). */
+export async function epocaActual() {
+  return (await Coordinacion.leer(M, 'epoca')) ?? 0;
+}
 
 /** Para las pruebas: sustituir Web Locks (dos «pestañas» en un proceso). */
 let candados = null;
@@ -372,9 +418,11 @@ export async function soltarRanura(ranura, op) {
  * @param {number|null} [p.revBase] Revisión en la que se basa (si se conoce).
  * @param {string} [p.token] Para que un reintento no cree otra revisión.
  * @param {boolean} [p.compartida] La ranura automática (de cualquiera).
- * @returns {Promise<{ok: true, rev: number, repetido?: boolean}|{ok: false, codigo: string, motivo: string}>}
+ * @param {number|null} [p.epoca] Época de borrado total en la que esta pestaña
+ *   conoció el run (null: un run que aquí nunca se guardó ni se cargó).
+ * @returns {Promise<{ok: true, rev: number, epoca: number, repetido?: boolean}|{ok: false, codigo: string, motivo: string}>}
  */
-export async function escribirPartida({ lease, ranura, runId, texto, op = null, revBase = null, token = null, compartida = false, guardadoEn = Date.now() }) {
+export async function escribirPartida({ lease, ranura, runId, texto, op = null, revBase = null, token = null, compartida = false, epoca = null, guardadoEn = Date.now() }) {
   if (!leaseValido(lease)) return { ok: false, codigo: 'sin-candado', motivo: 'Escritura sin el candado global: no se hace.' };
   const n = String(ranura);
   // Una ranura sin registro con bytes de antes del #8: se importa una vez
@@ -385,6 +433,16 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
   let motivo = null;
   let codigo = null;
   let repetido = null;
+  let epocaVista = 0;
+
+  // Una creación sobre una reserva que guardaba a OTRO run: ese run queda
+  // reemplazado en la misma transacción. Se lee antes (bajo el candado) para
+  // saber qué clave abrir, y dentro se comprueba que sigue siendo así.
+  let previoRun = null;
+  if (op) {
+    const pre = await Coordinacion.leer(R, n);
+    if (pre?.estado === 'reservada' && pre.op === op && pre.previo?.runId && pre.previo.runId !== runId) previoRun = pre.previo.runId;
+  }
 
   /** La decisión de siempre (dueño, revisión, reserva, lápida): [rec, snap] nuevos o null. */
   const decidir = (rec, snap) => {
@@ -394,15 +452,16 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
       codigo = 'ranura-ilegible'; motivo = `La ranura ${n} tiene datos que no se pueden leer (${local.motivo}). No se escribe encima.`; return null;
     }
     const copia = (rev) => ({ runId, rev, texto, huella: huella(texto), guardadoEn });
+    // Lápida de este mismo run (también en la automática): no vuelve.
+    if (base?.estado === 'borrada' && base.runId && base.runId === runId) { codigo = 'borrada'; motivo = motivoInvalidada(n, 'borrada'); return null; }
     if (compartida) {
       // La automática es de todos: se ordena por revisión, sin dueño.
       const rev = (base?.rev ?? 0) + 1;
       return [{ estado: 'ocupada', runId, rev, compartida: true, momento: Date.now() }, copia(rev)];
     }
     if (!base || base.estado === 'borrada') {
-      // Lo que el jugador borró no lo resucita un guardado tardío de esa
-      // misma campaña (sí puede ocuparla otra, o una creación).
-      if (base?.estado === 'borrada' && base.runId && base.runId === runId && !op) { codigo = 'borrada'; motivo = `La ranura ${n} se borró: esta partida ya no está guardada ahí y no se ha recreado. Puedes seguir jugando en esta pestaña, pero lo que juegues no se guardará.`; return null; }
+      // Libre o con la lápida de OTRO run (los runs invalidados ya se
+      // rechazaron antes): la puede ocupar otra campaña.
       if (snap) { codigo = 'otro-dueno'; motivo = `La ranura ${n} no tiene un dueño claro. No se escribe encima.`; return null; }
       // Libre de verdad: la escritura la ocupa (la revisión sigue subiendo).
       const rev = (base?.rev ?? 0) + 1;
@@ -429,8 +488,26 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
     return [{ ...resto, estado: 'ocupada', runId, rev, momento: Date.now() }, copia(rev)];
   };
 
-  const claves = token ? [[R, n], [P, n], [O, token]] : [[R, n], [P, n]];
-  const r = await Coordinacion.casVarios(claves, ([rec, snap, recibo]) => {
+  const claves = [[R, n], [P, n], [I, inv(n, runId)], [M, 'epoca']];
+  const iPrevio = previoRun ? claves.push([I, inv(n, previoRun)]) - 1 : -1;
+  const iRecibo = token ? claves.push([O, token]) - 1 : -1;
+  const r = await Coordinacion.casVarios(claves, (vals) => {
+    const [rec, snap, invalidado, ep] = vals;
+    const recibo = iRecibo >= 0 ? vals[iRecibo] : undefined;
+    epocaVista = ep ?? 0;
+    // 1. Lo invalidado no vuelve: ni con token, ni con operación, ni en la
+    //    automática. Va ANTES que todo lo demás.
+    if (invalidado) { codigo = 'invalidada'; motivo = motivoInvalidada(n, invalidado.motivo); return null; }
+    if (epoca !== null && epoca !== undefined && epoca < epocaVista) { codigo = 'invalidada'; motivo = motivoInvalidada(n, 'borrado-todo'); return null; }
+    // 2. Una operación solo vale para SU reserva (o la ranura que ella misma
+    //    ocupó al escribir). Un `op` cualquiera no es un permiso.
+    if (op) {
+      const suReserva = rec?.estado === 'reservada' && rec.op === op && rec.runId === runId;
+      const suRanura = rec?.estado === 'ocupada' && rec.runId === runId && rec.creadaPor === op;
+      if (!suReserva && !suRanura) { codigo = 'sin-reserva'; motivo = `Esa operación no tiene apartada la ranura ${n}: no se escribe.`; return null; }
+      const previoDentro = suReserva && rec.previo?.runId && rec.previo.runId !== runId ? rec.previo.runId : null;
+      if (suReserva && previoDentro !== previoRun) { codigo = 'otro-dueno'; motivo = `La ranura ${n} ha cambiado mientras se escribía: no se escribe.`; return null; }
+    }
     if (token && recibo) {
       const mismaIdentidad = recibo.ranura === n && recibo.runId === runId && (recibo.op ?? null) === (op ?? null);
       if (!mismaIdentidad) {
@@ -461,13 +538,15 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
     }
     const d = decidir(rec, snap);
     if (!d) return null;
-    const cambios = [{ nuevo: d[0] }, { nuevo: d[1] }];
+    const cambios = [{ nuevo: d[0] }, { nuevo: d[1] }, null, null];
+    // El run al que esta creación reemplaza ya no vuelve a esta ranura.
+    if (iPrevio >= 0) cambios.push(vals[iPrevio] ? null : { nuevo: { ranura: n, runId: previoRun, motivo: 'reemplazada', por: runId, momento: Date.now() } });
     if (token) cambios.push({ nuevo: { token, ranura: n, runId, op: op ?? null, rev: d[0].rev, estado: 'hecho', momento: Date.now() } });
     return cambios;
   });
-  if (repetido) return { ok: true, repetido: true, rev: repetido.rev, texto: repetido.texto };
+  if (repetido) return { ok: true, repetido: true, rev: repetido.rev, texto: repetido.texto, epoca: epocaVista };
   if (!r.cambiado) return { ok: false, codigo: codigo ?? 'otro-dueno', motivo: motivo ?? `No se ha podido escribir la ranura ${n}.` };
-  return { ok: true, rev: r.nuevos[0].rev, texto, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null, recibo: token ? (r.actuales[2] ?? null) : undefined } };
+  return { ok: true, rev: r.nuevos[0].rev, texto, epoca: epocaVista, previo: { rec: r.actuales[0] ?? null, snap: r.actuales[1] ?? null, recibo: token ? (r.actuales[iRecibo] ?? null) : undefined } };
 }
 
 /**
@@ -480,11 +559,18 @@ export async function escribirPartida({ lease, ranura, runId, texto, op = null, 
 export async function deshacerEscritura({ lease, ranura, runId, texto, previo, token = null }) {
   if (!leaseValido(lease)) return { ok: false, motivo: 'sin el candado global' };
   const n = String(ranura);
-  const claves = token ? [[R, n], [P, n], [O, token]] : [[R, n], [P, n]];
-  const r = await Coordinacion.casVarios(claves, ([rec, snap, recibo]) => {
+  // Si lo deshecho era una creación sobre otro run, ese run deja de estar
+  // «reemplazado» (vuelve a ser el dueño): se quita la marca que puso ESTA.
+  const reemplazado = previo?.rec?.estado === 'reservada' && previo.rec.previo?.runId && previo.rec.previo.runId !== runId ? previo.rec.previo.runId : null;
+  const claves = [[R, n], [P, n]];
+  const iPrevio = reemplazado ? claves.push([I, inv(n, reemplazado)]) - 1 : -1;
+  const iRecibo = token ? claves.push([O, token]) - 1 : -1;
+  const r = await Coordinacion.casVarios(claves, (vals) => {
+    const [rec, snap] = vals;
     if (snap?.texto !== texto || rec?.runId !== runId || rec?.estado !== 'ocupada') return null;
     const cambios = [previo?.rec ? { nuevo: previo.rec } : { borrar: true }, previo?.snap ? { nuevo: previo.snap } : { borrar: true }];
-    if (token) cambios.push(recibo ? { nuevo: { ...recibo, estado: 'deshecho', rev: null, contenido: contenidoCanonico(texto) } } : null);
+    if (iPrevio >= 0) cambios.push(vals[iPrevio]?.motivo === 'reemplazada' && vals[iPrevio]?.por === runId ? { borrar: true } : null);
+    if (iRecibo >= 0) cambios.push(vals[iRecibo] ? { nuevo: { ...vals[iRecibo], estado: 'deshecho', rev: null, contenido: contenidoCanonico(texto) } } : null);
     return cambios;
   });
   return { ok: r.cambiado };
@@ -528,39 +614,203 @@ export async function confirmarRanura(ranura, op, runId) {
 }
 
 /**
- * Borrar una campaña: solo la que el jugador eligió (mismo run, si se dice)
- * y dejando una lápida: un guardado tardío de esa campaña no la recrea.
+ * Borrar una campaña: solo la que el jugador eligió (mismo run, si se dice).
+ * En UNA transacción: lápida, sin copia, el run apuntado como invalidado en
+ * esa ranura (un guardado tardío suyo no la recrea aunque después otra
+ * campaña la ocupe y se borre) y, en los recibos de esa ranura, fuera el
+ * contenido de partida que guardaban. Después el espejo, releído.
+ * @returns {Promise<{ok: true, runId: string|null, espejo: boolean}|{ok: false, motivo: string}>}
+ *   `espejo: false`: la autoridad ya dice borrada, pero la copia local no se
+ *   pudo quitar (se puede reintentar; al cargar manda la autoridad).
  */
 export async function borrarRanura({ lease, ranura, runId = null }) {
   if (!leaseValido(lease)) return { ok: false, motivo: 'sin el candado global' };
   const n = String(ranura);
   const local = leerRanura(n);
+  // Dueño y recibos con contenido, leídos antes (bajo el candado) para saber
+  // qué claves abrir; dentro se comprueba que el dueño sigue siendo ese.
+  const pre = await Coordinacion.leer(R, n);
+  const dueno = pre?.runId ?? (local.tipo === 'valida' ? local.runId : null);
+  const recibos = (await Coordinacion.listar(O)).filter(([, v]) => v?.ranura === n && v.contenido != null).map(([k]) => k);
   let motivo = null;
-  const r = await Coordinacion.casVarios([[R, n], [P, n]], ([rec, snap]) => {
-    const dueno = rec?.runId ?? (local.tipo === 'valida' ? local.runId : null);
+  const claves = [[R, n], [P, n]];
+  if (dueno) claves.push([I, inv(n, dueno)]);
+  const desde = claves.length;
+  for (const k of recibos) claves.push([O, k]);
+  const r = await Coordinacion.casVarios(claves, (vals) => {
+    const [rec, snap] = vals;
+    if ((rec?.runId ?? (local.tipo === 'valida' ? local.runId : null)) !== dueno) { motivo = 'la ranura acaba de cambiar'; return null; }
     if (runId && dueno && dueno !== runId) { motivo = 'la ranura ya es de otra campaña'; return null; }
     if (rec?.estado === 'reservada') { motivo = 'la ranura está apartada por una operación en curso'; return null; }
-    return [{ nuevo: { estado: 'borrada', momento: Date.now(), runId: dueno, rev: rec?.rev ?? 0 } }, snap ? { borrar: true } : null];
+    const cambios = [{ nuevo: { estado: 'borrada', momento: Date.now(), runId: dueno, rev: rec?.rev ?? 0 } }, snap ? { borrar: true } : null];
+    if (dueno) cambios.push(vals[2] ? null : { nuevo: { ranura: n, runId: dueno, motivo: 'borrada', momento: Date.now() } });
+    for (let j = desde; j < claves.length; j++) cambios.push(vals[j]?.contenido != null ? { nuevo: { ...vals[j], contenido: null, retirado: 'borrada' } } : null);
+    return cambios;
   });
   if (!r.cambiado) return { ok: false, motivo: motivo ?? 'no se ha podido borrar' };
-  try { almacen()?.removeItem(`${PREFIJO}${n}`); } catch { /* el espejo; la autoridad ya dice borrada */ }
-  return { ok: true };
+  let espejo = true;
+  try { almacen()?.removeItem(`${PREFIJO}${n}`); } catch { espejo = false; }
+  if (leerRanura(n).tipo !== 'ausente') espejo = false;
+  return { ok: true, runId: dueno, espejo };
+}
+
+/* ── borrar todo ────────────────────────────────────────────────────────── */
+
+const PREFIJO_JUEGO = 'arcanveil:';
+
+/** Las claves del juego en el espejo y su huella (sin contenido). */
+function clavesDelEspejo() {
+  const ls = almacen();
+  if (!ls) return [];
+  const lista = [];
+  for (let i = 0; i < ls.length; i++) {
+    const k = ls.key(i);
+    if (k?.startsWith(PREFIJO_JUEGO)) lista.push({ k, huella: huella(ls.getItem(k)) });
+  }
+  return lista;
 }
 
 /**
- * «Borrar partidas y personajes»: tras vaciar, cada ranura que tenía dueño
- * queda con su lápida (un guardado tardío de esa campaña no la recrea).
- * @param {Array<[string, Object]>} antes Los registros de antes de vaciar.
+ * Quita del espejo las claves apuntadas, solo si siguen siendo lo que eran
+ * (misma huella): lo escrito después es de otro y no se toca. Se relee.
  */
-export async function lapidasTodas(antes) {
-  for (const [n, rec] of antes) {
-    if (!rec?.runId) continue;
-    await Coordinacion.cas(R, String(n), (a) => (a ? null : { nuevo: { estado: 'borrada', momento: Date.now(), runId: rec.runId, rev: rec.rev ?? 0 } }));
+function quitarDelEspejo(lista) {
+  const ls = almacen();
+  const restos = [];
+  let quitadas = 0;
+  for (const { k, huella: h } of lista) {
+    try {
+      const v = ls.getItem(k);
+      if (v === null || huella(v) !== h) continue;
+      ls.removeItem(k);
+      if (ls.getItem(k) !== null) { restos.push(k); continue; }
+      quitadas += 1;
+    } catch { restos.push(k); }
   }
+  return { quitadas, restos };
+}
+
+/**
+ * «Borrar partidas y personajes» (#11). Bajo el candado global si lo hay
+ * (si no, la transacción sigue siendo de todo o nada y se dice).
+ *   1. Se apuntan las claves del juego en el espejo (y su huella).
+ *   2. UNA transacción sobre todo el estado coordinado: cada ranura con
+ *      lápida; cada run de registros, copias, recibos y espejo, invalidado en
+ *      su ranura; fuera copias, recibos y herencias; de cada muerte solo queda
+ *      que ese run murió; la época sube y
+ *      queda la intención de quitar el espejo. Si falla, no se toca nada.
+ *   3. El espejo, clave a clave y releído. Si algo queda, la intención sigue
+ *      y se termina al arrancar.
+ * @returns {Promise<{ok: boolean, completo: boolean, partidas: number, claves: number, restos: string[], epoca?: number, sinCoordinacion?: boolean, motivo?: string}>}
+ *   `partidas`: cuántas partidas había (ranuras con partida), no claves.
+ */
+export async function borrarTodo() {
+  let lista;
+  try { lista = clavesDelEspejo(); } catch (e) {
+    return { ok: false, completo: false, partidas: 0, claves: 0, restos: [], motivo: `no se puede leer lo guardado en este navegador (${e?.message ?? e})` };
+  }
+  // Partidas del espejo (también las de antes del #8, que no tienen registro).
+  const espejo = new Map();
+  for (const { k } of lista) {
+    if (!k.startsWith(PREFIJO)) continue;
+    const n = k.slice(PREFIJO.length);
+    const l = leerRanura(n);
+    espejo.set(n, l.tipo === 'valida' ? l.runId : null);
+  }
+
+  if (!Coordinacion.disponible()) {
+    // Sin estado coordinado no hay nada que invalidar entre pestañas: se
+    // quita lo local y se dice el límite.
+    const q = quitarDelEspejo(lista);
+    return { ok: q.restos.length === 0, completo: q.restos.length === 0, sinCoordinacion: true, partidas: espejo.size, claves: q.quitadas, restos: q.restos,
+      motivo: q.restos.length ? `no se han podido borrar ${q.restos.length} datos locales` : null };
+  }
+
+  let partidas = 0;
+  let epoca = null;
+  const invalidados = new Set();
+  const momento = Date.now();
+  try {
+    await Coordinacion.transaccionCompleta((d) => {
+      const regs = d[R] ?? new Map();
+      const snaps = d[P] ?? new Map();
+      const yaInv = d[I] ?? new Map();
+      epoca = ((d[M] ?? new Map()).get('epoca') ?? 0) + 1;
+      const poner = [];
+      const marcar = (n, run) => {
+        if (n === undefined || n === null || !run) return;
+        const k = inv(String(n), run);
+        if (invalidados.has(k)) return;
+        invalidados.add(k);
+        if (!yaInv.has(k)) poner.push([I, k, { ranura: String(n), runId: run, motivo: 'borrado-todo', momento }]);
+      };
+      for (const [n, rec] of regs) { marcar(n, rec?.runId); marcar(n, rec?.previo?.runId); }
+      for (const [n, s] of snaps) marcar(n, s?.runId);
+      for (const [, rc] of d[O] ?? new Map()) marcar(rc?.ranura, rc?.runId);
+      for (const [n, run] of espejo) marcar(n, run);
+      const ranuras = new Set([...regs.keys(), ...snaps.keys(), ...espejo.keys()].map(String));
+      for (const n of ranuras) {
+        const rec = regs.get(n);
+        if (snaps.has(n) || rec?.estado === 'ocupada' || espejo.has(n)) partidas += 1;
+        const rev = rec?.estado === 'reservada' ? (rec.previo?.rev ?? 0) : (rec?.rev ?? snaps.get(n)?.rev ?? 0);
+        poner.push([R, n, { estado: 'borrada', runId: rec?.runId ?? snaps.get(n)?.runId ?? espejo.get(n) ?? null, rev, momento, motivo: 'borrado-todo' }]);
+      }
+      // Las muertes son definitivas: de cada una queda solo que ese run murió
+      // (sin nombre ni causa), para que un muerto exportado no vuelva a la vida
+      // al importarlo.
+      for (const [run, m] of d[Coordinacion.ALMACENES.MUERTOS] ?? new Map()) poner.push([Coordinacion.ALMACENES.MUERTOS, run, { muerto: m?.muerto ?? null, retirado: 'borrado-todo' }]);
+      poner.push([M, 'epoca', epoca], [M, 'borradoPendiente', { epoca, claves: lista, momento }]);
+      return { vaciar: [P, O, Coordinacion.ALMACENES.LEGADOS, Coordinacion.ALMACENES.MUERTOS], poner };
+    });
+  } catch (e) {
+    // La transacción no se aplicó: no se ha tocado nada (tampoco el espejo).
+    return { ok: false, completo: false, autoridad: false, partidas: 0, claves: 0, restos: [],
+      motivo: `no se ha podido borrar el estado guardado del juego (${e?.message ?? e}). No se ha borrado nada; puedes volver a intentarlo` };
+  }
+
+  const q = quitarDelEspejo(lista);
+  // Sin restos, la intención se cierra. Si eso falla, sigue apuntada y el
+  // arranque la cierra (no queda nada que quitar).
+  let cerrada = false;
+  if (!q.restos.length) {
+    try { await Coordinacion.cas(M, 'borradoPendiente', (a) => (a?.epoca === epoca ? { borrar: true } : null)); cerrada = true; } catch { cerrada = false; }
+  }
+  // Relectura de la autoridad: ninguna copia de un run invalidado.
+  let quedan = null;
+  try { quedan = (await Coordinacion.listar(P)).filter(([n, s]) => invalidados.has(inv(String(n), s?.runId))).length; } catch { quedan = null; }
+  const completo = !q.restos.length && cerrada && quedan === 0;
+  let motivo = null;
+  if (q.restos.length) motivo = `las partidas ya no se pueden abrir ni guardar, pero ${q.restos.length === 1 ? 'queda 1 dato' : `quedan ${q.restos.length} datos`} de este navegador por quitar; se terminará al volver a abrir el juego (o vuelve a pulsar «Borrar»)`;
+  else if (quedan === null) motivo = 'las partidas ya no se pueden abrir ni guardar, pero no se ha podido comprobar el resultado; vuelve a pulsar «Borrar» para asegurarte';
+  else if (quedan > 0) motivo = `quedan ${quedan} partidas en el estado del juego; vuelve a pulsar «Borrar»`;
+  else if (!cerrada) motivo = 'las partidas ya no se pueden abrir ni guardar, pero no se ha podido apuntar que terminó; se cerrará al volver a abrir el juego';
+  return { ok: completo, completo, autoridad: true, partidas, claves: q.quitadas, restos: q.restos, epoca, motivo };
+}
+
+/**
+ * Un borrado total que no terminó de quitar el espejo (la pestaña se cerró
+ * a mitad) se termina: solo las claves apuntadas y solo si no han cambiado.
+ * Idempotente; si no hay nada pendiente, no pide el candado.
+ * @returns {Promise<{pendiente: boolean, terminado?: boolean, quitadas?: number, restos?: string[]}>}
+ */
+export async function recuperarBorradoPendiente() {
+  if (!Coordinacion.disponible()) return { pendiente: false };
+  if (!(await Coordinacion.leer(M, 'borradoPendiente'))) return { pendiente: false };
+  const terminar = async () => {
+    const p = await Coordinacion.leer(M, 'borradoPendiente');
+    if (!p) return { pendiente: false };
+    const q = quitarDelEspejo(p.claves ?? []);
+    if (!q.restos.length) await Coordinacion.cas(M, 'borradoPendiente', (a) => (a?.epoca === p.epoca ? { borrar: true } : null));
+    return { pendiente: true, terminado: !q.restos.length, quitadas: q.quitadas, restos: q.restos };
+  };
+  const r = await conCandadoGlobal(() => terminar());
+  if (r?.codigo === 'sin-exclusion') return terminar();
+  return r;
 }
 
 export default {
   PREFIJO, CANDADO_GLOBAL, RANURA_AUTO, usarCandados, ranurasManuales, huella, leaseValido, conCandadoGlobal,
   validarGuardado, leerRanura, duenoRanura, leerRanuraCoordinada, enumerarPartidas, ocupacion, ranuraLibre, ranuraLibreLocal,
-  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, contenidoCanonico, instantanea, confirmarRanura, borrarRanura, lapidasTodas,
+  reclamarDestino, soltarRanura, escribirPartida, deshacerEscritura, contenidoCanonico, instantanea, confirmarRanura, borrarRanura,
+  epocaActual, borrarTodo, recuperarBorradoPendiente,
 };

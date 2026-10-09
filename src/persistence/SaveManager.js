@@ -80,6 +80,13 @@ export class SaveManager extends SystemBase {
 
     /** Revisión conocida de cada ranura y campaña («ranura|run» → rev). @private */
     this._revs = new Map();
+
+    /**
+     * Época de borrado total en la que esta pestaña conoció cada run (al
+     * cargarlo, importarlo o guardarlo). Se manda al escribir: tras «Borrar
+     * partidas y personajes» un run de antes ya no se guarda (#11). @private
+     */
+    this._epocas = new Map();
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
@@ -97,6 +104,13 @@ export class SaveManager extends SystemBase {
     // no es guardar: es rescatar. Colgarlo de `_disponible` dejaba las partidas
     // antiguas invisibles justo para quien no había tocado los ajustes.
     this._migrarClavesHeredadas();
+
+    // Un «Borrar partidas y personajes» que no terminó de quitar la copia
+    // local (la pestaña se cerró a mitad) se termina ahora. En la cola: un
+    // guardado de esta pestaña espera a que acabe.
+    this._cola = this._cola.then(() => Ranuras.recuperarBorradoPendiente())
+      .then((r) => { if (r?.pendiente) this.log.info(`borrado pendiente: ${r.terminado ? 'terminado' : `quedan ${r.restos?.length ?? '?'} claves`}`); })
+      .catch((e) => this.log.aviso(`no se ha podido terminar un borrado pendiente: ${e?.message ?? e}`));
 
     this.escuchar('game:save', ({ ranura, nota }) => { this.guardar(ranura, { nota }).catch((e) => this.log.error('guardar', e)); });
     this.escuchar('game:load', ({ ranura }) => { this.cargar(ranura).catch((e) => this.log.error('cargar', e)); });
@@ -346,6 +360,7 @@ export class SaveManager extends SystemBase {
         lease, ranura, runId, texto, compartida, token,
         op: opciones.op ?? null,
         revBase: compartida ? null : (this._revs.get(clave) ?? null),
+        epoca: this._epocas.get(runId) ?? null,
         guardadoEn: guardado.guardadoEn ?? Date.now(),
       });
       if (!r.ok) return { exito: false, motivo: r.motivo, codigo: r.codigo, conflicto: true };
@@ -366,6 +381,7 @@ export class SaveManager extends SystemBase {
       }
       escritura = r.repetido ? 'repetida' : 'confirmada';
       if (!compartida) this._revs.set(clave, r.rev);
+      if (r.epoca !== undefined && !this._epocas.has(runId)) this._epocas.set(runId, r.epoca);
       return { exito: true, rev: r.rev, texto: r.texto, repetido: Boolean(r.repetido) };
     };
 
@@ -442,6 +458,9 @@ export class SaveManager extends SystemBase {
     const vacia = { exito: false, motivo: 'No hay partida en esa ranura.', avisos: [] };
     if (!this._disponible) return vacia;
 
+    // La época ANTES de leer: si se borra todo entre la lectura y el primer
+    // guardado, este run queda como de antes del borrado.
+    const epoca = await this._epocaAhora();
     let l;
     try {
       l = Coordinacion.disponible() ? await Ranuras.leerRanuraCoordinada(ranura) : Ranuras.leerRanura(ranura);
@@ -464,7 +483,20 @@ export class SaveManager extends SystemBase {
 
     const r = this.cargarDesde(guardado);
     if (r.exito && l.rev !== null && l.rev !== undefined) this._revs.set(`${ranura}|${this.leer('meta.runId', null)}`, l.rev);
+    if (r.exito) this._recordarEpoca(epoca);
     return r;
+  }
+
+  /** La época de borrado total vigente, o null si no se puede saber. @private */
+  async _epocaAhora() {
+    if (!Coordinacion.disponible()) return null;
+    try { return await Ranuras.epocaActual(); } catch { return null; }
+  }
+
+  /** El run en curso se conoció en esta época. @private */
+  _recordarEpoca(epoca) {
+    const run = this.leer('meta.runId', null);
+    if (run && epoca !== null && epoca !== undefined) this._epocas.set(run, epoca);
   }
 
   /**
@@ -646,7 +678,9 @@ export class SaveManager extends SystemBase {
     ranuras.push(RANURA_AUTO);
 
     return ranuras.map((ranura) => {
-      const guardado = this._leerRanura(ranura);
+      // Copia local de una partida ya borrada en la autoridad (borrado a
+      // medias en esta pestaña): no se ofrece, aunque siga en el navegador.
+      const guardado = this._ocultas?.has(`${PREFIJO}${ranura}`) ? null : this._leerRanura(ranura);
 
       if (!guardado) {
         return { ranura, vacia: true, automatica: ranura === RANURA_AUTO };
@@ -693,76 +727,71 @@ export class SaveManager extends SystemBase {
       }
       this.emitir(EVENTOS_GUARDADO.BORRADO, { ranura });
       this.log.info(`ranura ${ranura} borrada`);
+      if (r.espejo === false) {
+        this.emitir('ui:notice', { mensaje: `La partida de la ranura ${ranura} está borrada y ya no se puede abrir ni guardar, pero su copia en este navegador no se ha podido quitar. Vuelve a pulsar «Borrar».`, tipo: 'aviso' });
+      }
       return true;
-    }).catch((e) => { this.log.error('fallo al borrar', e); return false; });
+    }).catch((e) => {
+      // Nada a medias: la transacción no se aplicó (sigue la partida y su copia).
+      this.log.error('fallo al borrar', e);
+      this.emitir('ui:notice', { mensaje: `No se ha borrado la ranura ${ranura}: ${e?.message ?? e}. La partida sigue como estaba; puedes volver a intentarlo.`, tipo: 'error' });
+      return false;
+    });
     this._cola = tarea.catch(() => {});
     return tarea;
   }
 
   /**
-   * Borra todo lo que ARCANVEIL haya escrito en el navegador.
+   * Borra todo lo que ARCANVEIL haya escrito en el navegador (ver
+   * `Ranuras.borrarTodo`): todo el estado coordinado en UNA transacción, las
+   * campañas invalidadas (una pestaña vieja no las recrea) y la copia local.
    *
    * Es la contrapartida de haber escrito algo: el jugador puede deshacerlo por
-   * completo cuando quiera.
+   * completo cuando quiera. El resultado y el aviso dicen lo que de verdad
+   * pasó: completo, a medias (se termina al arrancar) o nada.
    *
-   * @returns {Promise<{borradas: number}>}
+   * @param {{silencioso?: boolean}} [opciones] `silencioso`: no avisa (quien
+   *   llama compone su propio aviso con `aviso` y `limite` del resultado).
+   * @returns {Promise<{ok: boolean, completo: boolean, autoridad?: boolean, partidas: number, claves: number, restos: string[], sinCoordinacion?: boolean, sinCandado?: boolean, motivo?: string|null, limite: string, aviso: {mensaje: string, tipo: string}}>}
    */
-  async borrarTodo() {
-    // Bajo el candado global: ninguna otra pestaña escribe entre el vaciado
-    // y las lápidas. Sin coordinación posible se borra igual (lo ha pedido el
-    // jugador), pero sin lápidas que garanticen nada entre pestañas.
-    const r = await Ranuras.conCandadoGlobal(() => this._borrarTodo());
-    if (r?.codigo === 'sin-exclusion') return this._borrarTodo();
+  async borrarTodo({ silencioso = false } = {}) {
+    // Bajo el candado global: ninguna otra pestaña escribe a mitad. Sin Web
+    // Locks la transacción sigue siendo de todo o nada (y se dice); sin
+    // IndexedDB solo hay copia local que borrar.
+    const r = await Ranuras.conCandadoGlobal(() => this._borrarTodo({ sinCandado: false, silencioso }));
+    if (r?.codigo === 'sin-exclusion') return this._borrarTodo({ sinCandado: true, silencioso });
     if (r?.codigo === 'ocupado-global') {
-      this.emitir('ui:notice', { mensaje: r.motivo, tipo: 'aviso' });
-      return { borradas: 0, motivo: r.motivo };
+      const aviso = { mensaje: `No se ha borrado nada: ${r.motivo}`, tipo: 'aviso' };
+      if (!silencioso) this.emitir('ui:notice', aviso);
+      return { ok: false, completo: false, autoridad: false, partidas: 0, claves: 0, restos: [], motivo: r.motivo, limite: '', aviso };
     }
     return r;
   }
 
   /** @private */
-  async _borrarTodo() {
-    let borradas = 0;
-
-    // Quién ocupaba cada ranura: tras vaciar, cada una queda con su lápida
-    // (una pestaña vieja de esa campaña no la recrea al guardar).
-    let antes = [];
-    try { if (Coordinacion.disponible()) antes = await Coordinacion.listar(Coordinacion.ALMACENES.RANURAS); } catch { /* sin lápidas */ }
-
+  async _borrarTodo({ sinCandado, silencioso }) {
+    let r;
     try {
-      // Se recorren las claves en orden inverso: borrar mientras se itera
-      // desplaza los índices.
-      for (let i = localStorage.length - 1; i >= 0; i--) {
-        const clave = localStorage.key(i);
-
-        if (clave?.startsWith('arcanveil:')) {
-          localStorage.removeItem(clave);
-          borradas++;
-        }
-      }
-
-      // El estado compartido entre pestañas (herencias, muertes, ranuras y
-      // copias) también.
-      try {
-        await Coordinacion.vaciar();
-        await Ranuras.lapidasTodas(antes);
-      } catch (e) { this.log.aviso(`estado compartido: ${e?.message ?? e}`); }
-      this._revs.clear();
-
-      this.log.info(`borradas ${borradas} claves del navegador`);
-
-      this.emitir('ui:notice', {
-        mensaje: borradas
-          ? `Se ha borrado todo: ${borradas} entradas.`
-          : 'No había nada guardado.',
-        tipo: 'exito',
-      });
-
+      r = await Ranuras.borrarTodo();
     } catch (e) {
       this.log.error('fallo al borrar todo', e);
+      r = { ok: false, completo: false, partidas: 0, claves: 0, restos: [], motivo: `${e?.message ?? e}. Puede que no se haya borrado todo; vuelve a intentarlo` };
     }
+    if (sinCandado && !r.sinCoordinacion) r.sinCandado = true;
+    if (r.autoridad || r.sinCoordinacion) this._revs.clear();
+    // Lo que quedó en la copia local de partidas ya borradas no se lista aquí.
+    this._ocultas = new Set(r.autoridad ? (r.restos ?? []) : []);
+    this.log.info(`borrar todo: ${r.completo ? 'completo' : 'incompleto'} (${r.partidas} partidas, ${r.claves} claves locales, ${r.restos?.length ?? 0} restos)`);
 
-    return { borradas };
+    const cuantas = r.partidas === 1 ? '1 partida' : `${r.partidas} partidas`;
+    r.limite = r.sinCoordinacion
+      ? ' Este navegador no permite coordinar pestañas: si tienes otra pestaña del juego abierta, ciérrala sin guardar.'
+      : r.sinCandado ? ' Este navegador no permite reservar el guardado entre pestañas: si tienes otra pestaña del juego abierta, recárgala.' : '';
+    if (r.ok) r.aviso = { mensaje: `${r.partidas ? `Borrado: ${cuantas} y lo demás que el juego guardaba en este navegador.` : 'No había partidas guardadas; se ha borrado lo demás que el juego guardaba.'}${r.limite}`, tipo: r.limite ? 'aviso' : 'exito' };
+    else if (r.autoridad) r.aviso = { mensaje: `Borrado a medias: ${r.motivo}.${r.limite}`, tipo: 'aviso' };
+    else r.aviso = { mensaje: `No se ha borrado todo: ${r.motivo}.${r.limite}`, tipo: 'error' };
+    if (!silencioso) this.emitir('ui:notice', r.aviso);
+    return r;
   }
 
   /**
@@ -860,9 +889,14 @@ export class SaveManager extends SystemBase {
       return { exito: false, motivo: lectura.error, avisos: [] };
     }
 
+    const epoca = await this._epocaAhora();
     const vida = await this._comprobarVivo(lectura.guardado);
     if (vida) return vida;
-    return this.cargarDesde(lectura.guardado);
+    const r = this.cargarDesde(lectura.guardado);
+    // Importar es abrir una copia ahora: su run se conoce en esta época (la
+    // ranura de la que se borró sigue cerrada para él: `invalidados`).
+    if (r.exito) this._recordarEpoca(epoca);
+    return r;
   }
 
   /**
