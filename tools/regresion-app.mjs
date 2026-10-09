@@ -252,17 +252,28 @@ async function empezarRunNuevo() {
 
 /**
  * Otra pestaña del MISMO navegador (mismo perfil, mismo almacenamiento y
- * mismos Web Locks), con su propio canal CDP.
+ * mismos Web Locks), con su propio canal CDP. Con `contexto` (un contexto
+ * de navegador aislado, ver `contextoAislado`), la pestaña nace en él: las
+ * pestañas de ese contexto comparten almacenamiento y Web Locks entre sí,
+ * no con las demás.
+ *
+ * Los diálogos nativos (`confirm`) se responden de verdad por CDP con lo que
+ * diga `responder(true|false)` (por omisión, «Cancelar») y se apuntan en
+ * `dialogos` (tipo y texto).
  */
 let pestanasAbiertas = 0;
-async function abrirPestana(url) {
+async function abrirPestana(url, { contexto = null } = {}) {
   const numero = ++pestanasAbiertas;
-  const t = await json(`http://127.0.0.1:${DEBUG}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
+  const t = contexto
+    ? await contexto.nav.enviar('Target.createTarget', { url, browserContextId: contexto.id }).then(({ targetId }) => ({ id: targetId, webSocketDebuggerUrl: `ws://127.0.0.1:${DEBUG}/devtools/page/${targetId}` }))
+    : await json(`http://127.0.0.1:${DEBUG}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
   const socket = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((ok, mal) => { socket.onopen = ok; socket.onerror = mal; });
   let n = 0;
   const esperan = new Map();
   const eventos = [];
+  const dialogos = [];
+  let aceptarDialogo = false;
   // Lo que pasa en esta pestaña, para diagnosticar un arranque que no llega:
   // excepciones, errores de consola y peticiones que fallan (sin contenido de
   // la partida: solo el texto del error y la URL).
@@ -276,6 +287,10 @@ async function abrirPestana(url) {
     else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) apuntar({ tipo: `consola ${m.params.type}`, texto: (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200) });
     else if (m.method === 'Network.loadingFailed') apuntar({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}`, id: m.params.requestId });
     else if (m.method === 'Network.requestWillBeSent') { const u = m.params.request.url; if (/^(?:https?|wss?):/.test(u) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(u)) externos.push(u.slice(0, 120)); }
+    else if (m.method === 'Page.javascriptDialogOpening') {
+      dialogos.push({ tipo: m.params.type, mensaje: m.params.message, aceptado: aceptarDialogo });
+      socket.send(JSON.stringify({ id: ++n, method: 'Page.handleJavaScriptDialog', params: { accept: aceptarDialogo } }));
+    }
   };
   socket.addEventListener('close', () => eventos.push({ method: 'Inspector.detached', params: { reason: 'canal cerrado' }, t: Date.now() }));
   const enviar = (method, params = {}) => new Promise((resolve, reject) => { const id = ++n; esperan.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
@@ -305,7 +320,7 @@ async function abrirPestana(url) {
   await enviar('Runtime.enable'); await enviar('Page.enable'); await enviar('Inspector.enable'); await enviar('Network.enable');
   // Mismo tamaño que la principal (en «headless» una pestaña nueva nace con otro).
   await enviar('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: !desktop });
-  return { ev, hasta, enviar, eventos, incidencias, id: t.id, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
+  return { ev, hasta, enviar, eventos, incidencias, dialogos, responder: (si) => { aceptarDialogo = Boolean(si); }, id: t.id, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
 }
 
 /**
@@ -611,6 +626,231 @@ async function tokensDurablesEnChrome() {
   await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(S)}`, 15000);
   await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
   await evaluate(`window.__ataquesGrupo = window.__ataquesGrupo ?? []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataquesGrupo.push(e)); true`);
+}
+
+/**
+ * Un contexto de navegador AISLADO (como otra ventana privada del mismo
+ * Chrome): sus pestañas comparten IndexedDB, localStorage y Web Locks entre
+ * sí, y nada con la pestaña principal. Para probar borrados de verdad sin
+ * tocar la campaña que la regresión sigue jugando.
+ */
+async function contextoAislado() {
+  const v = await json(`http://127.0.0.1:${DEBUG}/json/version`);
+  const s = new WebSocket(v.webSocketDebuggerUrl);
+  await new Promise((ok, mal) => { s.onopen = ok; s.onerror = mal; });
+  let n = 0;
+  const esperan = new Map();
+  s.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); } };
+  const enviar = (method, params = {}) => new Promise((resolve, reject) => { const id = ++n; esperan.set(id, { resolve, reject }); s.send(JSON.stringify({ id, method, params })); });
+  const { browserContextId } = await enviar('Target.createBrowserContext', {});
+  return { id: browserContextId, nav: { enviar }, cerrar: async () => { await enviar('Target.disposeBrowserContext', { browserContextId }).catch(() => {}); try { s.close(); } catch { /* cerrado */ } } };
+}
+
+/** El aviso que da una pestaña cuya partida se borró (texto exacto del #11). */
+const AVISO_BORRADA = 'Esta partida se borró (desde otra pestaña o en Ajustes): ya no se puede guardar aquí. Puedes seguir jugando en esta pestaña, pero no se guardará.';
+const PERSISTIR = `ARCANVEIL.store.fijar('settings.persistencia', true); ARCANVEIL.bus.emit('settings:change', { id: 'persistencia', valor: true }); true`;
+
+/**
+ * #11 · BORRADO DURABLE en Chrome: dos pestañas REALES (P y Q) de un
+ * contexto aislado, con IndexedDB, localStorage y Web Locks compartidos.
+ *   §1 manual: A en P → Q «Borrar partidas y personajes» (primero Cancelar
+ *      en el diálogo nativo: nada cambia) → Q crea B en esa ranura → Q borra
+ *      B desde «Cargar» → P (A en memoria) guarda con el botón y al pasar
+ *      turnos: rechazado, con el aviso UNA vez; la ranura sigue borrada.
+ *   §2 automática: P recarga y juega C, guardada en la automática → Q borra
+ *      todo → la automática vieja de P (con y sin token) no se recrea.
+ *   Borrado que falla (FIXTURE: IndexedDB rechaza la transacción), a medias
+ *   (FIXTURE: el navegador no deja quitar la copia local) y reintento; a
+ *   medias y recarga: se termina al arrancar.
+ * Captura de cada pantalla, en móvil y escritorio (según la pasada).
+ */
+async function borradoDurableEnChrome() {
+  etapa('#11 · borrado durable: dos pestañas reales (contexto aislado), §1 historial manual y §2 automática');
+  const ctx = await contextoAislado();
+  const P = await abrirPestana(URL_APP, { contexto: ctx });
+  const Q = await abrirPestana(URL_APP, { contexto: ctx });
+  const estado = (n) => `(async () => { const rec = await ${idbLeer('ranuras', n)}; const snap = await ${idbLeer('partidas', n)}; const ls = ${lsBytes(n)}; const run = (x) => { try { return JSON.parse(x)?.estado?.meta?.runId ?? null; } catch { return 'ILEGIBLE'; } }; return { estado: rec?.estado ?? null, run: rec?.runId ?? null, rev: rec?.rev ?? null, snap: snap ? run(snap.texto) : null, ls: ls === null ? null : run(ls) }; })()`;
+  const meta = (k) => idbLeer('meta', k);
+  const nAvisos = (p) => p.ev('window.__avisos.length');
+  const avisosDesde = (p, desde) => p.ev(`window.__avisos.slice(${desde})`);
+  const preparar = async (p) => { await p.hasta(LISTA_APP); await p.ev(GRABAR_AVISOS); await p.ev(PERSISTIR); };
+  const recargar = async (p, quien) => {
+    await navegarHasta(() => p.enviar('Page.reload', {}), { eventos: p.eventos, finales: APP, quien });
+    await preparar(p);
+  };
+  /** Una campaña nueva por la interfaz (personaje nuevo, sin herencia). */
+  const crear = async (p, nombre) => {
+    await p.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-nueva').click(); true`);
+    await p.hasta('["herencia", "personajes", "creacion"].includes(document.body.dataset.activeScreen)', 8000);
+    if (await p.ev(`document.body.dataset.activeScreen === 'herencia'`)) { await p.ev(`document.querySelector('#herencia-sin').click(); true`); await p.hasta('["personajes", "creacion"].includes(document.body.dataset.activeScreen)', 8000); }
+    if (await p.ev(`document.body.dataset.activeScreen === 'personajes'`)) {
+      await p.ev(`document.querySelector('#personajes-otro')?.click(); true`);
+      await p.hasta('document.querySelector("#personajes-nuevo")', 5000);
+      await p.ev(`document.querySelector('#personajes-nuevo').click(); true`);
+    }
+    await p.hasta('document.body.dataset.activeScreen === "creacion" && document.querySelector("#nombre")', 8000);
+    await p.ev(`(() => { const fill = (q, v) => { const n = document.querySelector(q); n.value = v; n.dispatchEvent(new Event('input', { bubbles: true })); }; fill('#nombre', ${JSON.stringify(nombre)}); fill('#retrato-descripcion', 'viajera de capa gris'); fill('#lore-personaje', 'Busca un camino propio.'); return true; })()`);
+    await p.ev(`document.querySelector('[data-intensidad="relato"]')?.click(); true`);
+    await p.ev(`document.querySelector('#creacion-crear').click(); true`);
+    await p.hasta('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")', 15000);
+    await p.ev(`document.querySelector('#creacion-empezar').click(); true`);
+    await p.hasta('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") && !ARCANVEIL.sistema("turns")._ocupado', 25000);
+    await p.ev(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
+    return { ranura: await p.ev(`ARCANVEIL.ver('meta.ranura')`), run: await p.ev(`ARCANVEIL.ver('meta.runId')`) };
+  };
+  /** Ajustes → «Borrar partidas y personajes», respondiendo al diálogo nativo. Devuelve el diálogo y los avisos. */
+  const borrarTodoUI = async (p, aceptar, foto = null) => {
+    await p.ev(`document.querySelector('#inicio-jugar')?.click(); true`);
+    await p.hasta('document.querySelector("#menu-ajustes") && !document.querySelector("#menu-ajustes").closest("[hidden]")', 5000);
+    await p.ev(`document.querySelector('#menu-ajustes').click(); true`);
+    await p.hasta('document.querySelector("#ajustes-borrar")', 5000);
+    if (foto) await p.foto(foto);
+    // Sin avisos anteriores en pantalla: la captura enseña solo el de este intento.
+    await p.hasta('!document.querySelector("#avisos")?.children.length', 10000);
+    p.responder(aceptar);
+    const d0 = p.dialogos.length;
+    const n0 = await nAvisos(p);
+    await p.ev(`document.querySelector('#ajustes-borrar').click(); true`);
+    for (let i = 0; i < 50 && p.dialogos.length === d0; i++) await wait(100);
+    if (p.dialogos.length === d0) throw new Error('#11: «Borrar partidas y personajes» no pidió confirmación');
+    if (aceptar) await p.hasta(`window.__avisos.slice(${n0}).some((a) => /Borrados partidas|Borrado a medias|No se ha borrado|Partidas y personajes borrados/.test(a))`, 15000);
+    else await wait(600);
+    return { dialogo: p.dialogos.at(-1), avisos: await avisosDesde(p, n0) };
+  };
+  /** «Cargar» → «Borrar» en la tarjeta de esa ranura, aceptando el diálogo. */
+  const borrarRanuraUI = async (p, ranura) => {
+    await p.ev(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+    await p.hasta('document.body.dataset.activeScreen === "cargar"', 5000);
+    p.responder(true);
+    const d0 = p.dialogos.length;
+    await p.ev(`[...document.querySelectorAll('.tarjeta-pj--partida')].find((c) => c.querySelector('.tarjeta-pj__abrir')?.dataset.ranura === ${JSON.stringify(String(ranura))}).querySelector('.tarjeta-pj__borrar').click(); true`);
+    for (let i = 0; i < 50 && p.dialogos.length === d0; i++) await wait(100);
+    let e = null;
+    for (let i = 0; i < 100; i++) {
+      e = await p.ev(estado(ranura));
+      if (e.estado === 'borrada' && e.ls === null) break;
+      await wait(100);
+    }
+    if (!(e?.estado === 'borrada' && e.ls === null)) throw new Error(`#11: la ranura ${ranura} no quedó borrada desde «Cargar»: ${JSON.stringify(e)}`);
+    return p.dialogos.at(-1);
+  };
+  /** Turnos en una pestaña (cada uno intenta guardar al terminar). */
+  const turnos = async (p, n) => {
+    for (let i = 0; i < n; i++) {
+      await p.ev(`ARCANVEIL.jugar('miro alrededor con calma').then(() => true)`);
+      await p.hasta('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+    }
+    await p.ev(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
+    await wait(300);
+  };
+
+  try {
+    await preparar(P);
+    await preparar(Q);
+
+    // ── §1 · historial manual ───────────────────────────────────────────
+    const A = await crear(P, 'Ana');
+    const s = String(A.ranura);
+    const e0 = await P.ev(estado(s));
+    if (e0.estado !== 'ocupada' || e0.run !== A.run || e0.snap !== A.run || e0.ls !== A.run) throw new Error(`#11 §1: A no quedó guardada en la ${s}: ${JSON.stringify(e0)}`);
+    // Cancelar en el diálogo nativo: nada cambia, ni intención ni época.
+    const cancelado = await borrarTodoUI(Q, false, `19a-borrar-ajustes-${viewport.label}.png`);
+    const trasCancelar = { e: await Q.ev(estado(s)), epoca: await Q.ev(meta('epoca')), pendiente: await Q.ev(meta('borradoPendiente')) };
+    if (!/Borrar todas las partidas/.test(cancelado.dialogo?.mensaje ?? '') || cancelado.dialogo.aceptado || trasCancelar.e.estado !== 'ocupada' || trasCancelar.e.ls !== A.run || trasCancelar.epoca !== null || trasCancelar.pendiente !== null) throw new Error(`#11 cancelar el borrado cambió algo: ${JSON.stringify({ cancelado, trasCancelar })}`);
+    await recargar(Q, 'pestaña Q (#11)');
+    const todo1 = await borrarTodoUI(Q, true);
+    await Q.foto(`19b-borrado-completo-${viewport.label}.png`);
+    const e1 = await Q.ev(estado(s));
+    const inv1 = await Q.ev(idbLeer('invalidados', `${s}|${A.run}`));
+    // Lo que no es la condición previa se apunta y se sigue: así una base
+    // vieja enseña TODO el repro (el aviso y si A revive), no solo lo primero.
+    const problemas = [];
+    if (todo1.avisos.length !== 1 || !/^Borrados partidas \(1\), personajes/.test(todo1.avisos[0]) || e1.estado !== 'borrada' || e1.snap !== null || e1.ls !== null || inv1?.motivo !== 'borrado-todo' || (await Q.ev(meta('epoca'))) !== 1) problemas.push(`borrar todo: ${JSON.stringify({ avisos: todo1.avisos, e1, inv1 })}`);
+    // Q crea B: ocupa la ranura liberada; después la borra desde «Cargar».
+    await recargar(Q, 'pestaña Q (#11)');
+    const B = await crear(Q, 'Bea');
+    if (String(B.ranura) !== s) throw new Error(`#11 §1: B no ocupó la ranura liberada (${B.ranura} en vez de ${s})`);
+    await recargar(Q, 'pestaña Q (#11)');
+    const dB = await borrarRanuraUI(Q, s);
+    const antes = await Q.ev(estado(s));
+    if (!/Borrar la partida de Bea/.test(dB?.mensaje ?? '') || antes.estado !== 'borrada' || antes.run !== B.run) throw new Error(`#11 §1 borrar B: ${JSON.stringify({ dB, antes })}`);
+    // P, con A en memoria: guardar con el botón y pasar turnos.
+    const manual = await guardarConBoton(P.ev, P.hasta);
+    const n0 = await nAvisos(P);
+    await turnos(P, 3);
+    const deTurnos = (await avisosDesde(P, n0)).filter((a) => a.includes(AVISO_BORRADA));
+    await P.foto(`19c-pestana-vieja-aviso-${viewport.label}.png`);
+    const despues = await P.ev(estado(s));
+    if (!manual.some((a) => a.includes(AVISO_BORRADA)) || manual.some((a) => /Partida guardada/.test(a)) || deTurnos.length !== 1
+      || despues.estado !== 'borrada' || despues.run !== B.run || despues.rev !== antes.rev || despues.snap !== null || despues.ls !== null) {
+      problemas.push(`guardado tardío de A (${A.run}): ${JSON.stringify({ manual, deTurnos: deTurnos.length, antes, despues })}`);
+    }
+    // §1 y §2 son independientes (§2 empieza con P recargada): si §1 falla,
+    // §2 corre igual y los dos fallos se dicen juntos al final.
+    const fallo1 = problemas.length ? `§1 historial manual:\n  ${problemas.join('\n  ')}` : null;
+    if (!fallo1) console.log(`  #11 §1: A guardada → Borrar todo (Cancelar no cambió nada) → B en la ${s} → B borrada → P guarda A: rechazado, «${AVISO_BORRADA}» (botón y 1 aviso en 3 turnos); ranura ${s} sigue borrada (rev ${despues.rev}, sin copia ni espejo)`);
+
+    // ── §2 · automática ─────────────────────────────────────────────────
+    await recargar(P, 'pestaña P (#11)');
+    const C = await crear(P, 'Cira');
+    const auto = (opciones) => `ARCANVEIL.sistema('saves').guardar('auto', ${JSON.stringify({ silencioso: true, nota: 'automático', ...opciones })}).then((r) => ({ exito: r.exito, codigo: r.codigo ?? null }))`;
+    const a0 = await P.ev(auto({ token: 'T-11-auto' }));
+    const ea0 = await P.ev(estado('auto'));
+    if (!a0.exito || ea0.run !== C.run || ea0.ls !== C.run) throw new Error(`#11 §2: la automática de C no se guardó: ${JSON.stringify({ a0, ea0 })}`);
+    await recargar(Q, 'pestaña Q (#11)');
+    await borrarTodoUI(Q, true);
+    const conToken = await P.ev(auto({ token: 'T-11-auto' }));
+    const sinToken = await P.ev(auto({}));
+    const n2 = await nAvisos(P);
+    await turnos(P, 3);
+    const deTurnos2 = (await avisosDesde(P, n2)).filter((a) => a.includes(AVISO_BORRADA));
+    await P.foto(`19d-automatica-vieja-aviso-${viewport.label}.png`);
+    const ea1 = await P.ev(estado('auto'));
+    const fallo2 = conToken.exito || sinToken.exito || conToken.codigo !== 'invalidada' || sinToken.codigo !== 'invalidada' || ea1.snap !== null || ea1.ls !== null || ea1.estado === 'ocupada' || deTurnos2.length !== 1
+      ? `§2 automática vieja (${C.run}): ${JSON.stringify({ conToken, sinToken, ea1, deTurnos2: deTurnos2.length })}` : null;
+    if (fallo1 || fallo2) throw new Error(`#11 ${[fallo1, fallo2].filter(Boolean).join('\n')}`);
+    console.log(`  #11 §2: C guardada en la automática → Borrar todo en Q → la automática de C (con y sin token) se rechaza («invalidada»), sin copia ni espejo; 1 aviso en 3 turnos`);
+
+    // ── Borrado que falla, a medias, reintento y recuperación al arrancar ──
+    await recargar(Q, 'pestaña Q (#11)');
+    const D = await crear(Q, 'Dana');
+    await recargar(Q, 'pestaña Q (#11)');
+    await Q.ev(`(async () => { const C = await import('/src/persistence/Coordinacion.js'); window.__coordReal = C.motorActual(); C.usarCoordinacion({ ...window.__coordReal, async transaccionCompleta() { throw new Error('FIXTURE: IndexedDB rechaza la transacción'); } }); return true; })()`);
+    const fallido = await borrarTodoUI(Q, true);
+    await Q.foto(`19e-borrado-fallido-${viewport.label}.png`);
+    await Q.ev(`(async () => { (await import('/src/persistence/Coordinacion.js')).usarCoordinacion(window.__coordReal); return true; })()`);
+    const eF = await Q.ev(estado(D.ranura));
+    if (!fallido.avisos.some((a) => /^No se ha borrado todo: .*No se ha borrado nada; puedes volver a intentarlo/.test(a)) || fallido.avisos.some((a) => /Borrados partidas|^Borrado:/.test(a)) || eF.estado !== 'ocupada' || eF.snap !== D.run || eF.ls !== D.run) throw new Error(`#11 borrado fallido: ${JSON.stringify({ avisos: fallido.avisos, eF })}`);
+    await Q.ev(`(() => { window.__quitarReal = Storage.prototype.removeItem; Storage.prototype.removeItem = function (k) { if (String(k).startsWith('arcanveil:partida:')) throw new Error('FIXTURE: el navegador no deja quitar la copia'); return window.__quitarReal.call(this, k); }; return true; })()`);
+    const medias = await borrarTodoUI(Q, true);
+    await Q.foto(`19f-borrado-a-medias-${viewport.label}.png`);
+    await Q.ev(`(() => { Storage.prototype.removeItem = window.__quitarReal; return true; })()`);
+    const eM = await Q.ev(estado(D.ranura));
+    const pendM = await Q.ev(meta('borradoPendiente'));
+    // La copia local que queda no se ofrece en esta pestaña («Continuar» ni «Cargar»).
+    const ofrecidas = await Q.ev(`ARCANVEIL.sistema('saves').listar().filter((r) => !r.vacia).length`);
+    if (medias.avisos.length !== 1 || !/^Borrado a medias: las partidas ya no se pueden abrir ni guardar, pero (queda 1 dato|quedan \d+ datos) de este navegador/.test(medias.avisos[0]) || eM.snap !== null || eM.ls !== D.run || !pendM || ofrecidas !== 0) throw new Error(`#11 borrado a medias: ${JSON.stringify({ avisos: medias.avisos, eM, pendM: Boolean(pendM), ofrecidas })}`);
+    // Reintento con el botón, sin recargar (recargar ya lo terminaría al arrancar).
+    const reintento = await borrarTodoUI(Q, true);
+    await Q.foto(`19g-borrado-reintento-${viewport.label}.png`);
+    const eR = await Q.ev(estado(D.ranura));
+    if (!reintento.avisos.some((a) => /Borrados partidas/.test(a)) || eR.ls !== null || eR.snap !== null || (await Q.ev(meta('borradoPendiente')))) throw new Error(`#11 reintento: ${JSON.stringify({ avisos: reintento.avisos, eR })}`);
+    // A medias otra vez y, en vez de reintentar, se recarga: el arranque lo termina.
+    const E = await crear(Q, 'Eli');
+    await recargar(Q, 'pestaña Q (#11)');
+    await Q.ev(`(() => { window.__quitarReal = Storage.prototype.removeItem; Storage.prototype.removeItem = function (k) { if (String(k).startsWith('arcanveil:partida:')) throw new Error('FIXTURE: el navegador no deja quitar la copia'); return window.__quitarReal.call(this, k); }; return true; })()`);
+    await borrarTodoUI(Q, true);
+    const antesDeArrancar = await Q.ev(estado(E.ranura));
+    await recargar(Q, 'pestaña Q (#11)');
+    await Q.ev(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
+    const eArr = await Q.ev(estado(E.ranura));
+    if (antesDeArrancar.ls !== E.run || eArr.ls !== null || eArr.snap !== null || (await Q.ev(meta('borradoPendiente')))) throw new Error(`#11 recuperación al arrancar: ${JSON.stringify({ antesDeArrancar, eArr })}`);
+    console.log(`  #11 borrar todo: falla → «${fallido.avisos.find((a) => /^No se ha borrado todo/.test(a)).slice(0, 80)}…» (nada tocado); a medias → «${medias.avisos.find((a) => /^Borrado a medias/.test(a)).slice(0, 80)}…»; reintento completo; a medias + recarga → el arranque quita la copia local y cierra la intención`);
+  } finally {
+    await P.cerrar();
+    await Q.cerrar();
+    await ctx.cerrar();
+  }
 }
 
 /**
@@ -924,6 +1164,7 @@ try {
     await pestanasCoordinadas();
     await tokenEnChrome();
     await tokensDurablesEnChrome();
+    await borradoDurableEnChrome();
     if (externos.length) throw new Error(`la página pidió cosas fuera de este equipo: ${[...new Set(externos)].slice(0, 5).join(' · ')}`);
     console.log(JSON.stringify({ viewport: viewport.label, solo: 'pestanas', semilla, exceptions: exceptions.length, externos: externos.length, sinIA }, null, 2));
     break principal;
@@ -1984,6 +2225,7 @@ try {
   await pestanasCoordinadas();
   await tokenEnChrome();
   await tokensDurablesEnChrome();
+  await borradoDurableEnChrome();
 
   etapa('muerte con la salida pendiente, caso A (sin protección)');
   {
