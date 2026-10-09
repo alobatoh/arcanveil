@@ -247,22 +247,58 @@ async function empezarRunNuevo() {
  * Otra pestaña del MISMO navegador (mismo perfil, mismo almacenamiento y
  * mismos Web Locks), con su propio canal CDP.
  */
+let pestanasAbiertas = 0;
 async function abrirPestana(url) {
+  const numero = ++pestanasAbiertas;
   const t = await json(`http://127.0.0.1:${DEBUG}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' });
   const socket = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((ok, mal) => { socket.onopen = ok; socket.onerror = mal; });
   let n = 0;
   const esperan = new Map();
   const eventos = [];
-  socket.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); } else if (EVENTOS_NAVEGACION.has(m.method)) eventos.push({ method: m.method, params: m.params, t: Date.now() }); };
+  // Lo que pasa en esta pestaña, para diagnosticar un arranque que no llega:
+  // excepciones, errores de consola y peticiones que fallan (sin contenido de
+  // la partida: solo el texto del error y la URL).
+  const incidencias = [];
+  const apuntar = (x) => { incidencias.push(x); if (incidencias.length > 40) incidencias.shift(); };
+  socket.onmessage = ({ data }) => {
+    const m = JSON.parse(data);
+    if (m.id && esperan.has(m.id)) { const p = esperan.get(m.id); esperan.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); return; }
+    if (EVENTOS_NAVEGACION.has(m.method)) eventos.push({ method: m.method, params: m.params, t: Date.now() });
+    else if (m.method === 'Runtime.exceptionThrown') apuntar({ tipo: 'excepción', texto: String(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').slice(0, 200) });
+    else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) apuntar({ tipo: `consola ${m.params.type}`, texto: (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200) });
+    else if (m.method === 'Network.loadingFailed') apuntar({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}`, id: m.params.requestId });
+    else if (m.method === 'Network.requestWillBeSent') { const u = m.params.request.url; if (/^(?:https?|wss?):/.test(u) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(u)) externos.push(u.slice(0, 120)); }
+  };
   socket.addEventListener('close', () => eventos.push({ method: 'Inspector.detached', params: { reason: 'canal cerrado' }, t: Date.now() }));
   const enviar = (method, params = {}) => new Promise((resolve, reject) => { const id = ++n; esperan.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
-  const ev = async (expression) => { const r = await enviar('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(`pestaña 2: ${r.exceptionDetails.text}`); return r.result?.value; };
-  const hasta = async (expression, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await ev(`Boolean(${expression})`)) return; } catch { /* navegando */ } await wait(120); } let diag = null; try { diag = await ev(`({ ...${DIAGNOSTICO}, avisos: [...document.querySelectorAll('#avisos .aviso')].map((n) => n.textContent), fallos: document.querySelector('#fallos')?.textContent ?? null, salida: document.getElementById('salida-modal')?.hidden === false ? document.getElementById('salida-nota')?.textContent : null })`); } catch (e) { diag = { sinDiagnostico: e.message }; } throw new Error(`pestaña 2: tiempo agotado esperando ${expression}\n  estado: ${JSON.stringify(diag)}`); };
-  await enviar('Runtime.enable'); await enviar('Page.enable'); await enviar('Inspector.enable');
+  const ev = async (expression) => { const r = await enviar('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(`pestaña ${numero + 1}: ${r.exceptionDetails.text}`); return r.result?.value; };
+  /**
+   * Espera una condición. Si no llega, dice QUÉ documento llegó a existir
+   * (URL, estado de carga, navegaciones) aparte de cómo está el motor, con
+   * las incidencias de la pestaña y una captura. Nunca reintenta ni recarga.
+   */
+  const hasta = async (expression, ms = 15000) => {
+    const t0 = Date.now();
+    let ultimoError = null;
+    while (Date.now() - t0 < ms) {
+      try { if (await ev(`Boolean(${expression})`)) return; ultimoError = null; } catch (e) { ultimoError = e.message; }
+      await wait(120);
+    }
+    let documento = null;
+    let motor = null;
+    try { documento = await ev(`({ url: location.href, readyState: document.readyState, titulo: document.title, pantalla: document.body?.dataset?.activeScreen ?? null, clases: document.body?.className ?? null })`); } catch (e) { documento = { sinDocumento: e.message }; }
+    try { motor = await ev(`({ ...${DIAGNOSTICO}, avisos: [...document.querySelectorAll('#avisos .aviso')].map((x) => x.textContent), fallos: document.querySelector('#fallos')?.textContent ?? null, salida: document.getElementById('salida-modal')?.hidden === false ? document.getElementById('salida-nota')?.textContent : null })`); } catch (e) { motor = { sinMotor: e.message }; }
+    const navegaciones = eventos.filter((e) => e.method === 'Page.frameNavigated' && !e.params.frame.parentId).map((e) => e.params.frame.url);
+    const cargas = eventos.filter((e) => e.method === 'Page.loadEventFired').length;
+    const nombreFoto = `aux-fallo-${numero}-${viewport.label}.png`;
+    await fotoRapida(nombreFoto, enviar).catch(() => null);
+    throw new Error(`pestaña ${numero + 1}: tiempo agotado (${ms} ms) esperando ${expression}\n  documento: ${JSON.stringify(documento)}\n  navegaciones: ${JSON.stringify(navegaciones)} · cargas: ${cargas}${ultimoError ? ` · última evaluación: ${ultimoError}` : ''}\n  motor: ${JSON.stringify(motor)}\n  incidencias: ${JSON.stringify(incidencias)}${out ? `\n  captura: ${nombreFoto}` : ''}`);
+  };
+  await enviar('Runtime.enable'); await enviar('Page.enable'); await enviar('Inspector.enable'); await enviar('Network.enable');
   // Mismo tamaño que la principal (en «headless» una pestaña nueva nace con otro).
   await enviar('Emulation.setDeviceMetricsOverride', { width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: !desktop });
-  return { ev, hasta, enviar, eventos, id: t.id, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
+  return { ev, hasta, enviar, eventos, incidencias, id: t.id, foto: (nombre) => fotoRapida(nombre, enviar), cerrar: async () => { try { socket.close(); } catch { /* cerrada */ } await fetch(`http://127.0.0.1:${DEBUG}/json/close/${t.id}`).catch(() => {}); } };
 }
 
 /**
@@ -508,6 +544,66 @@ async function tokenEnChrome() {
   // Esta pestaña sigue con la copia VIGENTE (la otra pudo ganar la última).
   const recargada = await evaluate(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(S)}).then((r) => r.exito)`);
   if (!recargada) throw new Error('#9: no se pudo volver a abrir la copia vigente tras la prueba del token');
+}
+
+/**
+ * #10 · TOKENS DURABLES en Chrome, con IndexedDB y Web Locks de verdad: un
+ * token viejo sigue siendo la MISMA operación después de mucha actividad
+ * normal (225 guardados con tokens nuevos), tras recargar la pestaña, desde
+ * otra pestaña del mismo perfil y a la vez que un guardado nuevo. Se lee la
+ * autoridad (IndexedDB) y el espejo (localStorage), no solo el resultado.
+ * Precondición: esta pestaña juega una campaña viva, guardada y vigente.
+ */
+async function tokensDurablesEnChrome() {
+  etapa('#10 · token durable: 225 guardados después, recarga, otra pestaña y guardado concurrente');
+  const S = await evaluate(`ARCANVEIL.ver('meta.ranura')`);
+  const run = await evaluate(`ARCANVEIL.ver('meta.runId')`);
+  const viejo = `review-old-${viewport.label}-${semilla}`;
+  const g = (opciones) => `ARCANVEIL.sistema('saves').guardar(${JSON.stringify(S)}, ${JSON.stringify(opciones)}).then((r) => ({ exito: r.exito, repetido: r.repetido ?? false, codigo: r.codigo ?? null, rev: r.rev ?? null }))`;
+  const leer = `(async () => { const R = await import('/src/persistence/Ranuras.js'); const l = await R.leerRanuraCoordinada(${JSON.stringify(S)}); const rec = await ${idbLeer('ranuras', S)}; const op = await ${idbLeer('operaciones', viejo)}; const ls = ${lsBytes(S)}; const t = (x) => { try { return JSON.parse(x)?.estado?.meta?.turno ?? null; } catch { return 'ILEGIBLE'; } }; return { rev: rec?.rev ?? null, run: rec?.runId ?? null, turnoIdb: t(l.texto), turnoLs: t(ls), iguales: l.texto === ls, recibo: op ? op.estado : null }; })()`;
+  await evaluate(`Promise.resolve(ARCANVEIL.sistema('saves').drenar?.(15000)).then(() => true)`);
+  const t0 = Date.now();
+  const r0 = await evaluate(g({ token: viejo, silencioso: true }));
+  // Actividad natural: 225 guardados válidos con tokens nuevos (turnos 1000+i).
+  const actividad = await evaluate(`(async () => { let mal = 0; for (let i = 0; i < 225; i++) { ARCANVEIL.store.fijar('meta.turno', 1000 + i); const r = await ARCANVEIL.sistema('saves').guardar(${JSON.stringify(S)}, { silencioso: true, token: ${JSON.stringify(`${viejo}-act-`)} + i }); if (!r.exito) mal += 1; } await ARCANVEIL.sistema('saves').drenar(15000); return mal; })()`);
+  const trasActividad = await evaluate(leer);
+  if (!r0.exito || actividad !== 0 || trasActividad.turnoIdb !== 1224 || !trasActividad.iguales) throw new Error(`#10 actividad: ${JSON.stringify({ r0, actividad, trasActividad })}`);
+  // Mismo pestaña, turno 2000, token viejo.
+  await evaluate(`ARCANVEIL.store.fijar('meta.turno', 2000); true`);
+  const misma = await evaluate(g({ token: viejo, silencioso: true }));
+  const trasMisma = await evaluate(leer);
+  if (trasActividad.recibo !== 'hecho' || misma.exito || misma.codigo !== 'token-superado' || trasMisma.rev !== trasActividad.rev || trasMisma.turnoIdb !== 1224 || trasMisma.turnoLs !== 1224) throw new Error(`#10 token viejo tras 225 guardados (recibo tras la actividad: ${trasActividad.recibo}): ${JSON.stringify({ misma, antes: { rev: trasActividad.rev, turno: trasActividad.turnoIdb }, despues: trasMisma })}`);
+  await evaluate(`ARCANVEIL.store.fijar('meta.turno', 1224); true`);
+  // Recarga: nada en memoria de esta pestaña sobrevive; la evidencia es la durable.
+  await navegarHasta(RECARGAR, { finales: APP });
+  await until('window.ARCANVEIL?.motor?.listo && document.body.classList.contains("esta-listo")', 15000);
+  await evaluate(`ARCANVEIL.store.fijar('settings.persistencia', true); ARCANVEIL.bus.emit('settings:change', { id: 'persistencia', valor: true }); true`);
+  const cargada = await evaluate(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(S)}).then((r) => r.exito)`);
+  await evaluate(`ARCANVEIL.store.fijar('meta.turno', 2000); true`);
+  const trasRecargar = await evaluate(g({ token: viejo, silencioso: true }));
+  if (!cargada || trasRecargar.exito || trasRecargar.codigo !== 'token-superado' || (await evaluate(leer)).rev !== trasActividad.rev) throw new Error(`#10 token viejo tras recargar: ${JSON.stringify({ cargada, trasRecargar })}`);
+  // Otra pestaña del mismo perfil, y a la vez un guardado nuevo en esta.
+  const otra = await abrirPestana(URL_APP);
+  try {
+    await otra.hasta(LISTA_APP);
+    await otra.ev(`ARCANVEIL.store.fijar('settings.persistencia', true); ARCANVEIL.bus.emit('settings:change', { id: 'persistencia', valor: true }); true`);
+    const cOtra = await otra.ev(`ARCANVEIL.sistema('saves').cargar(${JSON.stringify(S)}).then((r) => r.exito)`);
+    await otra.ev(`ARCANVEIL.store.fijar('meta.turno', 3000); true`);
+    await evaluate(`ARCANVEIL.store.fijar('meta.turno', 1225); true`);
+    const [desdeOtra, nuevo] = await Promise.all([otra.ev(g({ token: viejo, silencioso: true })), evaluate(g({ token: `${viejo}-nuevo`, silencioso: true }))]);
+    const fin = await evaluate(leer);
+    if (!cOtra || desdeOtra.exito || desdeOtra.codigo !== 'token-superado' || !nuevo.exito || nuevo.repetido || fin.rev !== trasActividad.rev + 1 || fin.turnoIdb !== 1225 || !fin.iguales || fin.run !== run) throw new Error(`#10 otra pestaña con el token viejo y un guardado nuevo a la vez: ${JSON.stringify({ cOtra, desdeOtra, nuevo, fin, revActividad: trasActividad.rev })}`);
+    console.log(`  #10 token durable: tras 225 guardados (${Math.round((Date.now() - t0) / 1000)} s), el token viejo sigue superado en esta pestaña, tras recargar y desde otra; el guardado nuevo concurrente queda (rev ${trasActividad.rev} → ${fin.rev}, turno ${fin.turnoIdb} en IndexedDB y en el espejo)`);
+  } finally {
+    await otra.cerrar();
+  }
+  // De vuelta a la partida por la interfaz (lo siguiente la necesita en pantalla).
+  await evaluate(`document.querySelector('#inicio-jugar')?.click(); document.querySelector('#menu-cargar').click(); true`);
+  await until('document.body.dataset.activeScreen === "cargar"', 5000);
+  await evaluate(`document.querySelector('#cargar-lista .tarjeta-pj__abrir[data-ranura="${S}"]').click(); true`);
+  await until(`document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") === ${JSON.stringify(S)}`, 15000);
+  await until('!ARCANVEIL.sistema("turns")._ocupado', 15000);
+  await evaluate(`window.__ataquesGrupo = window.__ataquesGrupo ?? []; ARCANVEIL.bus.on('combat:attack', (e) => window.__ataquesGrupo.push(e)); true`);
 }
 
 /**
@@ -815,6 +911,7 @@ try {
       for (const n of ['1','2','3','4','5','6','7','8']) { if (n === String(yo) || localStorage.getItem('arcanveil:partida:' + n) !== null) continue; const g = JSON.parse(base); i += 1; g.estado.meta.runId = 'run-relleno-' + n; g.estado.meta.muerte = null; g.estado.player.nombre = 'Relleno ' + n; g.cabecera = { ...g.cabecera, nombre: 'Relleno ' + n, runId: 'run-relleno-' + n, muerto: false }; g.guardadoEn = Date.now() - i * 60000; localStorage.setItem('arcanveil:partida:' + n, JSON.stringify(g)); } return i; })()`);
     await pestanasCoordinadas();
     await tokenEnChrome();
+    await tokensDurablesEnChrome();
     if (externos.length) throw new Error(`la página pidió cosas fuera de este equipo: ${[...new Set(externos)].slice(0, 5).join(' · ')}`);
     console.log(JSON.stringify({ viewport: viewport.label, solo: 'pestanas', semilla, exceptions: exceptions.length, externos: externos.length, sinIA }, null, 2));
     break principal;
@@ -1615,7 +1712,7 @@ try {
     // La pantalla de herencia: el caído primero, con su cifra, y el foco en él.
     const pantalla = await evaluate(`(async () => ({ tarjetas: [...document.querySelectorAll('.tarjeta-herencia')].map((b) => ({ origen: b.dataset.origen, texto: b.textContent, activa: !b.disabled })), foco: document.activeElement?.dataset?.origen ?? document.activeElement?.id ?? null, legado: ${legadoDe(runCaido)} }))()`);
     const suya = pantalla.tarjetas[0];
-    if (!suya || suya.origen !== runCaido || !suya.activa || !suya.texto.includes('acaba de caer') || !suya.texto.includes(`${herenciaEsperada} XP`)) throw new Error(`la herencia del caído no sale primero con su cifra: ${JSON.stringify(pantalla.tarjetas)}`);
+    if (!suya || suya.origen !== runCaido || !suya.activa || !suya.texto.includes('acaba de caer') || !suya.texto.includes(`${herenciaEsperada} XP`) || /man[aá]/i.test(suya.texto)) throw new Error(`la herencia del caído no sale primero con su cifra (o menciona maná): ${JSON.stringify(pantalla.tarjetas)}`);
     if (pantalla.foco !== runCaido) throw new Error(`el foco no está en la herencia del caído: ${pantalla.foco}`);
     if (pantalla.legado?.estado !== 'pendiente') throw new Error(`la herencia no está pendiente: ${JSON.stringify(pantalla.legado)}`);
     const antes = await evaluate(`localStorage.getItem('arcanveil:legados')`);
@@ -1629,6 +1726,9 @@ try {
     await until('document.querySelector("#aviso-herencia") && document.querySelector("#personajes-comenzar")', 8000);
     const aviso = await evaluate(`document.querySelector('#aviso-herencia').textContent`);
     if (!aviso.includes(textoHerencia) || !/Estimación: empezará en el nivel \d+/.test(aviso) || !/hasta entonces no se gasta/.test(aviso)) throw new Error(`el aviso antes de confirmar no dice origen, cantidad y estimación: «${aviso}»`);
+    // #10: el texto dice lo que de verdad se calcula para el nuevo personaje
+    // (vida y puntos) y no promete maná.
+    if (/man[aá]/i.test(aviso) || !/Su vida sale de su oficio, sus atributos y ese nivel; sus puntos de habilidad, talento y atributo, de los niveles que gane\. Nada se copia del caído\./.test(aviso)) throw new Error(`el aviso de herencia no dice vida y puntos reales (o menciona maná): «${aviso}»`);
     await shot(`09b-herencia-confirmar-${viewport.label}.png`);
 
     // Cancelar (Elegir otro → Atrás → la portada): no se gasta nada.
@@ -1871,6 +1971,7 @@ try {
 
   await pestanasCoordinadas();
   await tokenEnChrome();
+  await tokensDurablesEnChrome();
 
   etapa('muerte con la salida pendiente, caso A (sin protección)');
   {
@@ -1902,6 +2003,13 @@ try {
     await aux.cerrar();
     if (!/navegación inesperada a .*ATTRIBUTION\.md/.test(mal) || !/se cerró|no se llegó/.test(cerrada) || Date.now() - t0 > 9000) throw new Error(`el ayudante de navegación dio por buena una navegación mala: ${JSON.stringify({ mal, cerrada })}`);
     console.log(`  ayudante de navegación: destino equivocado → «${mal.slice(0, 60)}…»; pestaña cerrada → «${cerrada.slice(0, 50)}…»`);
+    // Y el diagnóstico de una pestaña cuyo motor no arranca: dice qué
+    // documento llegó a existir (aquí, uno sin juego), no solo «sin arrancar».
+    const sinMotor = await abrirPestana(`http://127.0.0.1:${PORT}/ATTRIBUTION.md`);
+    const diag = await sinMotor.hasta('window.ARCANVEIL?.motor?.listo', 3000).then(() => 'VERDE', (e) => e.message);
+    await sinMotor.cerrar();
+    if (!/documento: \{"url":"[^"]*ATTRIBUTION\.md"/.test(diag) || !/readyState/.test(diag) || !/navegaciones: \[/.test(diag)) throw new Error(`el diagnóstico de una pestaña sin motor no dice qué documento hay: ${diag.slice(0, 400)}`);
+    console.log(`  diagnóstico de pestaña sin motor: «${diag.split('\n')[1]?.trim().slice(0, 90)}…»`);
   }
   const puenteNav = await navegarHasta(() => cdp('Page.navigate', { url: `http://127.0.0.1:${PORT}/clasico.html` }), { finales: APP, permitidas: ['/clasico.html', ...APP] });
   if (puenteNav.navegaciones[0] !== '/clasico.html' || !puenteNav.navegaciones.at(-1).endsWith('/app/index.html')) throw new Error(`el puente no pasó por la clásica hasta app/: ${JSON.stringify(puenteNav)}`);
