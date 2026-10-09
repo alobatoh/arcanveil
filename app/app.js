@@ -675,7 +675,7 @@ function elegirHerencia(v) {
 /** Qué pasa con cada herencia, en una línea. */
 function detalleHerencia(v) {
   if (v.estado === 'pendiente' && v.muerto && v.cantidad !== null) {
-    return `Hereda ${explicarLegado(v)}. Estimación: empezaría en el nivel ${nivelParaXP(v.cantidad)} (vida, maná y puntos, según su clase).`;
+    return `Hereda ${explicarLegado(v)}. Estimación: empezaría en el nivel ${nivelParaXP(v.cantidad)} (su vida y sus puntos se calculan para él; nada se copia del caído).`;
   }
   if (v.estado === 'aplicado') return 'Esta herencia ya la recibió otro personaje.';
   if (v.estado === 'reservado' && v.bloqueo) return `${v.bloqueo.motivo} No he vuelto a entregar la herencia ni he borrado ninguna partida.`;
@@ -732,7 +732,7 @@ function avisoHerencia() {
   if (!v) return null;
   return el('div', { class: 'aviso-herencia', id: 'aviso-herencia', role: 'note' },
     el('p', { text: `Hereda de ${v.origen.nombre ?? 'tu personaje anterior'}: ${explicarLegado(v)}. Se entrega al pulsar «Comenzar partida»; hasta entonces no se gasta.` }),
-    el('p', { class: 'aviso-herencia__estimacion', text: `Estimación: empezará en el nivel ${nivelParaXP(v.cantidad)}. Vida, maná y puntos salen de su clase, no de la del caído.` }),
+    el('p', { class: 'aviso-herencia__estimacion', text: `Estimación: empezará en el nivel ${nivelParaXP(v.cantidad)}. Su vida sale de su oficio, sus atributos y ese nivel; sus puntos de habilidad, talento y atributo, de los niveles que gane. Nada se copia del caído.` }),
     el('button', { class: 'btn btn--pequeno btn--fantasma', id: 'herencia-cambiar', type: 'button', onClick: protegido('cambiar herencia', () => abrirNuevaPartida({ origen: v.runOrigen })) }, 'Cambiar herencia'),
   );
 }
