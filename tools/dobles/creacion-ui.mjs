@@ -45,18 +45,24 @@ export function crearPersonajeUI(o) {
       await llegar(() => paso() === destino || document.querySelector('.campo__error'), destino);
       if (paso() !== destino) throw new Error('creación por la interfaz: no avanza a «' + destino + '»: ' + (document.querySelector('.campo__error')?.textContent ?? 'sin motivo'));
     };
-    await llegar(() => document.body.dataset.activeScreen === 'creacion' && paso() === 'origen', 'origen');
-    if (o.raza) elegir('#origen-raza', o.raza);
-    if (o.clase) elegir('#origen-clase', o.clase);
-    if (o.trasfondo) elegir('#origen-trasfondo', o.trasfondo);
-    if (parar === 'origen') return paso();
-    await siguiente('quien');
-    fill('#nombre', o.nombre);
-    if (o.genero) document.querySelector('#trato [data-genero="' + o.genero + '"]').click();
-    fill('#lore-personaje', o.lore);
-    if (o.intensidad) document.querySelector('[data-intensidad="' + o.intensidad + '"]').click();
-    if (parar === 'quien') return paso();
-    await siguiente('aspecto');
+    // Se sigue desde el paso en el que esté la pantalla (lo normal, el origen).
+    await llegar(() => document.body.dataset.activeScreen === 'creacion' && paso(), 'la creación');
+    if (paso() === 'origen') {
+      if (o.raza) elegir('#origen-raza', o.raza);
+      if (o.clase) elegir('#origen-clase', o.clase);
+      if (o.trasfondo) elegir('#origen-trasfondo', o.trasfondo);
+      if (parar === 'origen') return paso();
+      await siguiente('quien');
+    }
+    if (paso() === 'quien') {
+      fill('#nombre', o.nombre);
+      if (o.genero) document.querySelector('#trato [data-genero="' + o.genero + '"]').click();
+      fill('#lore-personaje', o.lore);
+      if (o.intensidad) document.querySelector('[data-intensidad="' + o.intensidad + '"]').click();
+      if (parar === 'quien') return paso();
+      await siguiente('aspecto');
+    }
+    if (paso() !== 'aspecto') return paso();
     fill('#retrato-descripcion', o.descripcion);
     if (o.imagen) {
       // «pintado» solo se puede elegir si hay generador, y eso se mira cuando
