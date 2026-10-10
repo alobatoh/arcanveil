@@ -24,7 +24,9 @@ const MAXIMO = 24;
 // con clave `pj:<id>`. `retratoIA` (una URL de un servicio de fuera) y
 // `semillaRetrato` ya no se usan y dejan de guardarse: al volver a guardar
 // un personaje antiguo, desaparecen.
-const CAMPOS = ['id', 'nombre', 'raza', 'clase', 'trasfondo', 'genero', 'retrato', 'lore', 'creado', 'intensidad'];
+// `aspecto`: los controles del dibujo del juego (ver `src/art/dibujo.js`),
+// para volver a abrirlos como se dejaron. Fichas antiguas no lo traen.
+const CAMPOS = ['id', 'nombre', 'raza', 'clase', 'trasfondo', 'genero', 'retrato', 'lore', 'creado', 'intensidad', 'aspecto'];
 
 function leerCrudo() {
   try {

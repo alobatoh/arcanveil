@@ -122,6 +122,16 @@ export function urlAprobada(clave) {
 }
 
 /**
+ * Con qué se hizo la imagen elegida de alguien (el estilo del generador, o
+ * «dibujo-del-juego»), o null si no tiene.
+ * @param {string} clave
+ * @returns {string|null}
+ */
+export function estiloAprobada(clave) {
+  return clave ? enMemoria.get(clave)?.estilo ?? null : null;
+}
+
+/**
  * Guarda la versión que el jugador ha elegido. Sustituye a la anterior.
  *
  * @param {string} clave
