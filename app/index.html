@@ -421,7 +421,8 @@ button{font-family:inherit;cursor:pointer}
 .escena--plegada .escena__lienzo{opacity:.35}
 .escena--plegada .escena__rotulo{padding:.6rem 1rem;background:rgb(10 12 16 / .78)}
 .escena--plegada .escena__lugar{font-size:1rem}
-.escena__plegar{margin-left:auto;align-self:center;min-height:0;padding:.15rem .55rem;border:1px solid var(--linea);border-radius:var(--r);background:rgb(10 12 16 / .55);color:var(--texto-2);font-size:.8rem;cursor:pointer}
+.escena__plegar{margin-left:auto;align-self:center;min-height:0;white-space:nowrap;padding:.15rem .55rem;border:1px solid var(--linea);border-radius:var(--r);background:rgb(10 12 16 / .55);color:var(--texto-2);font-size:.8rem;cursor:pointer}
+@media(max-width:560px){.escena__plegar-texto{display:none}}
 .escena__plegar:focus-visible{outline:2px solid var(--bronce-2,#D8AD50);outline-offset:2px}
 /* La cabecera es una franja muy apaisada y `cover` deja una banda horizontal
    de la imagen: arriba del todo solo había cielo. Un poco por debajo del
@@ -512,6 +513,7 @@ button{font-family:inherit;cursor:pointer}
 
 /* ── avisos ─────────────────────────────────────────────────────────── */
 .avisos{position:fixed;top:1rem;right:1rem;z-index:60;display:grid;gap:.4rem;max-width:18rem}
+body[data-active-screen="juego"] .avisos{top:4.6rem}
 .aviso{
   font-size:.8rem;padding:.55rem .8rem;border-radius:var(--r);
   background:var(--fondo-3);border:1px solid var(--linea);
@@ -1006,6 +1008,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
    de arriba (Menú, Narrador, Guardar). Cede la lista de luchadores. */
 .combate__menu-caja{flex:0 0 auto}
 @media(max-width:560px){.combate{max-height:calc(100vh - 12.2rem)}}
+@media(min-width:561px){.combate{max-height:calc(100dvh - 7.4rem);padding:.7rem 1rem .6rem}.combate__parte{height:4.1rem}.combate__lista{min-height:9rem;margin-bottom:.45rem}.combate .luchador{margin-bottom:.28rem}.combate__rival{margin-bottom:.45rem}.combate__eti{margin-bottom:.35rem}}
 
 /* Cada luchador con su cara al lado de la barra. Se reconoce de un vistazo,
    que es lo que hace falta cuando decides a cuál rematas. */
@@ -1227,6 +1230,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 .origen__fijo:hover{background:rgba(216,173,80,.2)}
 .origen__explica{margin-top:.25rem;padding:.3rem .6rem;border-left:2px solid #6B4E25;background:rgba(0,0,0,.2)}
 .origen__lema{margin:0 0 .15rem;font-style:italic;font-size:.84rem;color:#E4D9C1}
+.origen__quees{font-style:normal;font-size:.76rem;color:var(--texto-2)}
 .origen__efectos{margin:0;padding:0;list-style:none;font-size:.76rem;line-height:1.38;color:var(--texto-2)}
 .ficha-previa{padding:.7rem .8rem;border:1px solid #6B4E25;border-radius:3px 13px 3px 13px;background:linear-gradient(145deg,#2C2018,#100C0B 72%)}
 .atributos-claros{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem;margin:.1rem 0 .4rem}
@@ -1264,22 +1268,27 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 .aspecto__nota{margin:0 0 .3rem;font-size:.76rem;line-height:1.4;color:var(--texto-2)}
 .aspecto__nota--entendido{color:#D8C48A}
 .aspecto__nota--aviso{color:#F0B09E}
-.aspecto__controles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;gap:.5rem;align-items:end}
-.aspecto__controles .btn{min-height:40px}
+.aspecto__controles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem .5rem;align-items:end}
+.aspecto__controles .btn{grid-column:1/-1;justify-self:start;min-height:38px}
+.aspecto__controles .campo__select{min-height:44px;font:1rem/1.3 var(--sans);text-transform:none;letter-spacing:normal;padding:.4rem .45rem}
 .aspecto__generador-fila{display:flex;flex-wrap:wrap;gap:.3rem .7rem;align-items:baseline}
 .aspecto__generador-fila .aspecto__nota{margin:0}
 .aspecto__generador-fila .aspecto__ayuda{flex:1 1 100%;margin-top:0}
 .aspecto__control .campo__eti{margin-bottom:.2rem}
 .aspecto__rasgos{display:flex;flex-wrap:wrap;align-items:center;gap:.1rem .9rem;margin:.4rem 0;padding:0;border:0}
 .aspecto__rasgos legend{float:left;padding:0;margin:0 .6rem 0 0}
-.aspecto__rasgo{display:flex;align-items:center;gap:.4rem;min-height:30px;font-size:.84rem;color:var(--texto);cursor:pointer}
+.aspecto__rasgo{display:flex;align-items:center;gap:.4rem;min-height:36px;white-space:nowrap;font-size:.84rem;color:var(--texto);cursor:pointer}
 .aspecto__rasgo input{width:18px;height:18px;accent-color:#C59A45}
 .aspecto__generador{margin-top:.35rem;padding-top:.35rem;border-top:1px dashed #513B1F}
 .aspecto__generador:empty{display:none}
 .aspecto__ayuda{margin-top:.4rem;font-size:.76rem;color:var(--texto-2)}
 .aspecto__ayuda summary{cursor:pointer;color:#CDB06A}
 .aspecto__ayuda p{margin:.35rem 0 0;line-height:1.5}
-.estudio--ancho{width:min(94vw,640px);max-height:94dvh;overflow:auto}
+.estudio--ancho{width:min(94vw,640px);max-height:94dvh;overflow:auto;padding-bottom:0}
+.estudio--ancho>.estudio__acciones{position:sticky;bottom:0;z-index:2;flex-wrap:nowrap;margin:.5rem -1.1rem 0;padding:.55rem 1.1rem .7rem;background:var(--fondo-2);border-top:1px solid var(--linea)}
+@media(max-width:480px){.estudio--ancho>.estudio__acciones .btn{flex:1 1 0;min-width:0;min-height:44px;padding-inline:.3rem;font-size:.66rem;letter-spacing:.02em}}
+.estudio:not(.estudio--ancho) .estudio__lienzo{width:min(70vw,280px,calc((100dvh - 21rem) * .8))}
+.estudio__nota:empty{display:none}
 
 /* En ancho: lo que escribes y lo que se ve, a la izquierda; qué imagen, a la derecha. */
 @media(min-width:860px){
@@ -1305,6 +1314,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 [data-pantalla="creacion"] .revelacion .atributos-claros{grid-template-columns:repeat(6,1fr)}
 [data-pantalla="creacion"] .revelacion__cita{margin-bottom:.6rem;font-size:.9rem}
 .revelacion__estado[data-estado="dibujo"]{color:#CDB06A}
+[data-pantalla="creacion"] .revelacion__narrador{margin:.4rem 0 .4rem;padding:.5rem .8rem}
 
 @media(max-width:700px){
   .origen-rejilla{grid-template-columns:1fr}
@@ -1312,17 +1322,21 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
   [data-pantalla="creacion"] .revelacion{grid-template-columns:1fr}
   [data-pantalla="creacion"] .revelacion__marco{max-width:11rem;margin:0 auto}
   [data-pantalla="creacion"] .revelacion .atributos-claros{grid-template-columns:repeat(3,1fr)}
-  .pasos__item{flex:1 1 4.5rem}
-  .paso{padding:.25rem .4rem;font-size:.62rem;gap:.3rem}
+  .pasos{flex-wrap:nowrap}
+  .pasos__item{flex:0 0 auto}
+  .pasos__item:has(.es-actual){flex:1 1 auto}
+  .paso:not(.es-actual) .paso__nombre{display:none}
+  .paso{padding:.25rem .5rem;font-size:.66rem;gap:.3rem;min-height:40px}
   .paso__n{width:1.25rem;height:1.25rem}
   [data-pantalla="creacion"] .creacion__pie .btn{flex:1 1 auto;padding-inline:.6rem}
 }
 @media(max-width:380px){
   .aspecto{grid-template-columns:1fr}
   .aspecto__marco{max-width:9rem;margin:0 auto}
-  .aspecto__controles{grid-template-columns:1fr}
-  .paso__nombre{font-size:.56rem}
+  [data-pantalla="creacion"] .creacion__pie{flex-wrap:nowrap}
+  [data-pantalla="creacion"] .creacion__pie .btn{padding-inline:.4rem;font-size:.62rem;letter-spacing:.02em}
 }
+@media(max-width:480px){.aspecto__controles{grid-template-columns:minmax(0,1fr)}}
 /*#12A-FIN*/
 /*#12B*/
 /* ═══ #12 · la partida: un espacio estable, no una página larga ══════════
@@ -1339,7 +1353,9 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 .relato__vista:hover{border-color:#A27A36}
 .relato__vista.es-activa{color:#F6E2A3;background:linear-gradient(#4A321B,#17100E);border-color:#C59A45;box-shadow:0 0 12px rgba(197,150,61,.18)}
 .relato__donde{margin-left:auto;min-width:0;font:.66rem/1.3 var(--mono);color:var(--texto-2);text-align:right}
-.bitacora{position:relative;scroll-behavior:auto;padding:.9rem 1.25rem 1.2rem;outline-offset:-2px}
+.bitacora{position:relative;scroll-behavior:auto;padding:.9rem 1.25rem 1.9rem;outline-offset:-2px}
+@media(min-width:801px){.tablero{grid-template-columns:minmax(0,1fr) 19.5rem}}
+@media(min-width:1150px){.tablero{grid-template-columns:minmax(0,1fr) 21rem}}
 .bitacora:focus-visible{outline:2px solid #C59A45}
 .bitacora[data-vista="historial"]{background:linear-gradient(rgba(0,0,0,.22),rgba(0,0,0,.22))}
 .linea{max-width:46rem}
@@ -1382,14 +1398,15 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 .lateral__resumen .oro{padding:.2rem .5rem;gap:.4rem}
 .lateral__cuerpo .xp-pj{padding:.25rem .5rem}
 #panel-lateral{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
-.pestanas{flex:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.25rem;padding-bottom:.4rem}
-.pestana{min-width:0;padding:.3rem .2rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.pestanas{flex:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(3.3rem,1fr));gap:.2rem;padding-bottom:.4rem}
+.pestana{min-width:0;padding:.3rem .1rem;font-size:.64rem;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.lateral__breve{display:none;margin:0 0 .25rem;font:600 .68rem var(--mono);letter-spacing:.03em;color:#E9D08B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lateral__cab{flex:none;display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin:.35rem 0 .1rem}
 .lateral__titulo{margin:0;font:600 .9rem var(--display);color:#F0D995;outline:none}
 .lateral__volver{display:none}
 .lateral__cuerpo{flex:1 1 auto;min-height:0;margin-top:.25rem;padding-right:.25rem;overflow-y:auto;outline-offset:-2px}
 .lateral__cuerpo:focus-visible{outline:2px solid #C59A45}
-.lateral__cuerpo .atributos-claros{grid-template-columns:repeat(2,minmax(0,1fr))}
+.lateral__cuerpo .atributos-claros{grid-template-columns:repeat(3,minmax(0,1fr))}
 .lateral__cuerpo .sub-eti:first-child{margin-top:.2rem}
 
 @media(max-width:800px){
@@ -1398,12 +1415,13 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
   .lateral{display:block;max-height:none;overflow:visible;padding:.4rem .5rem .45rem}
   .lateral__resumen{grid-template-columns:2.9rem minmax(0,1fr);gap:.45rem;margin-bottom:.35rem;align-items:center}
   .lateral__resumen .retrato-pj{grid-column:auto;grid-row:auto;width:2.9rem;height:3.5rem;border-width:1px}
-  .lateral__resumen #panel-personaje{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr) auto;gap:.2rem .5rem;align-items:center;min-width:0}
+  .lateral__resumen #panel-personaje{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.2rem .5rem;align-items:center;min-width:0}
+  .lateral__resumen .barras-pj{grid-column:1/-1;grid-row:2}
   .lateral__resumen .ficha-pj{margin:0;padding:.2rem .4rem;gap:.1rem .4rem}
   .lateral__resumen .ficha-pj .btn{display:none}
   .barras-pj{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.3rem;min-width:0}
   .barras-pj .barra-caja{margin:0;padding:.1rem .25rem .2rem}
-  .barras-pj .barra-caja__fila{font-size:.52rem;gap:.2rem}
+  .barras-pj .barra-caja__fila{font-size:.62rem;gap:.2rem;white-space:nowrap}
   .lateral__resumen .oro{padding:.1rem .35rem;font-size:.6rem;white-space:nowrap}
   .pestanas{grid-template-columns:repeat(auto-fit,minmax(3.1rem,1fr));position:static;padding:0;background:none}
   .pestana{min-height:38px;font-size:.62rem}
@@ -1433,17 +1451,36 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 }
 @media(max-height:620px) and (max-width:800px){
   .lateral:not(.lateral--hoja) .lateral__resumen{display:none}
+  .lateral:not(.lateral--hoja) .lateral__breve{display:block}
   .lateral{padding:.3rem .4rem}
+}
+@media(max-height:620px) and (min-width:600px) and (max-width:800px){
+  .lateral:not(.lateral--hoja) #panel-lateral{flex-direction:row;align-items:center;gap:.6rem}
+  .lateral:not(.lateral--hoja) .lateral__breve{flex:none;margin:0;max-width:40%}
+  .lateral:not(.lateral--hoja) .pestanas{flex:1 1 auto;min-width:0}
 }
 .relato__lugar{font:600 .7rem var(--mono);letter-spacing:.04em;color:#E9D08B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .relato__lugar:empty{display:none}
-.ficha-estado{margin:.1rem 0 .5rem;font:.72rem/1.5 var(--mono);color:var(--texto-2)}
+@media(max-width:800px) and (min-height:621px){.relato__lugar{display:none}}
+.ficha-estado{display:none;margin:.1rem 0 .5rem;font:.72rem/1.5 var(--mono);color:var(--texto-2)}
+@media(max-width:800px){.ficha-estado{display:block}}
+.ficha-previa__leyenda{margin:.1rem 0 .45rem;font-size:.7rem;line-height:1.3;color:var(--texto-3)}
+.ficha-imagen{display:none;margin:0 0 .4rem;min-height:36px}
+@media(max-width:800px){.ficha-imagen{display:inline-flex}}
 .ficha-estado strong{color:#F0D995;font-weight:600}
 @media(max-width:380px){
   .lateral__resumen #panel-personaje{grid-template-columns:minmax(0,1fr)}
   .lateral__resumen .oro{display:none}
   .relato__donde{display:none}
 }
+@media(max-height:620px) and (max-width:800px){
+  .lateral--hoja{position:fixed;inset:0;z-index:30;padding:.5rem .6rem}
+}
+@media(max-width:800px) and (min-height:500px){
+  .pestana,.relato__vista,.cab__acciones .btn,.lateral--hoja .lateral__volver,.ficha-imagen{min-height:44px}
+  .escena__plegar{min-width:44px;min-height:44px}
+}
+@media(min-width:801px){.lateral__cab{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
 /*#12B-FIN*/
 </style>
 </head>
@@ -1498,7 +1535,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
     estado.fallidos.push(String(o.src || 'script en línea'));
     estado.fase = 'modulo-fallido';
     decir('El juego no ha podido cargar todos sus archivos',
-      'No llegó ' + (String(o.src || '').split('/').pop() || 'un archivo del juego') + ' o alguno de los archivos que usa.\nPulsa «Recargar». Si estabas sin conexión, vuelve a intentarlo con conexión.');
+      'Falta una parte del juego: ' + (String(o.src || '').split('/').pop() || 'un archivo') + ' o alguno de los archivos que usa.\nPulsa «Recargar». Si estabas sin conexión, vuelve a intentarlo con conexión.');
   }, true);
   setTimeout(function () {
     if (estado.fase !== 'documento') return;      // el módulo llegó a ejecutarse: manda su propio vigilante

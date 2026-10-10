@@ -58,7 +58,7 @@ import {
 import { abrirGaleria, aprobar, alCambiarGaleria, urlAprobada, estiloAprobada, olvidar as olvidarRetrato, borrarGaleria } from '../src/art/galeria.js';
 import { pedirCandidata, estadoGenerador, olvidarCandidatas } from '../src/art/candidata.js';
 import {
-  ESTILO_DIBUJO, PELOS, OJOS, RASGOS, normalizarAspecto, aspectoDesdeDescripcion, opcionesDibujo, svgDibujo, describirDibujo, rasterizar,
+  ESTILO_DIBUJO, PELOS, OJOS, RASGOS, rasgosDeLinaje, normalizarAspecto, aspectoDesdeDescripcion, opcionesDibujo, svgDibujo, describirDibujo, rasterizar,
 } from '../src/art/dibujo.js';
 import { sujetoRetrato } from '../src/art/rasgos.js';
 import { obtenerEnemigo } from '../src/data/enemies.data.js';
@@ -67,7 +67,7 @@ import { fichaAleatoria, nombreAleatorio } from '../src/player/CharacterRandom.j
 import { previsualizar } from '../src/player/CharacterFactory.js';
 import { ATRIBUTOS } from '../src/config/balance.config.js';
 import { HABILIDADES } from '../src/data/skills.data.js';
-import { aplicarCorreccion, resumenPersonaje, sexoDescrito, PREGUNTA_CREACION } from '../src/player/Correccion.js';
+import { aplicarCorreccion, sexoDescrito, PREGUNTA_CREACION } from '../src/player/Correccion.js';
 import {
   listarPersonajes, obtenerPersonaje, guardarPersonaje,
 } from '../src/persistence/CharacterRoster.js';
@@ -837,6 +837,12 @@ const fijado = { raza: false, clase: false, trasfondo: false, genero: false };
 
 /** El control de imagen del paso «Aspecto» (ver `montarAspecto`). */
 let aspectoCreacion = null;
+/**
+ * Lo que el jugador dejó elegido en «Aspecto» (qué imagen y, si tocó los
+ * controles del dibujo, cómo): se recuerda al salir del paso en CUALQUIER
+ * dirección. Antes solo se guardaba al avanzar, y volver atrás lo perdía.
+ */
+const imagenCreacion = { modo: null, aspecto: null };
 
 const NOMBRE_ATRIBUTO = Object.freeze({ vigor: 'Vigor', destreza: 'Destreza', temple: 'Temple', intelecto: 'Intelecto', astucia: 'Astucia', carisma: 'Carisma' });
 const ETI_ATRIBUTO = Object.freeze({ vigor: 'VIG', destreza: 'DES', temple: 'TEM', intelecto: 'INT', astucia: 'AST', carisma: 'CAR' });
@@ -860,6 +866,8 @@ function abrirCreacion() {
   borrador.retrato = '';
   borrador.lore = '';
   borrador.aspecto = null;
+  imagenCreacion.modo = null;
+  imagenCreacion.aspecto = null;
   // Sin esto, volver desde la revisión y luego pulsar «Crear otro»
   // sobrescribía al personaje anterior en vez de crear uno.
   delete borrador.id;
@@ -872,12 +880,16 @@ function abrirCreacion() {
 
 /** Pinta el paso en curso: barra de pasos, cuerpo y pie. */
 function pintarCreacion({ foco = '#creacion-titulo', eco = null } = {}) {
-  aspectoCreacion?.cerrar();
+  if (aspectoCreacion) {
+    imagenCreacion.modo = aspectoCreacion.modo();
+    if (aspectoCreacion.tocado()) imagenCreacion.aspecto = aspectoCreacion.controles();
+    aspectoCreacion.cerrar();
+  }
   aspectoCreacion = null;
   const caja = $('#creacion-cuerpo');
   vaciar(caja);
   const paso = PASOS.find((p) => p.id === pasoCreacion) ?? PASOS[0];
-  $('#creacion-titulo').textContent = pasoCreacion === 'revisar' ? (borrador.nombre || 'Tu personaje') : '¿Quién eres?';
+  $('#creacion-titulo').textContent = ({ origen: 'Tu origen', quien: '¿Quién eres?', aspecto: 'Tu aspecto' })[pasoCreacion] ?? (borrador.nombre || 'Tu personaje');
   $('#creacion-nota').textContent = paso.nota;
   $('[data-pantalla="creacion"]').dataset.paso = paso.id;
   pintarPasos();
@@ -918,11 +930,11 @@ function pintarPieCreacion() {
   vaciar(pie);
   const i = PASOS.findIndex((p) => p.id === pasoCreacion);
   const atras = i === 0
-    ? el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', type: 'button', onClick: protegido('volver', () => (listarPersonajes().length ? abrirNuevaPartida() : mostrar('inicio'))) }, 'Atrás')
+    ? el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', type: 'button', onClick: protegido('volver', () => (listarPersonajes().length ? abrirNuevaPartida() : mostrar('inicio'))) }, listarPersonajes().length ? 'Atrás: tus personajes' : 'Atrás: portada')
     : el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', type: 'button', onClick: protegido('volver', () => irAPaso(PASOS[i - 1].id)) }, `Atrás: ${PASOS[i - 1].nombre.toLowerCase()}`);
   if (pasoCreacion === 'revisar') {
     pie.append(
-      el('button', { class: 'btn btn--fantasma', id: 'creacion-otro', type: 'button', onClick: protegido('nuevo personaje', () => abrirCreacion()) }, 'Crear otro'),
+      el('button', { class: 'btn btn--fantasma', id: 'creacion-otro', type: 'button', onClick: protegido('nuevo personaje', () => abrirCreacion()) }, 'Guardar y crear otro'),
       atras,
       el('button', { class: 'btn btn--grande', id: 'creacion-empezar', type: 'button', onClick: protegido('comenzar partida', () => comenzarPartida(personajeCreado)) }, 'Comenzar partida'),
     );
@@ -994,15 +1006,15 @@ async function validarPaso(id) {
   if (id === 'quien') {
     const nombre = String(borrador.nombre ?? '').trim();
     const lore = String(borrador.lore ?? '').trim();
-    if (!nombre) return { ok: false, campo: '#nombre', mensaje: 'Ponle nombre al personaje.' };
-    if (lore.length < 8) return { ok: false, campo: '#lore-personaje', mensaje: 'Cuenta un poco de su historia (al menos unas palabras).' };
+    if (!nombre) return { ok: false, campo: '#nombre', mensaje: 'Ponle nombre a tu personaje.' };
+    if (lore.length < 8) return { ok: false, campo: '#lore-personaje', mensaje: 'Cuenta un poco de tu historia (al menos unas palabras).' };
     personajeCreado = guardarPersonaje({ ...borrador, nombre, lore, retrato: String(borrador.retrato ?? '').trim() });
     Object.assign(borrador, { id: personajeCreado.id, creado: personajeCreado.creado, nombre, lore });
     return { ok: true };
   }
   if (id === 'aspecto') {
     const descripcion = String(borrador.retrato ?? '').trim();
-    if (descripcion.length < 8) return { ok: false, campo: '#retrato-descripcion', mensaje: 'Describe su aspecto con unas palabras: el narrador lo tiene en cuenta.' };
+    if (descripcion.length < 8) return { ok: false, campo: '#retrato-descripcion', mensaje: 'Describe tu aspecto con unas palabras: el narrador lo tiene en cuenta.' };
     // Si la descripción dice quién es y el jugador no ha elegido el trato a
     // mano, manda la descripción: «enana guerrera» es una mujer aunque el
     // dado saliera en masculino.
@@ -1018,29 +1030,27 @@ async function validarPaso(id) {
 
 /* ── paso 1: origen ───────────────────────────────────────────────────── */
 
-const LUGAR_INICIAL = {
-  ferrano: 'forja_alta', brumal: 'pilotes_brumal', sombracorteza: 'arboleda_madre',
-  crisol: 'oasis_sal', albar: 'umbral_albar', griscuerno: 'paso_yunque',
-  valdes: 'vado_yunque', menudo: 'saucedo',
-};
+// (Aquí había una tabla «linaje → lugar de inicio» y un «Empiezas en…».
+// El motor no la cumple: `World` espera `raza` en `player:created` y el
+// evento no la trae, así que TODAS las partidas empiezan en Vado del Yunque.
+// Cambiar dónde empieza cada campaña no es de este encargo: se quita la
+// promesa, que era falsa, y queda como decisión pendiente.)
 
 /** Lo que cada elección cambia EN REGLAS, leído de la configuración real. */
 function efectoDe(clave, refId) {
   if (clave === 'raza') {
     const mods = Object.entries(atributosDe(refId) ?? {}).filter(([k]) => NOMBRE_ATRIBUTO[k]).map(([k, v]) => `${v > 0 ? '+' : ''}${v} ${NOMBRE_ATRIBUTO[k]}`);
-    const inicio = obtenerLugar(LUGAR_INICIAL[refId] ?? 'vado_yunque');
     return [
-      mods.length ? `Atributos: ${mods.join(', ')}.` : null,
+      mods.length ? `El linaje suma a tus atributos: ${mods.join(', ')}.` : null,
       (RAZAS[refId]?.habilidadesGratis ?? []).length ? `Se te da bien: ${RAZAS[refId].habilidadesGratis.map(nombreHabilidad).join(', ')}.` : null,
       (rasgosDe(refId) ?? []).length ? `Rasgos: ${rasgosDe(refId).map((r) => r.nombre).join(', ')}.` : null,
-      inicio ? `Empiezas en ${inicio.nombre}.` : null,
     ].filter(Boolean);
   }
   if (clave === 'clase') {
     const c = CLASES[refId] ?? {};
     return [
-      `Atributos fuertes: ${NOMBRE_ATRIBUTO[c.atributoPrincipal] ?? '—'} y ${NOMBRE_ATRIBUTO[c.atributoSecundario] ?? '—'}.`,
-      `Vida: dado d${c.dadoVida ?? 8} por nivel. ${c.manaBase ? `Ánima: base ${c.manaBase} (el total, en tu ficha).` : 'Apenas usa ánima.'}`,
+      `Atributo principal: ${NOMBRE_ATRIBUTO[c.atributoPrincipal] ?? '—'} (tu mejor puntuación, antes de sumar lo del linaje).`,
+      `Cada nivel te da hasta ${c.dadoVida ?? 8} de vida. ${c.manaBase ? 'Usa ánima (la energía de la magia): cuánta, en tu ficha.' : 'Apenas usa ánima (la energía de la magia).'}`,
       (c.habilidadesGratis ?? []).length ? `Se te da bien: ${c.habilidadesGratis.map(nombreHabilidad).join(', ')}.` : null,
       (c.rasgos ?? []).filter((r) => (r.nivel ?? 1) === 1).length ? `Rasgos: ${c.rasgos.filter((r) => (r.nivel ?? 1) === 1).map((r) => r.nombre).join(', ')}.` : null,
     ].filter(Boolean);
@@ -1052,6 +1062,8 @@ function efectoDe(clave, refId) {
     t.rasgo?.nombre ? `Rasgo: ${t.rasgo.nombre}.` : null,
   ].filter(Boolean);
 }
+
+const primeraFrase = (t) => String(t ?? '').split(/(?<=[.!?])\s+/)[0].trim();
 
 /** Un selector de origen con su explicación y su estado (elegido o al azar). */
 function campoOrigen(clave, etiqueta, datos) {
@@ -1077,12 +1089,15 @@ function campoOrigen(clave, etiqueta, datos) {
         ? el('button', {
           type: 'button', class: 'origen__fijo', dataset: { soltar: clave }, title: 'Dejar que el dado lo cambie',
           onClick: protegido('soltar elección', () => { fijado[clave] = false; pintarCreacion({ foco: `#${id}` }); }),
-        }, 'Elegido por ti · soltar')
-        : el('span', { class: 'origen__azar', text: 'Lo tiró el dado' }),
+        }, 'Elegido por ti · dejar al azar')
+        : el('span', { class: 'origen__azar', text: 'Al azar: cámbialo si quieres' }),
     ),
     select,
     el('div', { class: 'origen__explica', id: `${id}-explica` },
-      el('p', { class: 'origen__lema', text: actual.lema ?? '' }),
+      el('p', { class: 'origen__lema' },
+        el('span', { text: actual.lema ?? '' }),
+        primeraFrase(actual.aspecto ?? actual.descripcion) ? el('span', { class: 'origen__quees', text: ` ${primeraFrase(actual.aspecto ?? actual.descripcion)}` }) : null,
+      ),
       el('ul', { class: 'origen__efectos' }, ...efectoDe(clave, actual.refId).map((t) => el('li', { text: t }))),
     ),
   );
@@ -1105,6 +1120,7 @@ function fichaReglas(datos, { id = 'ficha-previa', detalle = false } = {}) {
         );
       }),
     ),
+    el('p', { class: 'ficha-previa__leyenda', text: 'El número pequeño es lo que ese atributo suma o resta a tus tiradas.' }),
     el('dl', { class: 'ficha-previa__cifras' },
       el('div', {}, el('dt', { text: 'Vida' }), el('dd', { id: `${id}-vida`, text: String(f.vida) })),
       el('div', {}, el('dt', { text: 'Ánima' }), el('dd', { id: `${id}-anima`, text: String(f.mana) })),
@@ -1142,7 +1158,7 @@ function pasoOrigen(caja) {
           onClick: protegido('aleatorio', () => { tirarFicha(); pintarCreacion({ foco: '#creacion-aleatorio' }); }),
         }, el('span', { class: 'aleatoria__glifo', 'aria-hidden': 'true', text: '⚄' }), ' Tirar al azar'),
         el('p', { class: 'campo__ayuda', id: 'creacion-aleatorio-nota', text: nadaQueTirar
-          ? 'Lo has elegido todo tú: no queda nada que tirar. Suelta alguna elección si quieres que el dado la cambie.'
+          ? 'Lo has elegido todo tú: no queda nada que tirar. Pulsa «dejar al azar» en alguna si quieres que el dado la cambie.'
           : `El dado tira: ${queTira.join(', ')}. No toca lo que has elegido tú ni lo que has escrito.` }),
       ),
     ),
@@ -1310,7 +1326,9 @@ function pasoAspecto(caja) {
   aspectoCreacion = montarAspecto(hueco, {
     personaje: { id: p.id, nombre: borrador.nombre, raza: borrador.raza, genero: borrador.genero },
     descripcion: borrador.retrato,
-    aspecto: borrador.aspecto,
+    aspecto: imagenCreacion.aspecto ?? borrador.aspecto,
+    guardado: borrador.aspecto,
+    modoInicial: imagenCreacion.modo,
     idVista: 'creacion-cara',
   });
 }
@@ -1321,7 +1339,6 @@ function pasoRevisar(caja, eco = null) {
   const p = personajeCreado;
   const cara = el('div', { class: 'eleccion__cara revelacion__cara', id: 'creacion-cara' });
   const estado = el('p', { class: 'revelacion__estado', id: 'retrato-estado', text: '' });
-  const inicio = obtenerLugar(LUGAR_INICIAL[p.raza] ?? 'vado_yunque');
 
   caja.append(el('div', { class: 'revelacion' },
     el('div', { class: 'revelacion__marco' }, cara, estado,
@@ -1329,7 +1346,7 @@ function pasoRevisar(caja, eco = null) {
     ),
     el('div', { class: 'revelacion__texto' },
       el('p', { class: 'revelacion__ficha', id: 'revision-origen', text: `${RAZAS[p.raza]?.nombre ?? ''} · ${CLASES[p.clase]?.nombre ?? ''} · ${TRASFONDOS[p.trasfondo]?.nombre ?? ''} · nivel 1` }),
-      el('p', { class: 'revelacion__ficha revelacion__ficha--tenue', id: 'revision-partida', text: `Intensidad ${nombreIntensidad(p.intensidad)} · el narrador habla de ti como ${p.genero === 'f' ? 'ella' : 'él'}${inicio ? ` · empiezas en ${inicio.nombre}` : ''}` }),
+      el('p', { class: 'revelacion__ficha revelacion__ficha--tenue', id: 'revision-partida', text: `Intensidad ${nombreIntensidad(p.intensidad)} · el narrador habla de ti como ${p.genero === 'f' ? 'ella' : 'él'}` }),
       fichaReglas(p, { id: 'ficha-revision', detalle: true }),
       el('p', { class: 'revelacion__eti', text: 'Descripción' }),
       el('p', { class: 'revelacion__cita', id: 'revision-descripcion', text: p.retrato }),
@@ -1355,7 +1372,6 @@ function pasoRevisar(caja, eco = null) {
     avisoHerencia() ?? '',
     el('div', { class: 'revelacion__narrador', id: 'revelacion-resumen', 'aria-live': 'polite' },
       eco ? el('p', { class: 'revelacion__eco', text: eco }) : null,
-      el('p', { text: resumenPersonaje(p) }),
       el('p', { class: 'revelacion__pregunta', text: PREGUNTA_CREACION }),
     ),
     el('form', {
@@ -1800,7 +1816,7 @@ function abrirAjustes() {
           }
           avisar(`${puente.ok
             ? `Borrados ${cuantas}, personajes, retratos elegidos y las candidatas del generador.`
-            : `Borrados ${cuantas}, personajes y retratos elegidos. Si usaste el generador de imágenes, sus candidatas (en este PC) caducan en 24 h o se borran con: node tools/imagen-local-proxy.mjs --limpiar`}${r.limite}`, r.limite ? 'aviso' : puente.ok ? 'exito' : 'info');
+            : `Borrados ${cuantas}, personajes y retratos elegidos. Si usaste el generador de imágenes, sus candidatas (en este PC) caducan solas en 24 h; cómo vaciarlas antes está en el documento IMAGEN_LOCAL del juego.`}${r.limite}`, r.limite ? 'aviso' : puente.ok ? 'exito' : 'info');
         }),
       }, 'Borrar partidas y personajes'),
     ),
@@ -1977,13 +1993,13 @@ function pintarEscena() {
     el('button', {
       class: 'escena__plegar', id: 'escena-plegar', type: 'button',
       'aria-expanded': String(!plegada),
-      'aria-label': plegada ? 'Desplegar la ilustración' : 'Plegar la ilustración',
-      title: plegada ? 'Desplegar' : 'Plegar',
+      'aria-label': plegada ? 'Ver ilustración' : 'Ocultar ilustración',
+      title: plegada ? 'Ver ilustración' : 'Ocultar ilustración',
       onClick: protegido('plegar escena', () => {
         guardarAjustes({ escenaPlegada: !plegada });
         pintarEscena();
       }),
-    }, plegada ? '▾' : '▴'),
+    }, el('span', { class: 'escena__plegar-texto', text: plegada ? 'Ver ilustración' : 'Ocultar ilustración' }), plegada ? ' ▾' : ' ▴'),
   );
 }
 
@@ -2034,7 +2050,7 @@ function fraseGenerador(g) {
     case 'disponible-local': return 'Hay un generador de imágenes en este equipo. Lo que se pinta no sale de tu PC.';
     case 'disponible-nube': return `El puente de este equipo pinta con un servicio en la nube (${g.proveedor ?? 'sin nombre'}). Antes de enviar nada se te enseña qué sale y se te pide permiso.`;
     case 'cancelada': return 'Comprobación cancelada.';
-    case 'desconocido': case undefined: case null: return 'Necesita un generador de imágenes instalado en este equipo; lo normal es no tenerlo. Sin comprobar todavía.';
+    case 'desconocido': case undefined: case null: return 'Necesita un generador de imágenes instalado en este equipo; lo normal es no tenerlo. Pulsa para comprobarlo.';
     default: return g.motivo ?? 'No se puede pintar con IA ahora.';
   }
 }
@@ -2057,7 +2073,7 @@ const generadorDisponible = (g) => g?.estado === 'disponible-local' || g?.estado
  *
  * @returns {{aplicar: () => Promise<{ok: boolean, motivo?: string}>, aspecto: () => Object|null, modo: () => string, descripcion: (t: string) => void, cerrar: () => void}}
  */
-function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVista = 'aspecto-vista' }) {
+function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, guardado = aspecto, modoInicial = null, idVista = 'aspecto-vista' }) {
   const clave = claveRetrato({ id: personaje.id });
   const linaje = RAZAS[personaje.raza]?.nombre ?? 'tu linaje';
   let cerrado = false;
@@ -2075,9 +2091,10 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
   let actual = normalizarAspecto(aspecto ?? propuesta.aspecto);
   /** El jugador ya ha tocado los controles: la descripción deja de proponer. */
   let tocado = Boolean(aspecto);
-  let modo = hayPintado() ? 'pintado' : 'dibujo';
+  // Lo que el jugador dejó elegido la última vez, si sigue teniendo sentido.
+  let modo = modoInicial && (modoInicial !== 'pintado' || hayPintado()) ? modoInicial : (hayPintado() ? 'pintado' : 'dibujo');
   /** El dibujo que ya está guardado tal cual (no se vuelve a guardar igual). */
-  let aplicado = hayDibujo() && aspecto ? JSON.stringify([personaje.raza, normalizarAspecto(aspecto)]) : null;
+  let aplicado = hayDibujo() && guardado ? JSON.stringify([personaje.raza, normalizarAspecto(guardado)]) : null;
 
   const vista = el('div', { class: 'eleccion__cara aspecto__vista', id: idVista });
   const pie = el('p', { class: 'aspecto__pie', id: 'aspecto-pie', 'aria-live': 'polite' });
@@ -2091,7 +2108,10 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
   caja.append(raiz);
 
   const elegirModo = (m) => {
-    if (m === 'pintado' && !hayPintado() && !generadorDisponible(generador)) return;
+    if (m === 'pintado' && !hayPintado() && !generadorDisponible(generador)) {
+      if ((generador.estado ?? 'desconocido') === 'desconocido') comprobar({ elegir: true });
+      return;
+    }
     modo = m;
     pintarTodo();
     $(`#aspecto-modo-${m}`)?.focus();
@@ -2116,7 +2136,7 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
 
   function pintarModos() {
     vaciar(radios);
-    const puedePintado = hayPintado() || generadorDisponible(generador);
+    const puedePintado = hayPintado() || generadorDisponible(generador) || (generador.estado ?? 'desconocido') === 'desconocido';
     const opciones = [
       { id: 'dibujo', nombre: 'Dibujo del juego', texto: 'Sin IA y sin instalar nada: lo dibuja el propio juego.' },
       { id: 'pintado', nombre: 'Retrato pintado con IA', texto: hayPintado() && !generadorDisponible(generador) ? 'Conservar el que ya elegiste.' : fraseGenerador(generador), apagada: !puedePintado },
@@ -2147,7 +2167,7 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
   function pintarPanel() {
     vaciar(panel);
     if (modo === 'dibujo') {
-      const cambiar = (cambio) => { tocado = true; actual = normalizarAspecto({ ...actual, ...cambio }); pintarVista(); };
+      const cambiar = (cambio) => { tocado = true; actual = normalizarAspecto({ ...actual, ...cambio }); $('#aspecto-entendido')?.remove(); pintarVista(); };
       const lista = (id, etiqueta, opciones, valor, campo) => {
         const s = el('select', { id, class: 'campo__entrada campo__select', onChange: (e) => cambiar({ [campo]: e.target.value }) },
           ...opciones.map((o) => el('option', { value: o.id, text: o.nombre })));
@@ -2170,8 +2190,11 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
               type: 'checkbox', id: `aspecto-rasgo-${r.id}`, dataset: { rasgo: r.id },
               onChange: (e) => cambiar({ rasgos: e.target.checked ? [...actual.rasgos, r.id] : actual.rasgos.filter((x) => x !== r.id) }),
             });
-            marca.checked = actual.rasgos.includes(r.id);
-            return el('label', { class: 'aspecto__rasgo', for: `aspecto-rasgo-${r.id}` }, marca, el('span', { text: r.nombre }));
+            const propio = rasgosDeLinaje(personaje.raza).includes(r.id);
+            marca.checked = propio || actual.rasgos.includes(r.id);
+            marca.disabled = propio;
+            return el('label', { class: 'aspecto__rasgo', for: `aspecto-rasgo-${r.id}`, title: propio ? `El dibujo de ${linaje} ya la lleva` : undefined },
+              marca, el('span', { text: propio ? `${r.nombre} (de su linaje)` : r.nombre }));
           }),
         ),
         el('p', { class: 'aspecto__nota', id: 'aspecto-dibujo-nota', text: `No es una IA: dibuja una cara de ${linaje} y solo cambia lo que elijas aquí. No sabe dibujar el resto de tu descripción.` }),
@@ -2185,7 +2208,7 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
     if (modo === 'pintado') {
       const puede = generadorDisponible(generador);
       poner(panel,
-        el('p', { class: 'aspecto__nota', text: hayPintado() ? 'Este es el retrato que elegiste. Se conserva.' : 'Pinta una versión, mírala en privado y quédate con la que quieras. Hasta entonces no hay imagen.' }),
+        el('p', { class: 'aspecto__nota', text: hayPintado() ? 'Este es el retrato que elegiste. Se conserva.' : `Pinta una versión, mírala en privado y quédate con la que quieras. ${hayDibujo() ? 'Hasta entonces sigue el dibujo que tiene.' : 'Hasta entonces no hay imagen.'}` }),
         puede ? el('button', {
           type: 'button', class: 'btn btn--pequeno', id: 'aspecto-pintar',
           onClick: protegido('pintar retrato', () => {
@@ -2234,19 +2257,24 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
   }
 
   /** Mira si hay generador: SOLO cuando el jugador lo pide; con plazo y cancelable. */
-  function comprobar() {
+  function comprobar({ elegir = false } = {}) {
     control?.abort();
     control = new AbortController();
     const este = ++sondeo;
     generador = { estado: 'buscando' };
     const conFoco = document.activeElement?.id === 'aspecto-comprobar';
     pintarModos(); pintarGenerador();
+    if (elegir) $('#aspecto-modo-pintado')?.focus();
     estadoGenerador({ signal: control.signal }).then((g) => {
       // Un sondeo viejo (se cerró, o se pidió otro) no pinta nada.
       if (cerrado || este !== sondeo) return;
       generador = g;
+      // Pulsó la opción: si se puede pintar, queda elegida; si no, la propia
+      // opción dice por qué y el foco sigue en ella.
+      if (elegir && generadorDisponible(g)) { modo = 'pintado'; pintarTodo(); $('#aspecto-modo-pintado')?.focus(); return; }
       pintarModos(); pintarGenerador();
-      if (conFoco) ($('#aspecto-comprobar') ?? $(`#aspecto-modo-${modo}`))?.focus();
+      if (elegir) $('#aspecto-modo-pintado')?.focus();
+      else if (conFoco) ($('#aspecto-comprobar') ?? $(`#aspecto-modo-${modo}`))?.focus();
     });
   }
 
@@ -2266,6 +2294,9 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
   return {
     modo: () => modo,
     aspecto: () => { reproponer(); return modo === 'dibujo' ? { ...actual } : null; },
+    /** Los controles del dibujo tal como están (aunque ahora no sea la imagen elegida). */
+    controles: () => ({ ...actual }),
+    tocado: () => tocado,
     estadoGenerador: () => generador.estado,
     /** La descripción cambió: propone controles de nuevo si el jugador no los ha tocado. */
     descripcion(t) {
@@ -2478,6 +2509,7 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
     fase('generando');
     estado.textContent = generador.estado === 'disponible-local' ? 'Pintando en tu equipo… puede tardar un minuto.' : 'Pintando… puede tardar un minuto.';
     lienzo.dataset.estado = 'generando';
+    if (!candidata) { lienzo.dataset.firmaArte = ''; pintarMarcador(lienzo, { nombre: 'Pintando…', familia: 'retratos' }); }
     try {
       const r = await pedirCandidata(encargo, { variante, signal: control.signal });
       if (esta !== peticion || !dialogo.isConnected) return;   // llegó tarde: ya se pidió otra
@@ -2496,6 +2528,7 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
       fase(e?.causa === 'cancelada' ? 'cancelada' : 'proveedor-fallo');
       // La imagen que ya tenía sigue siendo la suya: no se inventa otra.
       estado.textContent = `${e.message}${urlAprobada(encargo.clave) ? ' La imagen que ya tenía sigue igual.' : ''}`;
+      if (!candidata) { lienzo.dataset.firmaArte = ''; actual(); }
     } finally {
       if (esta === peticion) { ocupado(false); delete lienzo.dataset.estado; }
     }
@@ -3473,7 +3506,9 @@ function pintarPersonaje() {
     ['Vida', j.vida?.actual ?? 0, j.vida?.max ?? 1, 'vida'],
     j.mana?.max ? ['Ánima', j.mana.actual, j.mana.max, 'mana'] : null,
     // Sin hambre ni sed (6-oct-2026): ya no son presión de supervivencia.
-    ['Vigor', j.fatiga ?? 100, 100, 'fatiga'],
+    // «Energía»: es el descanso (`fatiga`), no el atributo Vigor. Con los
+    // atributos ya rotulados con su nombre, dos «Vigor» juntos confundían.
+    ['Energía', j.fatiga ?? 100, 100, 'fatiga'],
   ].filter(Boolean);
 
   const cajaBarras = el('div', { class: 'barras-pj' });
@@ -3506,10 +3541,17 @@ function pintarFicha(caja) {
   const j = ver('player', {}) ?? {};
 
   caja.append(el('p', { class: 'sub-eti', id: 'ficha-origen', text: [RAZAS[j.raza]?.nombre, CLASES[j.clase]?.nombre, TRASFONDOS[j.trasfondo]?.nombre].filter(Boolean).join(' · ') || '—' }));
+  const retratoFicha = fichaRetratoJugador();
+  if (retratoFicha.id && !ver('combat.activo', false)) {
+    caja.append(el('button', {
+      class: 'btn btn--pequeno btn--fantasma ficha-imagen', id: 'ficha-imagen', type: 'button',
+      onClick: protegido('imagen del personaje', () => abrirImagenJugador()),
+    }, urlAprobada(claveRetrato(retratoFicha)) ? 'Cambiar imagen' : 'Ponerle imagen'));
+  }
   poner(caja, el('p', { class: 'ficha-estado', id: 'ficha-estado' },
     'Vida ', el('strong', { text: `${Math.round(j.vida?.actual ?? 0)}/${j.vida?.max ?? 0}` }),
     j.mana?.max ? ' · Ánima ' : null, j.mana?.max ? el('strong', { text: `${Math.round(j.mana.actual)}/${j.mana.max}` }) : null,
-    ' · Vigor ', el('strong', { text: String(Math.round(j.fatiga ?? 100)) }),
+    ' · Energía ', el('strong', { text: String(Math.round(j.fatiga ?? 100)) }),
     ' · Oro ', el('strong', { text: String(j.oro ?? 0) }),
   ));
 
@@ -3603,6 +3645,8 @@ function pintarLateral() {
   const titulo = pestanas.find(([c]) => c === pestanaActiva)?.[1] ?? '';
   const visible = !estrecho || hojaAbierta;
 
+  const yo = ver('player', {}) ?? {};
+  caja.append(el('p', { class: 'lateral__breve', id: 'lateral-breve', text: `${yo.nombre ?? ''} · Vida ${Math.round(yo.vida?.actual ?? 0)}/${yo.vida?.max ?? 0}${yo.mana?.max ? ` · Ánima ${Math.round(yo.mana.actual)}/${yo.mana.max}` : ''}` }));
   caja.append(el('div', { class: 'pestanas', role: 'tablist', 'aria-label': 'Tu personaje y tus cosas' },
     ...pestanas.map(([clave, eti]) => el('button', {
       type: 'button', role: 'tab', id: `pestana-${clave}`,
@@ -3745,7 +3789,7 @@ function pintarMapa(caja) {
     return;
   }
 
-  caja.append(el('p', { class: 'sub-eti', text: 'Puedes ir a' }));
+  caja.append(el('p', { class: 'sub-eti', text: 'Viajar: pulsa un destino' }));
 
   for (const d of destinos) {
     // El peligro se decía SOLO con el color del número de horas: naranja para
@@ -3778,6 +3822,17 @@ async function viajar(refId) {
     refrescarTodo();
     return;
   }
+
+  // Viajar desde el mapa es una acción del jugador: abre su propio turno en
+  // el relato. Antes la narración del viaje se colgaba del turno anterior,
+  // bajo su rótulo, y en estrecho quedaba detrás del panel del mapa.
+  const destino = obtenerLugar(refId)?.nombre ?? 'otro lugar';
+  bus.emit('narrative:direct', {
+    texto: /^El /.test(destino) ? `Viajo al ${destino.slice(3)}.` : `Viajo a ${destino.replace(/^(La|Los|Las) /, (m) => m.toLowerCase())}.`,
+    voz: 'player', meta: { origen: 'mapa' },
+  });
+  if (hojaAbierta) cerrarHoja();
+  verRelato('ahora');
 
   bloquear(true);
   await travel.viajar(refId, { forzar: true });
@@ -4593,7 +4648,7 @@ function conectarEventos() {
 
   // Cualquier cambio del mundo redibuja lo que corresponda.
   for (const evento of ['combat:start', 'combat:end', 'combat:turn', 'combat:awaiting', 'combat:log']) {
-    bus.on(evento, () => { pintarCombate(); pintarBitacora(); });
+    bus.on(evento, () => { pintarCombate(); pintarBitacora(); pintarPersonaje(); if (pestanaActiva === 'ficha') pintarLateral(); });
   }
 
   // El golpe, en pantalla. Una barra que baja dice que pasó algo; esto dice
@@ -4601,6 +4656,7 @@ function conectarEventos() {
   // resuelto por el motor: aquí no se calcula nada, solo se enseña.
   bus.on('combat:attack', (golpe) => {
     if (!golpe?.dano?.total) return;
+    if (golpe.objetivo?.esJugador) setTimeout(() => { pintarPersonaje(); if (pestanaActiva === 'ficha') pintarLateral(); }, 40);
 
     // El repintado del panel ocurre en el mismo tic; se espera a que el
     // objetivo exista en el DOM o el número saldría sobre un nodo muerto.

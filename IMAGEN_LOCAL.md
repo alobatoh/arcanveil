@@ -14,7 +14,7 @@ El estudio lo dice antes de pintar, según el proveedor del puente:
 
 - **Qué se envía.** Con ComfyUI, la descripción en inglés (el sujeto, sin historia ni secretos) va de la app al puente y del puente a ComfyUI, todo en tu PC: no sale del equipo. Con un proveedor en la nube (Cloudflare, preparado y **no activado**), esa descripción sí sale hacia el servicio: el estudio la enseña tal cual y no pinta hasta que marcas el permiso.
 - **Candidatas.** El puente las guarda en una caché temporal de tu PC (`%LOCALAPPDATA%\arcanveil\imagenes`) para que volver a una versión no la pinte otra vez. Se borran al cerrar el estudio (elijas o no), caducan a las 24 h y no pasan de 40. ComfyUI deja las suyas en su carpeta temporal, que vacía al cerrarse. Para vaciar la caché del puente a mano: `node tools/imagen-local-proxy.mjs --limpiar`.
-- **Elegidas.** Solo la versión que eliges pasa al navegador. «Ajustes › Borrar partidas y personajes» borra también todos los retratos elegidos y pide al puente que borre sus candidatas; si el puente no está en marcha, lo dice y recuerda el `--limpiar`.
+- **Elegidas.** Solo la versión que eliges pasa al navegador. «Ajustes › Borrar partidas y personajes» borra también todos los retratos elegidos y pide al puente que borre sus candidatas; si el puente no está en marcha, lo dice y remite a este documento (el `--limpiar` de arriba).
 
 ## Preparar el generador (Windows)
 

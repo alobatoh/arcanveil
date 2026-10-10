@@ -36,11 +36,11 @@ const SERVICIO = /^arcanveil-puente-imagen\/\d+$/;
  */
 export const MOTIVOS = Object.freeze({
   sin_generador: 'En este equipo no hay ningún generador de imágenes en marcha, así que aquí no se puede pintar un retrato con IA.',
-  no_deja_leer: 'Algo contesta donde debería estar el generador de imágenes de este equipo, pero no deja leer desde esta página. No se le pide nada.',
+  no_deja_leer: 'Algo contesta donde debería estar el generador de imágenes de este equipo, pero no deja leer desde esta página: así no se puede pintar con IA. No se le pide nada.',
   otro_servicio: 'Donde debería estar el generador de imágenes de este equipo contesta otro programa. No se le pide nada.',
   proveedor: 'El puente de imágenes está en marcha, pero su generador no responde.',
   sin_clave: 'El puente de imágenes está configurado para un servicio en la nube sin credenciales: no puede pintar.',
-  tiempo_estado: 'El generador de imágenes de este equipo no ha contestado a tiempo. No se le ha pedido nada.',
+  tiempo_estado: 'Nada ha contestado a tiempo donde debería estar el generador de imágenes de este equipo. No se le ha pedido nada.',
   limite: 'Has llegado al tope de imágenes del puente por ahora. Prueba dentro de un rato.',
   ocupado: 'Ya se está pintando otra imagen. Espera a que termine.',
   tiempo: 'La imagen tardó demasiado. Prueba otra vez.',
@@ -53,11 +53,11 @@ export const MOTIVOS = Object.freeze({
  * pide. No es una instalación instantánea ni hardware gratis.
  */
 export const AYUDA = Object.freeze({
-  sin_generador: 'Pintar con IA necesita dos programas en ESTE equipo: ComfyUI con un modelo de imagen (varios GB y una tarjeta gráfica capaz) y el puente del juego, que se arranca con «node tools/imagen-local-proxy.mjs». Los pasos están en IMAGEN_LOCAL.md. El juego no instala nada de eso.',
-  no_deja_leer: 'El puerto 11437 lo usa otro programa, o el puente se arrancó para otra dirección de la página. Arranca el puente desde la misma dirección en la que juegas (ver IMAGEN_LOCAL.md).',
-  otro_servicio: 'El puerto 11437 lo usa otro programa. Ciérralo o arranca el puente del juego en ese puerto (ver IMAGEN_LOCAL.md).',
-  proveedor: '¿Está ComfyUI abierto y con el modelo cargado? El puente lo necesita (ver IMAGEN_LOCAL.md).',
-  sin_clave: 'Arranca el puente con ComfyUI, que es el de por defecto (ver IMAGEN_LOCAL.md).',
+  sin_generador: 'Pintar con IA necesita dos programas en marcha en ESTE equipo: ComfyUI con un modelo de imagen (varios GB de descarga y una tarjeta gráfica capaz) y el puente de imágenes del juego. Es para quien ya usa esas herramientas: el juego no instala nada de eso. Los pasos están en el documento IMAGEN_LOCAL del juego.',
+  no_deja_leer: 'Donde el juego busca su puente de imágenes hay otro programa, o el puente se arrancó para otra dirección de la página. Hay que arrancarlo desde la misma dirección en la que juegas (documento IMAGEN_LOCAL).',
+  otro_servicio: 'Donde el juego busca su puente de imágenes hay otro programa. Habría que cerrarlo y arrancar el puente del juego (documento IMAGEN_LOCAL).',
+  proveedor: '¿Está ComfyUI abierto y con el modelo cargado? El puente lo necesita (documento IMAGEN_LOCAL).',
+  sin_clave: 'El puente funciona sin credenciales con ComfyUI, que es su generador por defecto (documento IMAGEN_LOCAL).',
   tiempo_estado: 'Si tienes el puente y ComfyUI abiertos, puede que el equipo esté ocupado: vuelve a comprobar en un momento.',
 });
 

@@ -23,20 +23,21 @@
  */
 
 import { retrato } from './retrato.js';
+import { LINAJES } from './paleta.js';
 
 /** Estilo con el que el dibujo queda apuntado en la galería. */
 export const ESTILO_DIBUJO = 'dibujo-del-juego';
 
 /** Lo que el dibujo sabe cambiar. `id: ''` es «el de su linaje». */
 export const PELOS = Object.freeze([
-  { id: '', nombre: 'El de su linaje' },
+  { id: '', nombre: 'De su linaje' },
   { id: 'negro', nombre: 'Negro' },
   { id: 'rojo', nombre: 'Rojo' },
   { id: 'plateado', nombre: 'Plateado' },
   { id: 'rubio', nombre: 'Rubio' },
 ]);
 export const OJOS = Object.freeze([
-  { id: '', nombre: 'Los de su linaje' },
+  { id: '', nombre: 'De su linaje' },
   { id: 'azules', nombre: 'Azules' },
   { id: 'verdes', nombre: 'Verdes' },
   { id: 'dorados', nombre: 'Dorados' },
@@ -49,6 +50,8 @@ export const RASGOS = Object.freeze([
   { id: 'barba', nombre: 'Barba' },
   { id: 'capucha', nombre: 'Capucha' },
 ]);
+/** Los rasgos que el dibujo de un linaje lleva SIEMPRE (marcarlos no cambia nada). */
+export const rasgosDeLinaje = (raza) => RASGOS.filter((r) => LINAJES[raza]?.rasgo === r.id).map((r) => r.id);
 /** Cuántas caras distintas hay por linaje («Otra cara» da la vuelta). */
 export const CARAS = 6;
 

@@ -629,8 +629,11 @@ function detallesDescripcion(descripcion, forma, tonos) {
   if (/cicatriz|scar/.test(d)) {
     const lado = /izquierd/.test(d) ? -1 : 1;
     const x = cx + lado * rx * .43;
-    piezas.push(`<path class="retrato-rasgo retrato-rasgo--cicatriz" d="M${num(x-9)} ${num(OJOS_Y-24)} L${num(x+7)} ${num(OJOS_Y+30)}" stroke="${brillo(tonos.pielSombra,.66)}" stroke-width="3" opacity=".82"/>`);
-    piezas.push(`<path d="M${num(x-5)} ${num(OJOS_Y-8)} l-7 5 M${num(x+1)} ${num(OJOS_Y+10)} l8 -3" stroke="${brillo(tonos.piel,1.22)}" stroke-width="1.4" opacity=".6"/>`);
+    // Cruza la ceja y la mejilla, oscura y con su filo claro: con 3 px en
+    // tono de sombra se confundía con las líneas que la cara ya tiene.
+    piezas.push(`<path class="retrato-rasgo retrato-rasgo--cicatriz" d="M${num(x-12)} ${num(OJOS_Y-40)} L${num(x-2)} ${num(OJOS_Y-6)} L${num(x+10)} ${num(OJOS_Y+40)}" fill="none" stroke="#5A1F1C" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".88"/>`);
+    piezas.push(`<path d="M${num(x-10)} ${num(OJOS_Y-38)} L${num(x)} ${num(OJOS_Y-5)} L${num(x+12)} ${num(OJOS_Y+38)}" fill="none" stroke="${brillo(tonos.piel,1.35)}" stroke-width="1.3" stroke-linecap="round" opacity=".7"/>`);
+    piezas.push(`<path d="M${num(x-9)} ${num(OJOS_Y-20)} l9 -4 M${num(x-2)} ${num(OJOS_Y+8)} l10 -4 M${num(x+2)} ${num(OJOS_Y+24)} l9 -3" stroke="#5A1F1C" stroke-width="1.8" stroke-linecap="round" opacity=".7"/>`);
   }
   if (/parche|eyepatch/.test(d)) {
     const lado = /izquierd/.test(d) ? -1 : 1;
