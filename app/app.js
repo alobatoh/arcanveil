@@ -947,14 +947,17 @@ async function irAPaso(destino) {
   let i = orden.indexOf(pasoCreacion);
   if (j < 0) return false;
   cambiandoPaso = true;
+  // El paso que hay PINTADO (al saltar varios, los intermedios no se pintan).
+  const pintado = pasoCreacion;
   try {
     if (j <= i) { pasoCreacion = destino; pintarCreacion(); return true; }
     while (i < j) {
       // La imagen se elige mirándola: no se salta el paso «Aspecto» sin haberlo abierto.
-      if (orden[i] === 'aspecto' && !aspectoCreacion) { pasoCreacion = 'aspecto'; pintarCreacion(); return true; }
+      if (orden[i] === 'aspecto' && (pintado !== 'aspecto' || !aspectoCreacion)) { pasoCreacion = 'aspecto'; pintarCreacion(); return true; }
       const v = await validarPaso(orden[i]);
       if (!v.ok) {
-        if (pasoCreacion !== orden[i]) { pasoCreacion = orden[i]; pintarCreacion({ foco: null }); }
+        pasoCreacion = orden[i];
+        if (pintado !== orden[i]) pintarCreacion({ foco: null });
         marcarError(v.campo, v.mensaje);
         return false;
       }
@@ -2247,25 +2250,32 @@ function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVi
     });
   }
 
+  /** Lo que la descripción propone, ya (sin esperar al temporizador de escritura). */
+  function reproponer() {
+    clearTimeout(reloj);
+    reloj = 0;
+    if (cerrado || tocado) return;
+    const antes = JSON.stringify(actual);
+    propuesta = aspectoDesdeDescripcion(texto);
+    actual = normalizarAspecto({ ...propuesta.aspecto, cara: actual.cara });
+    if (modo === 'dibujo' && (JSON.stringify(actual) !== antes || !$('#aspecto-entendido') !== !propuesta.reconocido.length)) { pintarVista(); pintarPanel(); }
+  }
+
   pintarTodo();
 
   return {
     modo: () => modo,
-    aspecto: () => (modo === 'dibujo' ? { ...actual } : null),
+    aspecto: () => { reproponer(); return modo === 'dibujo' ? { ...actual } : null; },
     estadoGenerador: () => generador.estado,
     /** La descripción cambió: propone controles de nuevo si el jugador no los ha tocado. */
     descripcion(t) {
       texto = String(t ?? '');
       clearTimeout(reloj);
-      reloj = setTimeout(() => {
-        if (cerrado || tocado) return;
-        propuesta = aspectoDesdeDescripcion(texto);
-        actual = normalizarAspecto({ ...propuesta.aspecto, cara: actual.cara });
-        if (modo === 'dibujo') { pintarVista(); pintarPanel(); }
-      }, 300);
+      reloj = setTimeout(reproponer, 300);
     },
     /** Guarda lo elegido. Nunca inventa éxito: si no se pudo, lo dice y no cambia nada. */
     async aplicar() {
+      reproponer();
       if (modo === 'dibujo') {
         const firma = JSON.stringify([personaje.raza, actual]);
         if (hayDibujo() && aplicado === firma) return { ok: true };
@@ -3190,6 +3200,8 @@ function pintarVistasRelato(turnos) {
   const total = turnos.at(-1)?.n ?? 0;
   caja.setAttribute('aria-labelledby', enAhora ? 'relato-ahora' : 'relato-historial');
   caja.dataset.vista = vistaRelato;
+  const lugar = $('#relato-lugar');
+  if (lugar) lugar.textContent = obtenerLugar(ver('world.ubicacion'))?.nombre ?? '';
   const donde = $('#relato-donde');
   if (donde) donde.textContent = enAhora
     ? (total ? `Turno ${total}: lo último que ha pasado` : 'El comienzo de tu historia')
@@ -3323,6 +3335,9 @@ function pintarBitacora() {
 
   // «Ahora»: el turno en curso, entero, de su principio a su final.
   const ultimo = turnos.at(-1) ?? { n: 0, desde: 0, entradas: [] };
+  // La caja es la misma para las dos vistas: al volver del historial no se
+  // hereda su desplazamiento.
+  const veniaDelHistorial = historialPintado;
   historialPintado = false;
   vaciar(caja);
   caja.append(cabeceraTurno(ultimo, { ahora: true }));
@@ -3337,8 +3352,9 @@ function pintarBitacora() {
   // cada refresco: marcarla como región viva haría releerlo todo cada turno.
   anunciarRelato(nuevas);
 
-  if (nuevas.length) {
-    // Un turno nuevo se lee desde su principio, no desde su última línea.
+  if (nuevas.length || veniaDelHistorial) {
+    // Un turno nuevo (o volver al presente) se lee desde su principio, no
+    // desde su última línea ni desde donde estuviera el historial.
     caja.scrollTop = 0;
     seguirEscritura = true;
   }
@@ -3490,6 +3506,12 @@ function pintarFicha(caja) {
   const j = ver('player', {}) ?? {};
 
   caja.append(el('p', { class: 'sub-eti', id: 'ficha-origen', text: [RAZAS[j.raza]?.nombre, CLASES[j.clase]?.nombre, TRASFONDOS[j.trasfondo]?.nombre].filter(Boolean).join(' · ') || '—' }));
+  poner(caja, el('p', { class: 'ficha-estado', id: 'ficha-estado' },
+    'Vida ', el('strong', { text: `${Math.round(j.vida?.actual ?? 0)}/${j.vida?.max ?? 0}` }),
+    j.mana?.max ? ' · Ánima ' : null, j.mana?.max ? el('strong', { text: `${Math.round(j.mana.actual)}/${j.mana.max}` }) : null,
+    ' · Vigor ', el('strong', { text: String(Math.round(j.fatiga ?? 100)) }),
+    ' · Oro ', el('strong', { text: String(j.oro ?? 0) }),
+  ));
 
   // Los seis atributos DEL MOTOR (vigor, destreza, temple, intelecto,
   // astucia, carisma), con su nombre. Antes se leían claves que el motor no

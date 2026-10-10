@@ -1159,7 +1159,8 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 [data-pantalla="creacion"]{
   --hueco:clamp(.3rem,1.6vh,1rem);
   display:flex;flex-direction:column;overflow:hidden;
-  height:calc(100dvh - 2*var(--hueco));margin:var(--hueco) auto;
+  /* Sin margen vertical: se colapsaba con el del cuerpo y la página medía de más. */
+  position:relative;top:var(--hueco);height:calc(100dvh - 2*var(--hueco));margin:0 auto;
   width:min(58rem,calc(100% - .7rem));max-width:none;
   padding:clamp(.7rem,2vh,1.3rem) clamp(.75rem,2.5vw,1.8rem) 0;
 }
@@ -1169,7 +1170,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 [data-pantalla="creacion"] .creacion__nota{margin:.35rem 0 .7rem;font-size:.86rem;line-height:1.4}
 [data-pantalla="creacion"] #creacion-cuerpo{
   display:block;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
-  padding:.2rem .35rem .6rem .1rem;scrollbar-gutter:stable;outline:none;
+  padding:.2rem .35rem .6rem .1rem;scrollbar-gutter:stable;outline-offset:-2px;
   /* Sombra arriba y abajo SOLO cuando queda contenido en esa dirección. */
   background:
     linear-gradient(#17100D 30%,transparent) top/100% 14px no-repeat local,
@@ -1246,7 +1247,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 /* Paso 3: la imagen se ve mientras se elige. */
 .aspecto{display:grid;grid-template-columns:minmax(8.5rem,12.5rem) minmax(0,1fr);gap:.9rem 1.1rem;align-items:start}
 .aspecto__marco{min-width:0}
-.aspecto__vista{position:relative !important;width:100% !important;height:auto !important;max-width:none !important;aspect-ratio:5/6;margin:0 !important;overflow:hidden;border:2px solid #76572B;border-radius:2px 14px 2px 14px;background:#0c0908}
+.aspecto__vista{position:relative !important;top:auto !important;width:100% !important;height:auto !important;max-width:none !important;aspect-ratio:5/6;margin:0 !important;overflow:hidden;border:2px solid #76572B;border-radius:2px 14px 2px 14px;background:#0c0908}
 .aspecto__vista>svg,.aspecto__vista>.arte{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .aspecto__pie{margin:.4rem 0 0;font:.66rem/1.4 var(--mono);color:var(--texto-3);text-align:center}
 .aspecto__modos{display:grid;gap:.35rem}
@@ -1296,6 +1297,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 }
 
 /* Paso 4: la revisión. */
+[data-pantalla="creacion"] .revelacion__cara{top:auto}
 .revelacion__ficha{margin:0 0 .15rem;font:600 .86rem var(--mono);letter-spacing:.04em;color:#F0D995}
 .revelacion__ficha--tenue{margin-bottom:.6rem;font-weight:400;font-size:.76rem;color:var(--texto-2)}
 [data-pantalla="creacion"] .revelacion{grid-template-columns:minmax(9rem,13rem) minmax(0,1fr);gap:1rem;margin-bottom:.8rem}
@@ -1419,6 +1421,24 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
   .relato__donde{font-size:.58rem}
   .bitacora{padding:.7rem .8rem 1rem}
 }
+/* Poca altura (móvil tumbado, zoom alto, móvil pequeño): la ilustración y el
+   resumen ceden su sitio al relato. El lugar sigue rotulado junto a las
+   pestañas del relato, y la vida, en la pestaña «Ficha». */
+@media(max-height:620px){
+  .escena{display:none}
+  .pie{margin-top:0;padding-top:.4rem;padding-bottom:max(.4rem,env(safe-area-inset-bottom))}
+  .lateral{margin-bottom:2px}
+  .pie::before{display:none}
+  .tablero{padding-bottom:2px}
+}
+@media(max-height:620px) and (max-width:800px){
+  .lateral:not(.lateral--hoja) .lateral__resumen{display:none}
+  .lateral{padding:.3rem .4rem}
+}
+.relato__lugar{font:600 .7rem var(--mono);letter-spacing:.04em;color:#E9D08B;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.relato__lugar:empty{display:none}
+.ficha-estado{margin:.1rem 0 .5rem;font:.72rem/1.5 var(--mono);color:var(--texto-2)}
+.ficha-estado strong{color:#F0D995;font-weight:600}
 @media(max-width:380px){
   .lateral__resumen #panel-personaje{grid-template-columns:minmax(0,1fr)}
   .lateral__resumen .oro{display:none}
@@ -1478,7 +1498,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
     estado.fallidos.push(String(o.src || 'script en línea'));
     estado.fase = 'modulo-fallido';
     decir('El juego no ha podido cargar todos sus archivos',
-      'No llegó: ' + (o.src || 'un archivo del juego') + '\nPulsa «Recargar». Si estabas sin conexión, vuelve a intentarlo con conexión.');
+      'No llegó ' + (String(o.src || '').split('/').pop() || 'un archivo del juego') + ' o alguno de los archivos que usa.\nPulsa «Recargar». Si estabas sin conexión, vuelve a intentarlo con conexión.');
   }, true);
   setTimeout(function () {
     if (estado.fase !== 'documento') return;      // el módulo llegó a ejecutarse: manda su propio vigilante
@@ -1512,7 +1532,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
     <p class="creacion__nota" id="creacion-nota"></p>
   </header>
 
-  <div id="creacion-cuerpo" role="region" aria-labelledby="creacion-titulo" tabindex="-1"></div>
+  <div id="creacion-cuerpo" role="region" aria-labelledby="creacion-titulo" tabindex="0"></div>
 
   <div class="creacion__pie" id="creacion-pie"></div>
 </section>
@@ -1564,6 +1584,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
         <div class="relato__vistas" id="relato-vistas" role="tablist" aria-label="Qué parte de la historia ves">
           <button type="button" class="relato__vista es-activa" id="relato-ahora" role="tab" aria-selected="true" aria-controls="bitacora">Ahora</button>
           <button type="button" class="relato__vista" id="relato-historial" role="tab" aria-selected="false" aria-controls="bitacora" tabindex="-1">Historial</button>
+          <span class="relato__lugar" id="relato-lugar"></span>
           <span class="relato__donde" id="relato-donde"></span>
           <!-- Llegó una respuesta mientras se leía el historial: se dice aquí,
                sin tapar el texto ni mover la lectura. -->
