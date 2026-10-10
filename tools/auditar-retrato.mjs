@@ -153,11 +153,14 @@ function navegador(pagina = ORIGEN, desvio = puerto) {
   await new Promise((ok) => hueco.close(ok));
   const nadie = await estadoGenerador({ fetch: navegador(ORIGEN, libre) });
   // #12: lo que se le dice al jugador ya no es un comando de consola. Qué
-  // arrancar sigue estando (misma garantía), pero en la ayuda avanzada; y sin
-  // puente no se afirma nada de a dónde iría un encargo.
-  comprobar(!nadie.ok && nadie.causa === 'sin_generador' && nadie.estado === 'no-disponible' && /ComfyUI/.test(nadie.ayuda) && /imagen-local-proxy/.test(nadie.ayuda)
+  // hace falta sigue estando (misma garantía), pero en la ayuda avanzada, y
+  // en palabras: ni el comando ni el puerto (eso vive en IMAGEN_LOCAL.md, al
+  // que la ayuda remite). Y sin puente no se afirma a dónde iría un encargo.
+  const guia = existsSync(new URL('../IMAGEN_LOCAL.md', import.meta.url)) ? readFileSync(new URL('../IMAGEN_LOCAL.md', import.meta.url), 'utf8') : '';
+  comprobar(!nadie.ok && nadie.causa === 'sin_generador' && nadie.estado === 'no-disponible' && /ComfyUI/.test(nadie.ayuda) && /puente de imágenes/.test(nadie.ayuda) && /IMAGEN_LOCAL/.test(nadie.ayuda)
+    && !/node |\.mjs|11437|puerto/i.test(nadie.ayuda) && /imagen-local-proxy\.mjs/.test(guia)
     && !/node |\.mjs|IMAGEN_LOCAL|ComfyUI/.test(nadie.motivo) && nadie.envia === undefined && nadie.proveedor === undefined,
-  'sin puente: se dice sin tecnicismos; qué arrancar va en la ayuda avanzada; no se afirma nube ni proveedor', `${nadie.motivo} | ${nadie.ayuda}`);
+  'sin puente: se dice sin tecnicismos; lo que hace falta va en la ayuda avanzada, en palabras y sin comandos (el comando está en IMAGEN_LOCAL.md); no se afirma nube ni proveedor', `${nadie.motivo} | ${nadie.ayuda}`);
 
   proveedorCaido = true;
   const caido = await estadoGenerador({ fetch: navegador() });

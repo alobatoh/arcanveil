@@ -1217,7 +1217,11 @@ try {
     pintadoApagado: document.querySelector('#aspecto-modo-pintado')?.getAttribute('aria-disabled'),
   }))()`);
   const alGenerador = [...peticionesPrincipal.values()].filter((p) => /:11437/.test(p.url)).length;
-  if (aspecto.modo !== 'dibujo' || !aspecto.dibujo || aspecto.generador !== 'desconocido' || aspecto.pintadoApagado !== 'true' || alGenerador || generadas.length) throw new Error(`el paso «aspecto» no propone el dibujo del juego o pide algo al generador sin que se lo pidan: ${JSON.stringify({ aspecto, alGenerador, generadas: generadas.length })}`);
+  // (Antes se exigía «pintar con IA» apagada mientras no se comprobara el
+  // generador. Apagada, el clic del jugador caía en vacío —la queja—. Ahora
+  // pulsarla lo comprueba; la garantía de fondo es la misma y sigue aquí: el
+  // dibujo es lo elegido y al generador no se le pide NADA sin un gesto.)
+  if (aspecto.modo !== 'dibujo' || !aspecto.dibujo || aspecto.generador !== 'desconocido' || aspecto.pintadoApagado === 'true' || alGenerador || generadas.length) throw new Error(`el paso «aspecto» no propone el dibujo del juego o pide algo al generador sin que se lo pidan: ${JSON.stringify({ aspecto, alGenerador, generadas: generadas.length })}`);
   await shot(`02b-creacion-aspecto-${viewport.label}.png`);
   // Esta partida sigue SIN imagen (lo elige el jugador): más abajo se pinta
   // con el generador. El dibujo del juego se prueba en `tools/auditar-ux.mjs`.
@@ -1252,7 +1256,10 @@ try {
   await until('document.querySelector("#retrato-descripcion")');
   const conservado = await evaluate(`document.querySelector('#retrato-descripcion').value`);
   if (!conservado.startsWith('elfa exploradora')) throw new Error(`volver atrás perdió la descripción: «${conservado}»`);
-  if (await evaluate(`document.querySelector('#aspecto')?.dataset.modo`) !== 'dibujo') throw new Error('al volver al paso «aspecto» sin imagen, no se propone el dibujo');
+  // (Antes aquí se exigía que volviera a proponer el dibujo. Era el fallo que
+  // vio la revisión: el jugador había elegido «Sin imagen» y al volver se le
+  // cambiaba. La garantía es ahora la contraria: se recuerda lo que eligió.)
+  if (await evaluate(`document.querySelector('#aspecto')?.dataset.modo`) !== 'ninguno') throw new Error('al volver al paso «aspecto» no se recuerda que el jugador eligió «Sin imagen»');
   await evaluate(`document.querySelector('#aspecto-modo-ninguno').click(); document.querySelector('#creacion-siguiente').click(); true`);
   await until('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")');
 
