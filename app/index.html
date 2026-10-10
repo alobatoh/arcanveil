@@ -143,16 +143,8 @@ button{font-family:inherit;cursor:pointer}
 /* En escritorio, identidad visual y canon personal se leen de un vistazo.
    El orden DOM no cambia: móvil conserva el formulario vertical natural. */
 @media(min-width:900px){
-  #creacion-cuerpo{display:grid;grid-template-columns:minmax(22rem,.92fr) minmax(25rem,1.08fr);grid-template-rows:auto auto auto;gap:0 1.5rem;align-items:start}
-  #creacion-cuerpo>.campo:first-child{grid-column:2;grid-row:1;margin-bottom:1rem}
-  #creacion-cuerpo>.eleccion{grid-column:1;grid-row:1/span 3;display:flex;flex-direction:column;gap:.8rem;padding-right:.25rem}
-  #creacion-cuerpo>.retrato-descripcion{grid-column:2;grid-row:2;margin:.1rem 0 1rem}
-  #creacion-cuerpo>.lore-personaje{grid-column:2;grid-row:3;margin:0 0 1.4rem}
-  #creacion-cuerpo>.eleccion .eleccion__cara{position:relative;width:16rem;height:19.2rem;min-height:0;margin:0 auto}
-  #creacion-cuerpo>.eleccion .fichas{grid-template-columns:repeat(2,minmax(0,1fr));gap:.38rem}
-  #creacion-cuerpo>.eleccion .ficha{min-height:0;padding:.44rem .6rem}
-  #creacion-cuerpo>.eleccion .ficha__nota{font-size:.61rem;line-height:1.2}
-  #creacion-cuerpo>.grupo,#creacion-cuerpo>.resumen{grid-column:1/-1}
+  /* (Las reglas del formulario largo de antes del #12 se retiraron: la
+     creación va por pasos; ver el bloque «#12 · creación por pasos».) */
   .campo__entrada--retrato{min-height:5.4rem}
   .campo__entrada--lore{min-height:7.3rem}
 }
@@ -1151,6 +1143,288 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
      margen de arriba le hace sitio y la capa lo pone por delante del borde. */
   .pie::before{z-index:3}
 }
+/*#12A*/
+/* ═══ #12 · barras de desplazamiento del juego ═══════════════════════════
+   Las nativas (claras, de sistema) hacían que la partida pareciese una
+   página web. No se esconden: una zona que se desplaza tiene que verse. */
+*{scrollbar-width:thin;scrollbar-color:#8A6730 #130E0C}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#130E0C}
+::-webkit-scrollbar-thumb{background:#8A6730;border:2px solid #130E0C;border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:#B88B37}
+
+/* ═══ #12 · creación por pasos ═══════════════════════════════════════════
+   Cabecera (título, pasos) y pie (atrás, siguiente) fijos; solo el cuerpo
+   se desplaza, y solo si el paso no cabe (zoom alto, pantalla muy baja). */
+[data-pantalla="creacion"]{
+  --hueco:clamp(.3rem,1.6vh,1rem);
+  display:flex;flex-direction:column;overflow:hidden;
+  height:calc(100dvh - 2*var(--hueco));margin:var(--hueco) auto;
+  width:min(58rem,calc(100% - .7rem));max-width:none;
+  padding:clamp(.7rem,2vh,1.3rem) clamp(.75rem,2.5vw,1.8rem) 0;
+}
+[data-pantalla="creacion"][hidden]{display:none}
+.creacion__cab{flex:none}
+[data-pantalla="creacion"] .creacion__titulo{font-size:clamp(1.2rem,2.6vh + .6rem,1.8rem);margin:0 0 .35rem;outline:none}
+[data-pantalla="creacion"] .creacion__nota{margin:.35rem 0 .7rem;font-size:.86rem;line-height:1.4}
+[data-pantalla="creacion"] #creacion-cuerpo{
+  display:block;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;
+  padding:.2rem .35rem .6rem .1rem;scrollbar-gutter:stable;outline:none;
+  /* Sombra arriba y abajo SOLO cuando queda contenido en esa dirección. */
+  background:
+    linear-gradient(#17100D 30%,transparent) top/100% 14px no-repeat local,
+    linear-gradient(transparent,#17100D 70%) bottom/100% 14px no-repeat local,
+    linear-gradient(rgba(0,0,0,.55),transparent) top/100% 9px no-repeat scroll,
+    linear-gradient(transparent,rgba(0,0,0,.55)) bottom/100% 9px no-repeat scroll;
+}
+[data-pantalla="creacion"] .creacion__pie{
+  position:static;flex:none;flex-wrap:wrap;
+  padding:.6rem 0 max(.6rem,env(safe-area-inset-bottom));
+  background:none;border-top:1px solid #6B4E25;
+}
+[data-pantalla="creacion"] .campo{margin-bottom:.95rem}
+[data-pantalla="creacion"] .campo--discreto{margin-top:.2rem}
+.campo__fila{display:flex;gap:.5rem;align-items:stretch}
+.campo__fila .campo__entrada{flex:1;min-width:0}
+.campo__fila .btn{flex:none;white-space:nowrap}
+.campo__select{font-size:1.05rem;padding:.5rem .7rem;color-scheme:dark;cursor:pointer}
+.campo__entrada[aria-invalid="true"]{border-color:#E08A72;box-shadow:0 0 0 2px rgba(224,138,114,.25)}
+.campo__error{margin:.35rem 0 0;padding:.35rem .6rem;font-size:.82rem;color:#F6C7B8;background:rgba(170,60,40,.18);border-left:3px solid #E08A72}
+.campo__error::before{content:'▲ ';font-size:.7em}
+[data-pantalla="creacion"] .campo__entrada--retrato{min-height:3.9rem}
+[data-pantalla="creacion"] .retrato-descripcion{margin-top:0}
+[data-pantalla="creacion"] .campo__ayuda{margin-top:.25rem}
+[data-pantalla="creacion"] .campo__entrada--lore{min-height:6.2rem}
+[data-pantalla="creacion"] .lore-personaje{padding:.7rem .8rem}
+[data-pantalla="creacion"] .lore-personaje::before{margin-bottom:.45rem}
+
+/* La barra de pasos: dónde estás, qué llevas hecho, cómo volver. */
+.pasos{display:flex;flex-wrap:wrap;gap:.3rem;list-style:none;margin:0;padding:0}
+.pasos__item{display:flex;flex:1 1 7rem;min-width:0}
+.paso{
+  display:flex;align-items:center;gap:.45rem;width:100%;min-height:38px;padding:.3rem .6rem;
+  font:600 .72rem var(--mono);letter-spacing:.06em;text-transform:uppercase;text-align:left;
+  color:#A9925D;background:linear-gradient(#2B1E15,#100C0B);border:1px solid #513B1F;border-radius:2px 9px 2px 9px;cursor:pointer;
+}
+.paso__n{display:inline-grid;place-items:center;flex:none;width:1.45rem;height:1.45rem;border:1px solid currentColor;border-radius:50%;font-size:.7rem}
+.paso__nombre{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.paso.es-hecho{color:#CDB06A}
+.paso.es-actual{color:#F6E2A3;background:linear-gradient(#4A321B,#17100E);border-color:#C59A45;box-shadow:0 0 12px rgba(197,150,61,.2)}
+.paso.es-actual .paso__n{color:#251407;background:#E2BD63;border-color:#E2BD63}
+.paso:hover{border-color:#A27A36}
+
+/* Paso 1: elegir a la izquierda, la ficha del motor a la derecha. */
+.origen-rejilla{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(15rem,.8fr);gap:.4rem 1.2rem;align-items:start}
+.origen{margin-bottom:.5rem !important}
+.origen__cab{display:flex;justify-content:space-between;align-items:baseline;gap:.6rem}
+.origen__cab .campo__eti{margin-bottom:.3rem}
+.origen__azar{font:.62rem var(--mono);color:var(--texto-3);letter-spacing:.05em}
+.origen__fijo{padding:.1rem .45rem;font:600 .62rem var(--mono);letter-spacing:.05em;color:#E9D08B;background:rgba(216,173,80,.1);border:1px solid #8C6A33;border-radius:9px;cursor:pointer}
+.origen__fijo::before{content:'✔ '}
+.origen__fijo--enlace::before{content:'↥ '}
+.lore-personaje::before{display:none !important}
+.origen__fijo:hover{background:rgba(216,173,80,.2)}
+.origen__explica{margin-top:.25rem;padding:.3rem .6rem;border-left:2px solid #6B4E25;background:rgba(0,0,0,.2)}
+.origen__lema{margin:0 0 .15rem;font-style:italic;font-size:.84rem;color:#E4D9C1}
+.origen__efectos{margin:0;padding:0;list-style:none;font-size:.76rem;line-height:1.38;color:var(--texto-2)}
+.ficha-previa{padding:.7rem .8rem;border:1px solid #6B4E25;border-radius:3px 13px 3px 13px;background:linear-gradient(145deg,#2C2018,#100C0B 72%)}
+.atributos-claros{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem;margin:.1rem 0 .4rem}
+.atributo-claro{padding:.25rem .3rem;text-align:center;background:rgba(0,0,0,.28);border:1px solid #513B1F;border-radius:2px 8px 2px 8px}
+.atributo-claro dt{font:.6rem var(--mono);letter-spacing:.06em;text-transform:uppercase;color:#CDB06A}
+.atributo-claro dd{margin:0;display:flex;justify-content:center;align-items:baseline;gap:.3rem}
+.atributo-claro strong{font:700 1.1rem var(--display);color:#F6E7B4}
+.atributo-claro__mod{font:.68rem var(--mono);color:var(--texto-2)}
+.ficha-previa__cifras{display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem;margin:0}
+.ficha-previa__cifras div{padding:.3rem .2rem;text-align:center;background:rgba(0,0,0,.28);border:1px solid #513B1F;border-radius:2px 8px 2px 8px}
+.ficha-previa__cifras dt{font:.58rem var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--texto-3)}
+.ficha-previa__cifras dd{margin:0;font:700 1.15rem var(--display);color:#F0D995}
+.ficha-previa__linea{margin:.45rem 0 0;font-size:.76rem;line-height:1.4;color:var(--texto-2)}
+[data-pantalla="creacion"] .aleatoria{margin:.7rem 0 0;padding:.6rem .7rem}
+[data-pantalla="creacion"] .aleatoria__dado{width:100%}
+.intensidad--corta{grid-template-columns:repeat(2,minmax(0,8rem)) !important}
+
+/* Paso 3: la imagen se ve mientras se elige. */
+.aspecto{display:grid;grid-template-columns:minmax(8.5rem,12.5rem) minmax(0,1fr);gap:.9rem 1.1rem;align-items:start}
+.aspecto__marco{min-width:0}
+.aspecto__vista{position:relative !important;width:100% !important;height:auto !important;max-width:none !important;aspect-ratio:5/6;margin:0 !important;overflow:hidden;border:2px solid #76572B;border-radius:2px 14px 2px 14px;background:#0c0908}
+.aspecto__vista>svg,.aspecto__vista>.arte{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.aspecto__pie{margin:.4rem 0 0;font:.66rem/1.4 var(--mono);color:var(--texto-3);text-align:center}
+.aspecto__modos{display:grid;gap:.35rem}
+.aspecto__modo{display:flex;flex-direction:column;gap:0;padding:.3rem .7rem;text-align:left;color:var(--texto-2);background:linear-gradient(145deg,#2A1E15,#100C0B);border:1px solid #513B1F;border-left-width:3px;border-radius:2px 10px 2px 10px;cursor:pointer}
+.aspecto__modo::before{content:'○';position:absolute}
+.aspecto__modo{position:relative;padding-left:1.9rem}
+.aspecto__modo::before{left:.6rem;top:.28rem;color:#A9925D}
+.aspecto__modo.es-activa{color:var(--texto);border-color:#C59A45;background:linear-gradient(145deg,#4A321B,#17100E)}
+.aspecto__modo.es-activa::before{content:'●';color:#E2BD63}
+.aspecto__modo.es-apagada{opacity:.72;cursor:not-allowed;border-style:dashed}
+.aspecto__modo-nombre{font:600 .82rem var(--mono);letter-spacing:.04em;color:#F0D995}
+.aspecto__modo-texto{font-size:.72rem;line-height:1.3}
+.aspecto__panel{margin-top:.45rem}
+.aspecto__nota{margin:0 0 .3rem;font-size:.76rem;line-height:1.4;color:var(--texto-2)}
+.aspecto__nota--entendido{color:#D8C48A}
+.aspecto__nota--aviso{color:#F0B09E}
+.aspecto__controles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;gap:.5rem;align-items:end}
+.aspecto__controles .btn{min-height:40px}
+.aspecto__generador-fila{display:flex;flex-wrap:wrap;gap:.3rem .7rem;align-items:baseline}
+.aspecto__generador-fila .aspecto__nota{margin:0}
+.aspecto__generador-fila .aspecto__ayuda{flex:1 1 100%;margin-top:0}
+.aspecto__control .campo__eti{margin-bottom:.2rem}
+.aspecto__rasgos{display:flex;flex-wrap:wrap;align-items:center;gap:.1rem .9rem;margin:.4rem 0;padding:0;border:0}
+.aspecto__rasgos legend{float:left;padding:0;margin:0 .6rem 0 0}
+.aspecto__rasgo{display:flex;align-items:center;gap:.4rem;min-height:30px;font-size:.84rem;color:var(--texto);cursor:pointer}
+.aspecto__rasgo input{width:18px;height:18px;accent-color:#C59A45}
+.aspecto__generador{margin-top:.35rem;padding-top:.35rem;border-top:1px dashed #513B1F}
+.aspecto__generador:empty{display:none}
+.aspecto__ayuda{margin-top:.4rem;font-size:.76rem;color:var(--texto-2)}
+.aspecto__ayuda summary{cursor:pointer;color:#CDB06A}
+.aspecto__ayuda p{margin:.35rem 0 0;line-height:1.5}
+.estudio--ancho{width:min(94vw,640px);max-height:94dvh;overflow:auto}
+
+/* En ancho: lo que escribes y lo que se ve, a la izquierda; qué imagen, a la derecha. */
+@media(min-width:860px){
+  [data-pantalla="creacion"][data-paso="aspecto"] #creacion-cuerpo{
+    display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:0 1.3rem;align-content:start;
+    grid-template-areas:"desc eti" "desc lado" "especie lado" "marco lado";grid-template-rows:auto auto auto 1fr;
+  }
+  [data-paso="aspecto"] .retrato-descripcion{grid-area:desc;margin-bottom:.6rem}
+  [data-paso="aspecto"] #aspecto-especie{grid-area:especie}
+  [data-paso="aspecto"] .aspecto-hueco,[data-paso="aspecto"] .aspecto-hueco>.aspecto{display:contents}
+  [data-paso="aspecto"] #aspecto-eti{grid-area:eti}
+  [data-paso="aspecto"] .aspecto__marco{grid-area:marco;width:min(100%,13.5rem);margin:.2rem auto 0}
+  [data-paso="aspecto"] .aspecto__lado{grid-area:lado}
+  [data-paso="aspecto"] .revelacion__aviso{margin:0 0 .6rem}
+}
+
+/* Paso 4: la revisión. */
+.revelacion__ficha{margin:0 0 .15rem;font:600 .86rem var(--mono);letter-spacing:.04em;color:#F0D995}
+.revelacion__ficha--tenue{margin-bottom:.6rem;font-weight:400;font-size:.76rem;color:var(--texto-2)}
+[data-pantalla="creacion"] .revelacion{grid-template-columns:minmax(9rem,13rem) minmax(0,1fr);gap:1rem;margin-bottom:.8rem}
+[data-pantalla="creacion"] .revelacion .ficha-previa{margin-bottom:.7rem}
+[data-pantalla="creacion"] .revelacion .atributos-claros{grid-template-columns:repeat(6,1fr)}
+[data-pantalla="creacion"] .revelacion__cita{margin-bottom:.6rem;font-size:.9rem}
+.revelacion__estado[data-estado="dibujo"]{color:#CDB06A}
+
+@media(max-width:700px){
+  .origen-rejilla{grid-template-columns:1fr}
+  .aspecto{grid-template-columns:minmax(6rem,8.5rem) minmax(0,1fr);gap:.6rem .7rem}
+  [data-pantalla="creacion"] .revelacion{grid-template-columns:1fr}
+  [data-pantalla="creacion"] .revelacion__marco{max-width:11rem;margin:0 auto}
+  [data-pantalla="creacion"] .revelacion .atributos-claros{grid-template-columns:repeat(3,1fr)}
+  .pasos__item{flex:1 1 4.5rem}
+  .paso{padding:.25rem .4rem;font-size:.62rem;gap:.3rem}
+  .paso__n{width:1.25rem;height:1.25rem}
+  [data-pantalla="creacion"] .creacion__pie .btn{flex:1 1 auto;padding-inline:.6rem}
+}
+@media(max-width:380px){
+  .aspecto{grid-template-columns:1fr}
+  .aspecto__marco{max-width:9rem;margin:0 auto}
+  .aspecto__controles{grid-template-columns:1fr}
+  .paso__nombre{font-size:.56rem}
+}
+/*#12A-FIN*/
+/*#12B*/
+/* ═══ #12 · la partida: un espacio estable, no una página larga ══════════
+   Cabecera y pie fijos. En el centro, la escena (compacta), y el relato con
+   dos vistas: «Ahora» e «Historial». A la derecha, quién eres (siempre) y
+   tus paneles en pestañas. Cada zona que se desplaza es UNA y se ve. */
+.escena{height:clamp(72px,13vh,128px)}
+.escena--plegada{height:44px}
+@media(max-width:560px){.escena{max-height:none;height:clamp(60px,11vh,96px)}}
+
+.relato{position:relative;display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+.relato__vistas{flex:none;display:flex;align-items:center;gap:.35rem;padding:.35rem .9rem;border-bottom:1px solid #513B1F;background:rgba(0,0,0,.28)}
+.relato__vista{min-height:34px;padding:.3rem .9rem;font:600 .72rem var(--mono);letter-spacing:.08em;text-transform:uppercase;color:#A9925D;background:linear-gradient(#2B1E15,#100C0B);border:1px solid #513B1F;border-radius:2px 9px 2px 9px;cursor:pointer}
+.relato__vista:hover{border-color:#A27A36}
+.relato__vista.es-activa{color:#F6E2A3;background:linear-gradient(#4A321B,#17100E);border-color:#C59A45;box-shadow:0 0 12px rgba(197,150,61,.18)}
+.relato__donde{margin-left:auto;min-width:0;font:.66rem/1.3 var(--mono);color:var(--texto-2);text-align:right}
+.bitacora{position:relative;scroll-behavior:auto;padding:.9rem 1.25rem 1.2rem;outline-offset:-2px}
+.bitacora:focus-visible{outline:2px solid #C59A45}
+.bitacora[data-vista="historial"]{background:linear-gradient(rgba(0,0,0,.22),rgba(0,0,0,.22))}
+.linea{max-width:46rem}
+.turno__cab{display:flex;align-items:center;gap:.6rem;margin:1.1rem 0 .6rem;max-width:46rem;font:600 .62rem var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#BDA467}
+.turno__cab:first-child{margin-top:0}
+.turno__cab::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,#6B4E25,transparent)}
+.turno__cab--ahora{color:#E2BD63}
+.turno__fin{max-width:46rem;margin:1rem 0 0;text-align:center;color:#8A6730;font-size:.7rem;letter-spacing:.5em}
+.turno__fin--historial{letter-spacing:0}
+.bitacora[data-escribiendo="1"] .turno__fin{visibility:hidden}
+.relato__nuevo{margin-left:auto;min-height:34px;padding:.3rem .9rem;font:700 .7rem var(--mono);letter-spacing:.04em;color:#251407;background:linear-gradient(180deg,#F3DC98,#B88B37);border:1px solid #F0D993;border-radius:18px;box-shadow:0 0 14px rgba(240,217,147,.35);cursor:pointer}
+.relato__donde[hidden]{display:none}
+.relato__nuevo[hidden]{display:none}
+
+/* Las sugerencias de «¿sin ideas?» viven en el pie, encima de la caja de
+   escribir: ocupan su sitio en vez de flotar sobre el texto que se lee. */
+.sugerencias{position:static;transform:none;width:auto;max-width:46rem;margin:0 auto .5rem;animation:none;box-shadow:none}
+.sugerencias__titulo{padding:0;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;background:none;border:0;text-align:left;cursor:default}
+/* En estrecho empiezan plegadas en una línea: abiertas se comían el relato. */
+.sugerencias--plegada .sugerencias__lista{display:none}
+.sugerencias--plegada{padding:.2rem .6rem}
+.sugerencias--plegada .sugerencias__cab{margin:0}
+.sugerencias--plegada .sugerencias__titulo{cursor:pointer;min-height:36px;text-decoration:underline;text-underline-offset:3px}
+.sugerencias--plegada .sugerencias__titulo::after{content:' ▾'}
+.sugerencias__lista{flex-direction:row;flex-wrap:wrap}
+.sugerencias__lista>*{flex:1 1 12rem}
+/* Las sugerencias ya no son un carrusel que se desplaza de lado. */
+.opciones{flex-wrap:wrap;overflow-x:visible;overflow-y:auto;max-height:7.2rem;scroll-snap-type:none}
+.opcion{min-width:0 !important;flex:0 1 auto}
+
+/* Lateral: quién eres, siempre; lo demás, en pestañas con UN desplazamiento. */
+.lateral{display:flex;flex-direction:column;overflow:hidden;padding:.6rem}
+.lateral__resumen{flex:none;display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.55rem;align-items:start;margin-bottom:.5rem}
+.lateral__resumen .retrato-pj{width:5rem;height:6rem;aspect-ratio:auto;max-height:none;margin:0}
+.lateral__resumen .ficha-pj{display:flex;flex-wrap:wrap;justify-content:flex-start;align-items:baseline;gap:.15rem .5rem;margin:0 0 .35rem;padding:.35rem .5rem;text-align:left}
+.lateral__resumen .ficha-pj::before,.lateral__resumen .ficha-pj::after{display:none}
+.lateral__resumen .ficha-pj__nombre{font-size:1rem;overflow-wrap:anywhere}
+.lateral__resumen .ficha-pj .btn{flex:1 1 100%;min-height:30px;padding:.2rem .4rem;font-size:.6rem}
+.barras-pj .barra-caja{margin-bottom:.2rem}
+.lateral__resumen .oro{padding:.2rem .5rem;gap:.4rem}
+.lateral__cuerpo .xp-pj{padding:.25rem .5rem}
+#panel-lateral{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+.pestanas{flex:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.25rem;padding-bottom:.4rem}
+.pestana{min-width:0;padding:.3rem .2rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.lateral__cab{flex:none;display:flex;align-items:center;justify-content:space-between;gap:.5rem;margin:.35rem 0 .1rem}
+.lateral__titulo{margin:0;font:600 .9rem var(--display);color:#F0D995;outline:none}
+.lateral__volver{display:none}
+.lateral__cuerpo{flex:1 1 auto;min-height:0;margin-top:.25rem;padding-right:.25rem;overflow-y:auto;outline-offset:-2px}
+.lateral__cuerpo:focus-visible{outline:2px solid #C59A45}
+.lateral__cuerpo .atributos-claros{grid-template-columns:repeat(2,minmax(0,1fr))}
+.lateral__cuerpo .sub-eti:first-child{margin-top:.2rem}
+
+@media(max-width:800px){
+  .tablero{position:relative;grid-template-rows:minmax(0,1fr) auto}
+  /* En estrecho: una franja (quién eres + pestañas). El panel se abre aparte. */
+  .lateral{display:block;max-height:none;overflow:visible;padding:.4rem .5rem .45rem}
+  .lateral__resumen{grid-template-columns:2.9rem minmax(0,1fr);gap:.45rem;margin-bottom:.35rem;align-items:center}
+  .lateral__resumen .retrato-pj{grid-column:auto;grid-row:auto;width:2.9rem;height:3.5rem;border-width:1px}
+  .lateral__resumen #panel-personaje{display:grid;grid-template-columns:minmax(0,auto) minmax(0,1fr) auto;gap:.2rem .5rem;align-items:center;min-width:0}
+  .lateral__resumen .ficha-pj{margin:0;padding:.2rem .4rem;gap:.1rem .4rem}
+  .lateral__resumen .ficha-pj .btn{display:none}
+  .barras-pj{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.3rem;min-width:0}
+  .barras-pj .barra-caja{margin:0;padding:.1rem .25rem .2rem}
+  .barras-pj .barra-caja__fila{font-size:.52rem;gap:.2rem}
+  .lateral__resumen .oro{padding:.1rem .35rem;font-size:.6rem;white-space:nowrap}
+  .pestanas{grid-template-columns:repeat(auto-fit,minmax(3.1rem,1fr));position:static;padding:0;background:none}
+  .pestana{min-height:38px;font-size:.62rem}
+  .lateral:not(.lateral--hoja) .lateral__cab,.lateral:not(.lateral--hoja) .lateral__cuerpo{display:none}
+  /* La hoja: ocupa el sitio de la historia, con su título y su vuelta. */
+  .lateral--hoja{position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;align-items:stretch;overflow:hidden;max-height:none;box-shadow:0 0 0 6px #0b0808}
+  .cab{flex-wrap:wrap;gap:.25rem .5rem;padding:.35rem .5rem}
+  .cab__acciones{flex-wrap:nowrap;gap:.3rem}
+  .cab__acciones .btn{min-height:36px;padding:.3rem .55rem;font-size:.6rem;letter-spacing:.04em;white-space:nowrap}
+  .lateral--hoja .lateral__volver{display:inline-flex;align-items:center;min-height:36px}
+  .lateral--hoja .lateral__cab{padding-bottom:.3rem;border-bottom:1px solid #6B4E25}
+  .lateral--hoja .lateral__titulo{font-size:1.1rem}
+  .lateral--hoja .lateral__cuerpo .atributos-claros{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .relato__vistas{padding:.3rem .5rem}
+  .relato__donde{font-size:.58rem}
+  .bitacora{padding:.7rem .8rem 1rem}
+}
+@media(max-width:380px){
+  .lateral__resumen #panel-personaje{grid-template-columns:minmax(0,1fr)}
+  .lateral__resumen .oro{display:none}
+  .relato__donde{display:none}
+}
+/*#12B-FIN*/
 </style>
 </head>
 <body>
@@ -1169,7 +1443,51 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
        style="font-family:ui-monospace,Menlo,monospace;font-size:.68rem;color:#B4533A;
               margin:1rem 0 0;max-width:90vw;max-height:40vh;overflow:auto;
               white-space:pre-wrap;text-align:left;display:none"></pre>
+  <button type="button" id="arranque-recargar" hidden onclick="location.reload()"
+          style="margin-top:1.2rem;padding:.7rem 1.4rem;font:600 .9rem Georgia,serif;color:#251407;
+                 background:#D8B45A;border:1px solid #F0D993;border-radius:6px;cursor:pointer">Recargar</button>
 </div>
+
+<!-- Vigilante del arranque que NO depende de ningún módulo (#12).
+     Si un archivo del juego no llega (red cortada a media carga, caché a
+     medias), `app.js` no se ejecuta y su propio vigilante tampoco: el rótulo
+     «Preparando el motor…» se quedaba para siempre, sin decir nada. Este
+     apunta qué archivo falló y, pasado el plazo, lo dice y ofrece recargar.
+     No reintenta nada por su cuenta. -->
+<script>
+(function () {
+  var PLAZO = 12000;
+  var estado = window.__arcanveilArranque = { inicio: Date.now(), fase: 'documento', fallidos: [] };
+  function listo() { return Boolean(window.ARCANVEIL && window.ARCANVEIL.motor && window.ARCANVEIL.motor.listo); }
+  function decir(titulo, detalle) {
+    var capa = document.getElementById('arranque');
+    var texto = document.getElementById('arranque-texto');
+    if (!capa || !texto || listo() || capa.hidden || capa.style.display === 'none') return;
+    texto.style.color = '#E5A08C';
+    texto.textContent = titulo;
+    var d = document.getElementById('arranque-detalle');
+    if (d) { d.style.display = 'block'; d.textContent = detalle; }
+    var b = document.getElementById('arranque-recargar');
+    if (b) b.hidden = false;
+  }
+  // Un módulo (o cualquiera de los que importa) que no se puede traer dispara
+  // «error» en su etiqueta; se oye en captura porque no burbujea.
+  window.addEventListener('error', function (e) {
+    var o = e && e.target;
+    if (!o || o.tagName !== 'SCRIPT') return;
+    estado.fallidos.push(String(o.src || 'script en línea'));
+    estado.fase = 'modulo-fallido';
+    decir('El juego no ha podido cargar todos sus archivos',
+      'No llegó: ' + (o.src || 'un archivo del juego') + '\nPulsa «Recargar». Si estabas sin conexión, vuelve a intentarlo con conexión.');
+  }, true);
+  setTimeout(function () {
+    if (estado.fase !== 'documento') return;      // el módulo llegó a ejecutarse: manda su propio vigilante
+    estado.fase = 'sin-modulo';
+    decir('El juego no ha terminado de cargar',
+      'Sus archivos no se han ejecutado en ' + (PLAZO / 1000) + ' s. Pulsa «Recargar».');
+  }, PLAZO);
+})();
+</script>
 
 <!-- ═══ inicio ═══════════════════════════════════════════════════════ -->
 <section data-pantalla="inicio" class="inicio" data-estado="portada" hidden>
@@ -1188,10 +1506,13 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
 
 <!-- ═══ creación ═════════════════════════════════════════════════════ -->
 <section data-pantalla="creacion" class="creacion" hidden>
-  <h2 class="creacion__titulo" id="creacion-titulo">¿Quién eres?</h2>
-  <p class="creacion__nota" id="creacion-nota"></p>
+  <header class="creacion__cab">
+    <h2 class="creacion__titulo" id="creacion-titulo" tabindex="-1">¿Quién eres?</h2>
+    <nav id="creacion-pasos" aria-label="Pasos para crear el personaje"></nav>
+    <p class="creacion__nota" id="creacion-nota"></p>
+  </header>
 
-  <div id="creacion-cuerpo"></div>
+  <div id="creacion-cuerpo" role="region" aria-labelledby="creacion-titulo" tabindex="-1"></div>
 
   <div class="creacion__pie" id="creacion-pie"></div>
 </section>
@@ -1237,12 +1558,26 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
         <div class="escena__rotulo" id="escena-rotulo"></div>
       </div>
 
-      <div class="bitacora" id="bitacora"></div>
+      <!-- El relato: «Ahora» (el turno en curso, entero) e «Historial» (todo
+           lo anterior). La zona que se desplaza es una sola y dice cuál es. -->
+      <section class="relato" id="relato" aria-label="La historia">
+        <div class="relato__vistas" id="relato-vistas" role="tablist" aria-label="Qué parte de la historia ves">
+          <button type="button" class="relato__vista es-activa" id="relato-ahora" role="tab" aria-selected="true" aria-controls="bitacora">Ahora</button>
+          <button type="button" class="relato__vista" id="relato-historial" role="tab" aria-selected="false" aria-controls="bitacora" tabindex="-1">Historial</button>
+          <span class="relato__donde" id="relato-donde"></span>
+          <!-- Llegó una respuesta mientras se leía el historial: se dice aquí,
+               sin tapar el texto ni mover la lectura. -->
+          <button type="button" class="relato__nuevo" id="relato-nuevo" aria-live="polite" hidden>Respuesta nueva · volver al presente</button>
+        </div>
+        <div class="bitacora" id="bitacora" role="tabpanel" aria-labelledby="relato-ahora" tabindex="0"></div>
+      </section>
     </div>
 
-    <aside class="lateral" id="panel-lateral-envoltura">
-      <div class="retrato-pj" id="retrato-pj"></div>
-      <div id="panel-personaje"></div>
+    <aside class="lateral" id="panel-lateral-envoltura" aria-label="Tu personaje y tus cosas">
+      <div class="lateral__resumen">
+        <div class="retrato-pj" id="retrato-pj"></div>
+        <div id="panel-personaje"></div>
+      </div>
       <div id="panel-lateral"></div>
     </aside>
   </div>
@@ -1251,7 +1586,7 @@ textarea.entrada{resize:none;overflow-y:auto;line-height:1.45;max-height:180px;d
     <div class="opciones" id="opciones" hidden></div>
 
     <div class="sugerencias" id="sugerencias" role="dialog" aria-label="Sugerencias" hidden>
-      <div class="sugerencias__cab"><span>¿Sin ideas? Prueba con…</span><button class="sugerencias__cerrar" id="sugerencias-cerrar" aria-label="Cerrar sugerencias">×</button></div>
+      <div class="sugerencias__cab"><button type="button" class="sugerencias__titulo" id="sugerencias-titulo" aria-expanded="true" aria-controls="sugerencias-lista">¿Sin ideas? Prueba con…</button><button class="sugerencias__cerrar" id="sugerencias-cerrar" aria-label="Cerrar sugerencias">×</button></div>
       <div class="sugerencias__lista" id="sugerencias-lista"></div>
     </div>
 

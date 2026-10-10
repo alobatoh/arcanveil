@@ -52,15 +52,21 @@ import { DifficultyDirector } from '../src/engine/DifficultyDirector.js';
 import { TurnResolver } from '../src/engine/TurnResolver.js';
 
 import {
-  pintarLugar, pintarRetrato, pintarCriatura, cargarManifiesto,
+  pintarLugar, pintarRetrato, pintarCriatura, pintarMarcador, pintarArte, cargarManifiesto,
   especieNombrada, claveRetrato,
 } from '../src/art/index.js';
-import { abrirGaleria, aprobar, alCambiarGaleria, urlAprobada, borrarGaleria } from '../src/art/galeria.js';
+import { abrirGaleria, aprobar, alCambiarGaleria, urlAprobada, estiloAprobada, olvidar as olvidarRetrato, borrarGaleria } from '../src/art/galeria.js';
 import { pedirCandidata, estadoGenerador, olvidarCandidatas } from '../src/art/candidata.js';
+import {
+  ESTILO_DIBUJO, PELOS, OJOS, RASGOS, normalizarAspecto, aspectoDesdeDescripcion, opcionesDibujo, svgDibujo, describirDibujo, rasterizar,
+} from '../src/art/dibujo.js';
 import { sujetoRetrato } from '../src/art/rasgos.js';
 import { obtenerEnemigo } from '../src/data/enemies.data.js';
 
-import { fichaAleatoria } from '../src/player/CharacterRandom.js';
+import { fichaAleatoria, nombreAleatorio } from '../src/player/CharacterRandom.js';
+import { previsualizar } from '../src/player/CharacterFactory.js';
+import { ATRIBUTOS } from '../src/config/balance.config.js';
+import { HABILIDADES } from '../src/data/skills.data.js';
 import { aplicarCorreccion, resumenPersonaje, sexoDescrito, PREGUNTA_CREACION } from '../src/player/Correccion.js';
 import {
   listarPersonajes, obtenerPersonaje, guardarPersonaje,
@@ -70,7 +76,7 @@ import * as Ranuras from '../src/persistence/Ranuras.js';
 import { explicarLegado, procedenciaXP } from '../src/player/Legado.js';
 import { nuevoRunId } from '../src/player/Muerte.js';
 import { nivelParaXP } from '../src/player/Progression.js';
-import { RAZAS } from '../src/data/races.data.js';
+import { RAZAS, atributosDe, rasgosDe } from '../src/data/races.data.js';
 import { CLASES } from '../src/data/classes.data.js';
 import { TRASFONDOS } from '../src/data/backgrounds.data.js';
 import { obtenerLugar } from '../src/data/locations.data.js';
@@ -82,6 +88,10 @@ import { PROVEEDORES } from '../src/config/ai.config.js';
 import {
   rodarDado, numeroDano, sacudir, destello, rotuloMomento,
 } from './efectos.js';
+
+// Todos los módulos han llegado y este se está ejecutando: a partir de aquí
+// manda el vigilante de `arrancar()`, no el de la página (ver index.html).
+if (globalThis.__arcanveilArranque) globalThis.__arcanveilArranque.fase = 'modulo';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    UTILIDADES DE DOM
@@ -118,6 +128,11 @@ function el(tag, attrs = {}, ...hijos) {
 
 function vaciar(nodo) {
   if (nodo) nodo.innerHTML = '';
+}
+
+/** `append` sin los huecos: el del DOM escribe «null» si se le pasa un nulo. */
+function poner(nodo, ...hijos) {
+  nodo.append(...hijos.flat().filter((h) => h !== null && h !== undefined && h !== false));
 }
 
 /** Muestra un fallo en pantalla en vez de dejar la página muda. */
@@ -785,14 +800,14 @@ function pintarPersonajes(elegidoId) {
   }
 }
 
-/* ── creación: generador aleatorio ────────────────────────────────────── */
+/* ── creación: por pasos, eligiendo ───────────────────────────────────── */
 
 const borrador = {
   nombre: '', raza: 'valdes', clase: 'rastreador', trasfondo: 'errante',
-  genero: 'm', retrato: '', lore: '', intensidad: 'equilibrado',
+  genero: 'm', retrato: '', lore: '', intensidad: 'equilibrado', aspecto: null,
 };
 
-/** Personaje recién creado que se enseña con su ilustración. */
+/** El personaje ya guardado en el plantel (existe desde el paso «Aspecto»). */
 let personajeCreado = null;
 
 /**
@@ -804,90 +819,334 @@ let personajeCreado = null;
  */
 let nombreEscrito = false;
 
-function tirarFicha() {
-  Object.assign(borrador, fichaAleatoria());
+/**
+ * Los pasos de la creación. Cada uno cabe en la pantalla: antes era un
+ * formulario largo con «Crear personaje» a la vista y la mitad de los campos
+ * debajo, fuera de ella.
+ */
+const PASOS = Object.freeze([
+  { id: 'origen', nombre: 'Origen', nota: 'Elige tu linaje, tu oficio y tu pasado en las listas. El dado es opcional: tira solo lo que no hayas elegido tú.' },
+  { id: 'quien', nombre: 'Quién eres', nota: 'Tu nombre, tu historia y lo dura que quieres la partida.' },
+  { id: 'aspecto', nombre: 'Aspecto', nota: 'Cómo eres, con tus palabras, y qué imagen te acompaña.' },
+  { id: 'revisar', nombre: 'Revisar', nota: 'Así queda tu personaje. Vuelve atrás para cambiar lo que quieras: no se pierde nada.' },
+]);
+let pasoCreacion = 'origen';
+
+/** Lo que el jugador ha elegido a mano: el dado no lo toca. */
+const fijado = { raza: false, clase: false, trasfondo: false, genero: false };
+
+/** El control de imagen del paso «Aspecto» (ver `montarAspecto`). */
+let aspectoCreacion = null;
+
+const NOMBRE_ATRIBUTO = Object.freeze({ vigor: 'Vigor', destreza: 'Destreza', temple: 'Temple', intelecto: 'Intelecto', astucia: 'Astucia', carisma: 'Carisma' });
+const ETI_ATRIBUTO = Object.freeze({ vigor: 'VIG', destreza: 'DES', temple: 'TEM', intelecto: 'INT', astucia: 'AST', carisma: 'CAR' });
+const nombreHabilidad = (id) => HABILIDADES[id]?.nombre ?? String(id).replace(/_/g, ' ');
+
+/**
+ * Tira el origen. Solo lo que el jugador NO ha elegido a mano, salvo `todo`
+ * (personaje nuevo). El nombre se tira si no lo ha escrito él.
+ */
+function tirarFicha({ todo = false } = {}) {
+  const f = fichaAleatoria();
+  for (const k of ['raza', 'clase', 'trasfondo', 'genero']) if (todo || !fijado[k]) borrador[k] = f[k];
+  if (todo || !nombreEscrito) borrador.nombre = nombreAleatorio(borrador.raza, borrador.genero);
 }
 
 function abrirCreacion() {
   personajeCreado = null;
-  tirarFicha();
+  for (const k of Object.keys(fijado)) fijado[k] = false;
+  nombreEscrito = false;
+  tirarFicha({ todo: true });
   borrador.retrato = '';
   borrador.lore = '';
-  // Sin esto, volver desde la revelación y luego pulsar «Crear otro»
+  borrador.aspecto = null;
+  // Sin esto, volver desde la revisión y luego pulsar «Crear otro»
   // sobrescribía al personaje anterior en vez de crear uno.
   delete borrador.id;
   delete borrador.creado;
   delete borrador.semillaRetrato;
-  nombreEscrito = false;
+  pasoCreacion = 'origen';
   mostrar('creacion');
   pintarCreacion();
 }
 
-/**
- * Primer paso: ficha al azar y los tres textos del jugador. Aquí no hay
- * retrato a propósito: la ilustración llega cuando el jugador envía su
- * descripción, no antes.
- */
-function pintarCreacion() {
+/** Pinta el paso en curso: barra de pasos, cuerpo y pie. */
+function pintarCreacion({ foco = '#creacion-titulo', eco = null } = {}) {
+  aspectoCreacion?.cerrar();
+  aspectoCreacion = null;
   const caja = $('#creacion-cuerpo');
   vaciar(caja);
-  $('#creacion-titulo').textContent = '¿Quién eres?';
-  $('#creacion-nota').textContent = 'Tira los dados hasta que te guste el origen. Después escribe quién eres: tu descripción será el encargo para la ilustración.';
+  const paso = PASOS.find((p) => p.id === pasoCreacion) ?? PASOS[0];
+  $('#creacion-titulo').textContent = pasoCreacion === 'revisar' ? (borrador.nombre || 'Tu personaje') : '¿Quién eres?';
+  $('#creacion-nota').textContent = paso.nota;
+  $('[data-pantalla="creacion"]').dataset.paso = paso.id;
+  pintarPasos();
 
-  caja.append(el('div', { class: 'aleatoria', id: 'ficha-aleatoria' }));
-  pintarFichaAleatoria();
+  if (paso.id === 'origen') pasoOrigen(caja);
+  else if (paso.id === 'quien') pasoQuien(caja);
+  else if (paso.id === 'aspecto') pasoAspecto(caja);
+  else pasoRevisar(caja, eco);
 
-  // Traer una partida que ya existe.
-  //
-  // Va arriba del todo porque quien llega con una historia escrita no quiere
-  // empezar rellenando campos: quiere pegarla y seguir jugando.
-  caja.append(el('div', { class: 'campo' },
-    el('button', {
-      class: 'btn btn--fantasma', id: 'creacion-importar',
-      onClick: protegido('importar historia', abrirImportar),
-    }, 'Ya tengo una historia'),
-    el('p', { class: 'campo__ayuda', text: 'Pega una partida de otro sitio y el juego la lee: personajes, lugares y lo que quedó pendiente.' }),
-  ));
+  pintarPieCreacion();
+  caja.scrollTop = 0;
+  if (foco) $(foco)?.focus?.({ preventScroll: true });
+}
 
-  caja.append(
-    el('div', { class: 'campo' },
-      el('label', { class: 'campo__eti', for: 'nombre', text: 'Nombre' }),
-      el('input', {
-        id: 'nombre', class: 'campo__entrada', type: 'text',
-        maxlength: '28', value: borrador.nombre, autocomplete: 'off',
-        onInput: (e) => { borrador.nombre = e.target.value; nombreEscrito = Boolean(e.target.value.trim()); },
-      }),
-    ),
-    el('div', { class: 'campo retrato-descripcion' },
-      el('label', { class: 'campo__eti', for: 'retrato-descripcion', text: 'Descripción' }),
-      el('textarea', {
-        id: 'retrato-descripcion', class: 'campo__entrada campo__entrada--retrato',
-        placeholder: 'Ej.: exploradora de pelo plateado, cicatriz en la ceja, capa violeta y brújula de bronce…',
-        maxlength: '360', value: borrador.retrato,
-        onInput: (e) => { borrador.retrato = e.target.value; },
-      }),
-      el('p', { class: 'campo__ayuda', text: 'Es lo que la IA pintará. Aspecto, ropa, rasgos, gesto.' }),
-    ),
-    el('div', { class: 'campo lore-personaje' },
-      el('label', { class: 'campo__eti', for: 'lore-personaje', text: 'Historia' }),
-      el('textarea', {
-        id: 'lore-personaje', class: 'campo__entrada campo__entrada--retrato campo__entrada--lore',
-        placeholder: 'Ej.: crecí junto al Umbral, mi hermana desapareció tras cruzarlo y llevo su medallón. Quiero encontrarla, aunque tema lo que haya al otro lado…',
-        maxlength: '1200', value: borrador.lore,
-        onInput: (e) => { borrador.lore = e.target.value; },
-      }),
-      el('p', { class: 'campo__ayuda', text: 'Es el pasado de tu personaje: el mundo lo respeta, pero la partida la haces tú. Nada de esto se convierte en misión si tú no quieres.' }),
-    ),
-    campoIntensidad(),
-  );
+/** La barra de pasos: dónde estás, qué llevas hecho y cómo volver. */
+function pintarPasos() {
+  const nav = $('#creacion-pasos');
+  if (!nav) return;
+  vaciar(nav);
+  const actual = PASOS.findIndex((p) => p.id === pasoCreacion);
+  nav.append(el('ol', { class: 'pasos' },
+    ...PASOS.map((p, i) => el('li', { class: 'pasos__item' },
+      el('button', {
+        type: 'button',
+        class: `paso${i === actual ? ' es-actual' : ''}${i < actual ? ' es-hecho' : ''}`,
+        dataset: { paso: p.id },
+        'aria-current': i === actual ? 'step' : undefined,
+        onClick: protegido('ir a un paso', () => irAPaso(p.id)),
+      },
+      el('span', { class: 'paso__n', 'aria-hidden': 'true', text: i < actual ? '✓' : String(i + 1) }),
+      el('span', { class: 'paso__nombre', text: p.nombre }),
+      el('span', { class: 'solo-lector', text: i < actual ? ' (hecho)' : i === actual ? ` (paso ${i + 1} de ${PASOS.length}, en curso)` : '' }))))));
+}
 
+/** El pie del paso: atrás y adelante, siempre a la vista. */
+function pintarPieCreacion() {
   const pie = $('#creacion-pie');
   vaciar(pie);
-  pie.append(
-    el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', onClick: protegido('volver', () => (listarPersonajes().length ? abrirNuevaPartida() : mostrar('inicio'))) }, 'Atrás'),
-    el('button', { class: 'btn btn--grande', id: 'creacion-crear', onClick: protegido('crear personaje', crearPersonajeNuevo) }, 'Crear personaje'),
+  const i = PASOS.findIndex((p) => p.id === pasoCreacion);
+  const atras = i === 0
+    ? el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', type: 'button', onClick: protegido('volver', () => (listarPersonajes().length ? abrirNuevaPartida() : mostrar('inicio'))) }, 'Atrás')
+    : el('button', { class: 'btn btn--fantasma', id: 'creacion-volver', type: 'button', onClick: protegido('volver', () => irAPaso(PASOS[i - 1].id)) }, `Atrás: ${PASOS[i - 1].nombre.toLowerCase()}`);
+  if (pasoCreacion === 'revisar') {
+    pie.append(
+      el('button', { class: 'btn btn--fantasma', id: 'creacion-otro', type: 'button', onClick: protegido('nuevo personaje', () => abrirCreacion()) }, 'Crear otro'),
+      atras,
+      el('button', { class: 'btn btn--grande', id: 'creacion-empezar', type: 'button', onClick: protegido('comenzar partida', () => comenzarPartida(personajeCreado)) }, 'Comenzar partida'),
+    );
+    return;
+  }
+  pie.append(atras, el('button', {
+    class: 'btn btn--grande', id: 'creacion-siguiente', type: 'button',
+    onClick: protegido('siguiente paso', () => irAPaso(PASOS[i + 1].id)),
+  }, `Siguiente: ${PASOS[i + 1].nombre.toLowerCase()}`));
+}
+
+/**
+ * Cambia de paso. Hacia atrás, siempre (nada se pierde: todo vive en el
+ * borrador). Hacia delante, cada paso intermedio tiene que estar completo:
+ * si falta algo se queda en ESE paso, con el campo enfocado y dicho por qué.
+ */
+let cambiandoPaso = false;
+async function irAPaso(destino) {
+  if (cambiandoPaso) return false;
+  const orden = PASOS.map((p) => p.id);
+  const j = orden.indexOf(destino);
+  let i = orden.indexOf(pasoCreacion);
+  if (j < 0) return false;
+  cambiandoPaso = true;
+  try {
+    if (j <= i) { pasoCreacion = destino; pintarCreacion(); return true; }
+    while (i < j) {
+      // La imagen se elige mirándola: no se salta el paso «Aspecto» sin haberlo abierto.
+      if (orden[i] === 'aspecto' && !aspectoCreacion) { pasoCreacion = 'aspecto'; pintarCreacion(); return true; }
+      const v = await validarPaso(orden[i]);
+      if (!v.ok) {
+        if (pasoCreacion !== orden[i]) { pasoCreacion = orden[i]; pintarCreacion({ foco: null }); }
+        marcarError(v.campo, v.mensaje);
+        return false;
+      }
+      i += 1;
+      pasoCreacion = orden[i];
+    }
+    pintarCreacion();
+    return true;
+  } finally { cambiandoPaso = false; }
+}
+
+/** El error, junto a su campo, enfocado y anunciado. No borra nada. */
+function marcarError(selector, mensaje) {
+  const campo = selector ? $(selector) : null;
+  for (const viejo of $$('.campo__error')) viejo.remove();
+  for (const c of $$('[aria-invalid="true"]')) { c.removeAttribute('aria-invalid'); c.removeAttribute('aria-describedby'); }
+  if (!campo) { avisar(mensaje, 'aviso'); return; }
+  const id = `${campo.id}-error`;
+  campo.setAttribute('aria-invalid', 'true');
+  campo.setAttribute('aria-describedby', id);
+  campo.after(el('p', { class: 'campo__error', id, role: 'alert', text: mensaje }));
+  campo.scrollIntoView({ block: 'center' });
+  campo.focus();
+}
+
+/**
+ * ¿Está completo este paso? Al dar por bueno «Quién eres» el personaje se
+ * guarda en el plantel (con su id de siempre si se está corrigiendo: no nace
+ * un gemelo), porque la imagen del paso siguiente va atada a ese id.
+ * @returns {Promise<{ok: boolean, campo?: string, mensaje?: string}>}
+ */
+async function validarPaso(id) {
+  if (id === 'origen') return { ok: true };
+  if (id === 'quien') {
+    const nombre = String(borrador.nombre ?? '').trim();
+    const lore = String(borrador.lore ?? '').trim();
+    if (!nombre) return { ok: false, campo: '#nombre', mensaje: 'Ponle nombre al personaje.' };
+    if (lore.length < 8) return { ok: false, campo: '#lore-personaje', mensaje: 'Cuenta un poco de su historia (al menos unas palabras).' };
+    personajeCreado = guardarPersonaje({ ...borrador, nombre, lore, retrato: String(borrador.retrato ?? '').trim() });
+    Object.assign(borrador, { id: personajeCreado.id, creado: personajeCreado.creado, nombre, lore });
+    return { ok: true };
+  }
+  if (id === 'aspecto') {
+    const descripcion = String(borrador.retrato ?? '').trim();
+    if (descripcion.length < 8) return { ok: false, campo: '#retrato-descripcion', mensaje: 'Describe su aspecto con unas palabras: el narrador lo tiene en cuenta.' };
+    // Si la descripción dice quién es y el jugador no ha elegido el trato a
+    // mano, manda la descripción: «enana guerrera» es una mujer aunque el
+    // dado saliera en masculino.
+    if (!fijado.genero) borrador.genero = sexoDescrito(descripcion) ?? borrador.genero;
+    const r = await aspectoCreacion?.aplicar();
+    if (r && !r.ok) return { ok: false, campo: '#aspecto-modo-ninguno', mensaje: `${r.motivo} Puedes elegir «Sin imagen» y seguir: se juega igual.` };
+    if (aspectoCreacion) borrador.aspecto = aspectoCreacion.aspecto();
+    personajeCreado = guardarPersonaje({ ...borrador, retrato: descripcion });
+    return { ok: true };
+  }
+  return { ok: true };
+}
+
+/* ── paso 1: origen ───────────────────────────────────────────────────── */
+
+const LUGAR_INICIAL = {
+  ferrano: 'forja_alta', brumal: 'pilotes_brumal', sombracorteza: 'arboleda_madre',
+  crisol: 'oasis_sal', albar: 'umbral_albar', griscuerno: 'paso_yunque',
+  valdes: 'vado_yunque', menudo: 'saucedo',
+};
+
+/** Lo que cada elección cambia EN REGLAS, leído de la configuración real. */
+function efectoDe(clave, refId) {
+  if (clave === 'raza') {
+    const mods = Object.entries(atributosDe(refId) ?? {}).filter(([k]) => NOMBRE_ATRIBUTO[k]).map(([k, v]) => `${v > 0 ? '+' : ''}${v} ${NOMBRE_ATRIBUTO[k]}`);
+    const inicio = obtenerLugar(LUGAR_INICIAL[refId] ?? 'vado_yunque');
+    return [
+      mods.length ? `Atributos: ${mods.join(', ')}.` : null,
+      (RAZAS[refId]?.habilidadesGratis ?? []).length ? `Se te da bien: ${RAZAS[refId].habilidadesGratis.map(nombreHabilidad).join(', ')}.` : null,
+      (rasgosDe(refId) ?? []).length ? `Rasgos: ${rasgosDe(refId).map((r) => r.nombre).join(', ')}.` : null,
+      inicio ? `Empiezas en ${inicio.nombre}.` : null,
+    ].filter(Boolean);
+  }
+  if (clave === 'clase') {
+    const c = CLASES[refId] ?? {};
+    return [
+      `Atributos fuertes: ${NOMBRE_ATRIBUTO[c.atributoPrincipal] ?? '—'} y ${NOMBRE_ATRIBUTO[c.atributoSecundario] ?? '—'}.`,
+      `Vida: dado d${c.dadoVida ?? 8} por nivel. ${c.manaBase ? `Ánima: base ${c.manaBase} (el total, en tu ficha).` : 'Apenas usa ánima.'}`,
+      (c.habilidadesGratis ?? []).length ? `Se te da bien: ${c.habilidadesGratis.map(nombreHabilidad).join(', ')}.` : null,
+      (c.rasgos ?? []).filter((r) => (r.nivel ?? 1) === 1).length ? `Rasgos: ${c.rasgos.filter((r) => (r.nivel ?? 1) === 1).map((r) => r.nombre).join(', ')}.` : null,
+    ].filter(Boolean);
+  }
+  const t = TRASFONDOS[refId] ?? {};
+  return [
+    (t.habilidades ?? []).length ? `Se te da bien: ${t.habilidades.map(nombreHabilidad).join(', ')}.` : null,
+    `Oro de partida: ${25 + (t.oroExtra ?? 0)}.`,
+    t.rasgo?.nombre ? `Rasgo: ${t.rasgo.nombre}.` : null,
+  ].filter(Boolean);
+}
+
+/** Un selector de origen con su explicación y su estado (elegido o al azar). */
+function campoOrigen(clave, etiqueta, datos) {
+  const id = `origen-${clave}`;
+  const actual = datos[borrador[clave]] ?? Object.values(datos)[0];
+  const select = el('select', {
+    id, class: 'campo__entrada campo__select', 'aria-describedby': `${id}-explica`,
+    onChange: protegido('elegir origen', (e) => {
+      borrador[clave] = e.target.value;
+      fijado[clave] = true;
+      // Un nombre tirado va con su linaje: si el jugador no ha escrito el
+      // suyo, se vuelve a tirar para el linaje nuevo.
+      if (clave === 'raza' && !nombreEscrito) borrador.nombre = nombreAleatorio(borrador.raza, borrador.genero);
+      pintarCreacion({ foco: `#${id}` });
+    }),
+  }, ...Object.values(datos).map((o) => el('option', { value: o.refId, text: o.nombre })));
+  select.value = actual.refId;
+
+  return el('div', { class: `campo origen origen--${clave}` },
+    el('div', { class: 'origen__cab' },
+      el('label', { class: 'campo__eti', for: id, text: etiqueta }),
+      fijado[clave]
+        ? el('button', {
+          type: 'button', class: 'origen__fijo', dataset: { soltar: clave }, title: 'Dejar que el dado lo cambie',
+          onClick: protegido('soltar elección', () => { fijado[clave] = false; pintarCreacion({ foco: `#${id}` }); }),
+        }, 'Elegido por ti · soltar')
+        : el('span', { class: 'origen__azar', text: 'Lo tiró el dado' }),
+    ),
+    select,
+    el('div', { class: 'origen__explica', id: `${id}-explica` },
+      el('p', { class: 'origen__lema', text: actual.lema ?? '' }),
+      el('ul', { class: 'origen__efectos' }, ...efectoDe(clave, actual.refId).map((t) => el('li', { text: t }))),
+    ),
   );
 }
+
+/** La ficha tal como la calcula el motor para este borrador. */
+function fichaReglas(datos, { id = 'ficha-previa', detalle = false } = {}) {
+  const f = previsualizar(datos);
+  const caja = el('div', { class: 'ficha-previa', id },
+    el('p', { class: 'campo__eti', text: 'Tu ficha a nivel 1 (la calcula el juego)' }),
+    // Con el nombre entero: un número sin rótulo legible no dice nada a
+    // quien juega por primera vez.
+    el('dl', { class: 'atributos-claros' },
+      ...ATRIBUTOS.orden.map((clave) => {
+        const valor = f.atributos?.[clave] ?? 10;
+        const mod = Math.floor((valor - 10) / 2);
+        return el('div', { class: 'atributo-claro', dataset: { atributo: clave } },
+          el('dt', { text: NOMBRE_ATRIBUTO[clave] }),
+          el('dd', {}, el('strong', { text: String(valor) }), el('span', { class: 'atributo-claro__mod', text: mod >= 0 ? `+${mod}` : String(mod) })),
+        );
+      }),
+    ),
+    el('dl', { class: 'ficha-previa__cifras' },
+      el('div', {}, el('dt', { text: 'Vida' }), el('dd', { id: `${id}-vida`, text: String(f.vida) })),
+      el('div', {}, el('dt', { text: 'Ánima' }), el('dd', { id: `${id}-anima`, text: String(f.mana) })),
+      el('div', {}, el('dt', { text: 'Oro' }), el('dd', { id: `${id}-oro`, text: String(f.oro) })),
+    ),
+  );
+  if (detalle) {
+    caja.append(
+      el('p', { class: 'ficha-previa__linea', text: `Se te da bien: ${f.competencias.map(nombreHabilidad).join(', ') || '—'}.` }),
+      el('p', { class: 'ficha-previa__linea', text: `Rasgos: ${f.rasgos.map((r) => r.nombre).join(', ') || '—'}.` }),
+    );
+  }
+  return caja;
+}
+
+function pasoOrigen(caja) {
+  const queTira = [
+    !fijado.raza ? 'linaje' : null, !fijado.clase ? 'oficio' : null, !fijado.trasfondo ? 'pasado' : null,
+    !nombreEscrito ? 'nombre' : null,
+  ].filter(Boolean);
+  const nadaQueTirar = !queTira.length;
+
+  caja.append(el('div', { class: 'origen-rejilla' },
+    el('div', { class: 'origen-rejilla__elegir' },
+      campoOrigen('raza', 'Linaje', RAZAS),
+      campoOrigen('clase', 'Oficio', CLASES),
+      campoOrigen('trasfondo', 'Pasado', TRASFONDOS),
+    ),
+    el('div', { class: 'origen-rejilla__ficha' },
+      fichaReglas(borrador),
+      el('div', { class: 'aleatoria', id: 'ficha-aleatoria' },
+        el('button', {
+          class: 'btn aleatoria__dado', id: 'creacion-aleatorio', type: 'button',
+          disabled: nadaQueTirar ? '' : undefined, 'aria-describedby': 'creacion-aleatorio-nota',
+          onClick: protegido('aleatorio', () => { tirarFicha(); pintarCreacion({ foco: '#creacion-aleatorio' }); }),
+        }, el('span', { class: 'aleatoria__glifo', 'aria-hidden': 'true', text: '⚄' }), ' Tirar al azar'),
+        el('p', { class: 'campo__ayuda', id: 'creacion-aleatorio-nota', text: nadaQueTirar
+          ? 'Lo has elegido todo tú: no queda nada que tirar. Suelta alguna elección si quieres que el dado la cambie.'
+          : `El dado tira: ${queTira.join(', ')}. No toca lo que has elegido tú ni lo que has escrito.` }),
+      ),
+    ),
+  ));
+}
+
+/* ── paso 2: quién eres ───────────────────────────────────────────────── */
 
 /**
  * Las tres intensidades que se ofrecen al crear, con texto de mesa.
@@ -909,193 +1168,184 @@ function nombreIntensidad(valor) {
     ?? 'Equilibrada';
 }
 
-/** Selector de intensidad de la creación. */
-function campoIntensidad() {
-  const elegida = borrador.intensidad ?? 'equilibrado';
-  const grupo = el('div', { class: 'intensidad', role: 'radiogroup', 'aria-labelledby': 'intensidad-eti', id: 'intensidad' });
-
-  for (const i of INTENSIDADES) {
+/** Un grupo de opciones excluyentes (radios con aspecto de fichas). */
+function grupoRadio({ id, etiqueta, opciones, elegida, alElegir, clase = 'intensidad', dato = 'valor' }) {
+  const grupo = el('div', { class: clase, role: 'radiogroup', 'aria-labelledby': `${id}-eti`, id });
+  for (const o of opciones) {
     grupo.append(el('button', {
       type: 'button', role: 'radio',
-      class: `intensidad__opcion${i.valor === elegida ? ' es-activa' : ''}`,
-      'aria-checked': String(i.valor === elegida),
-      'data-intensidad': i.valor,
+      class: `intensidad__opcion${o.valor === elegida ? ' es-activa' : ''}`,
+      'aria-checked': String(o.valor === elegida),
+      tabindex: o.valor === elegida ? '0' : '-1',
+      [`data-${dato}`]: o.valor,
       onClick: (e) => {
-        borrador.intensidad = i.valor;
+        alElegir(o.valor);
         for (const b of grupo.querySelectorAll('button')) {
           const activa = b === e.currentTarget;
           b.classList.toggle('es-activa', activa);
           b.setAttribute('aria-checked', String(activa));
+          b.setAttribute('tabindex', activa ? '0' : '-1');
         }
       },
     },
-    el('strong', { class: 'intensidad__nombre', text: i.nombre }),
-    el('span', { class: 'intensidad__texto', text: i.texto })));
+    el('strong', { class: 'intensidad__nombre', text: o.nombre }),
+    o.texto ? el('span', { class: 'intensidad__texto', text: o.texto }) : null));
   }
+  // Flechas, como en cualquier grupo de radios.
+  grupo.addEventListener('keydown', (e) => {
+    const paso = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 })[e.key];
+    if (!paso) return;
+    const botones = [...grupo.querySelectorAll('button')];
+    const i = botones.indexOf(document.activeElement);
+    if (i < 0) return;
+    e.preventDefault();
+    const destino = botones[(i + paso + botones.length) % botones.length];
+    destino.focus();
+    destino.click();
+  });
+  return el('div', { class: 'campo' }, el('p', { class: 'campo__eti', id: `${id}-eti`, text: etiqueta }), grupo);
+}
 
-  return el('div', { class: 'campo' },
-    el('p', { class: 'campo__eti', id: 'intensidad-eti', text: 'Intensidad' }),
-    grupo,
+function pasoQuien(caja) {
+  caja.append(
+    el('div', { class: 'campo' },
+      el('label', { class: 'campo__eti', for: 'nombre', text: 'Nombre' }),
+      el('div', { class: 'campo__fila' },
+        el('input', {
+          id: 'nombre', class: 'campo__entrada', type: 'text',
+          maxlength: '28', value: borrador.nombre, autocomplete: 'off',
+          onInput: (e) => { borrador.nombre = e.target.value; nombreEscrito = Boolean(e.target.value.trim()); },
+        }),
+        el('button', {
+          type: 'button', class: 'btn btn--fantasma btn--pequeno', id: 'nombre-otro', title: 'Otro nombre de tu linaje, al azar',
+          onClick: protegido('otro nombre', () => {
+            borrador.nombre = nombreAleatorio(borrador.raza, borrador.genero);
+            nombreEscrito = false;
+            const campo = $('#nombre');
+            if (campo) campo.value = borrador.nombre;
+          }),
+        }, el('span', { 'aria-hidden': 'true', text: '⚄ ' }), 'Otro nombre'),
+      ),
+    ),
+    grupoRadio({
+      id: 'trato', etiqueta: 'El narrador habla de ti como', clase: 'intensidad intensidad--corta', dato: 'genero',
+      opciones: [{ valor: 'f', nombre: 'Ella' }, { valor: 'm', nombre: 'Él' }],
+      elegida: borrador.genero,
+      alElegir: (v) => { borrador.genero = v; fijado.genero = true; },
+    }),
+    el('div', { class: 'campo lore-personaje' },
+      el('div', { class: 'origen__cab' },
+        el('label', { class: 'campo__eti', for: 'lore-personaje', text: 'Historia' }),
+        // Traer una partida que ya existe: rellena el nombre y la historia de aquí.
+        el('button', {
+          class: 'origen__fijo origen__fijo--enlace', id: 'creacion-importar', type: 'button',
+          title: 'Pega una partida de otro sitio y el juego rellena el nombre y la historia con ella',
+          onClick: protegido('importar historia', abrirImportar),
+        }, 'Ya tengo una historia escrita'),
+      ),
+      el('textarea', {
+        id: 'lore-personaje', class: 'campo__entrada campo__entrada--retrato campo__entrada--lore',
+        placeholder: 'Ej.: crecí junto al Umbral, mi hermana desapareció tras cruzarlo y llevo su medallón. Quiero encontrarla, aunque tema lo que haya al otro lado…',
+        maxlength: '1200', value: borrador.lore, 'aria-describedby': 'lore-ayuda',
+        onInput: (e) => { borrador.lore = e.target.value; },
+      }),
+      el('p', { class: 'campo__ayuda', id: 'lore-ayuda', text: 'Es el pasado de tu personaje: el mundo lo respeta, pero la partida la haces tú. Nada de esto se convierte en misión si tú no quieres.' }),
+    ),
+    grupoRadio({
+      id: 'intensidad', etiqueta: 'Intensidad', opciones: INTENSIDADES, dato: 'intensidad',
+      elegida: borrador.intensidad ?? 'equilibrado',
+      alElegir: (v) => { borrador.intensidad = v; },
+    }),
   );
 }
 
-function pintarFichaAleatoria() {
-  const caja = $('#ficha-aleatoria');
-  if (!caja) return;
-  vaciar(caja);
+/* ── paso 3: aspecto ──────────────────────────────────────────────────── */
 
-  const raza = RAZAS[borrador.raza];
-  const clase = CLASES[borrador.clase];
-  const fondo = TRASFONDOS[borrador.trasfondo];
-  const inicio = obtenerLugar(LUGAR_INICIAL[borrador.raza] ?? 'vado_yunque');
+/**
+ * Si la descripción nombra una especie, se dice ANTES de empezar qué pasa
+ * con ella. «Elfa» no es ningún linaje de este mundo por decreto, y el
+ * linaje cambia reglas: no se cambia solo, ni se cambian las reglas para que
+ * una imagen encaje. Se enseña, y decide el jugador.
+ */
+function avisoEspecie(descripcion, razaId) {
+  const especie = especieNombrada(descripcion);
+  const linaje = RAZAS[razaId]?.nombre ?? '';
+  if (!especie || !linaje) return null;
+  return el('div', { class: 'revelacion__aviso', id: 'revelacion-especie' },
+    el('p', { text: `Tu descripción dice «${especie}»; tu linaje en la ficha es ${linaje}. Los linajes de este mundo son los de la lista del paso «Origen»: la imagen puede seguir tu descripción, pero las reglas siguen a tu linaje.` }),
+    el('button', {
+      class: 'btn btn--fantasma btn--pequeno', id: 'revelacion-cambiar-linaje', type: 'button',
+      // Se vuelve al origen con todo lo escrito y con el MISMO id: se corrige
+      // este personaje, no nace un gemelo.
+      onClick: protegido('cambiar linaje', () => irAPaso('origen')),
+    }, 'Cambiar linaje'),
+  );
+}
+
+function pasoAspecto(caja) {
+  const p = personajeCreado ?? borrador;
+  const huecoEspecie = el('div', { id: 'aspecto-especie' });
+  const refrescarEspecie = () => { vaciar(huecoEspecie); const a = avisoEspecie(borrador.retrato, borrador.raza); if (a) huecoEspecie.append(a); };
 
   caja.append(
-    el('div', { class: 'aleatoria__cab' },
-      el('p', { class: 'aleatoria__eti', text: 'Tu origen' }),
-      el('button', {
-        class: 'btn aleatoria__dado', id: 'creacion-aleatorio', type: 'button', title: 'Volver a tirar',
-        onClick: protegido('aleatorio', () => {
-          const nombreAnterior = borrador.nombre;
-          tirarFicha();
-          const campo = $('#nombre');
-          // El nombre también se tira, salvo que el jugador ya haya escrito el suyo.
-          if (nombreEscrito) borrador.nombre = nombreAnterior;
-          else if (campo) campo.value = borrador.nombre;
-          pintarFichaAleatoria();
-          caja.classList.remove('se-tira'); void caja.offsetWidth; caja.classList.add('se-tira');
-        }),
-      }, el('span', { class: 'aleatoria__glifo', text: '⚄' }), ' Aleatorio'),
+    el('div', { class: 'campo retrato-descripcion' },
+      el('label', { class: 'campo__eti', for: 'retrato-descripcion', text: 'Descripción' }),
+      el('textarea', {
+        id: 'retrato-descripcion', class: 'campo__entrada campo__entrada--retrato',
+        placeholder: 'Ej.: exploradora de pelo plateado, cicatriz en la ceja, capa violeta y brújula de bronce…',
+        maxlength: '360', value: borrador.retrato, 'aria-describedby': 'retrato-ayuda',
+        onInput: (e) => { borrador.retrato = e.target.value; refrescarEspecie(); aspectoCreacion?.descripcion(e.target.value); },
+      }),
+      el('p', { class: 'campo__ayuda', id: 'retrato-ayuda', text: 'Tu aspecto, con tus palabras: ropa, rasgos, gesto. El narrador lo tiene en cuenta. La imagen se elige justo debajo.' }),
     ),
-    el('div', { class: 'aleatoria__rasgos' },
-      el('div', { class: 'aleatoria__rasgo' }, el('small', { text: 'Linaje' }), el('strong', { id: 'aleatoria-raza', text: raza?.nombre ?? '' }), el('span', { text: raza?.lema ?? '' })),
-      el('div', { class: 'aleatoria__rasgo' }, el('small', { text: 'Oficio' }), el('strong', { text: clase?.nombre ?? '' }), el('span', { text: clase?.lema ?? (clase?.descripcion ?? '').slice(0, 80) })),
-      el('div', { class: 'aleatoria__rasgo' }, el('small', { text: 'Pasado' }), el('strong', { text: fondo?.nombre ?? '' }), el('span', { text: fondo?.lema ?? (fondo?.descripcion ?? '').slice(0, 80) })),
-    ),
-    inicio ? el('p', { class: 'aleatoria__inicio', text: `Empiezas en ${inicio.nombre}.` }) : null,
+    huecoEspecie,
   );
+  refrescarEspecie();
+
+  const hueco = el('div', { class: 'campo aspecto-hueco' }, el('p', { class: 'campo__eti', id: 'aspecto-eti', text: 'Tu imagen' }));
+  caja.append(hueco);
+  aspectoCreacion = montarAspecto(hueco, {
+    personaje: { id: p.id, nombre: borrador.nombre, raza: borrador.raza, genero: borrador.genero },
+    descripcion: borrador.retrato,
+    aspecto: borrador.aspecto,
+    idVista: 'creacion-cara',
+  });
 }
 
-const LUGAR_INICIAL = {
-  ferrano: 'forja_alta', brumal: 'pilotes_brumal', sombracorteza: 'arboleda_madre',
-  crisol: 'oasis_sal', albar: 'umbral_albar', griscuerno: 'paso_yunque',
-  valdes: 'vado_yunque', menudo: 'saucedo',
-};
+/* ── paso 4: revisar ──────────────────────────────────────────────────── */
 
-/**
- * Segundo paso: el personaje queda creado y la IA pinta su ilustración a
- * partir de la descripción. Si el generador local no está encendido, el
- * retrato procedural ocupa su lugar y el juego sigue igual.
- */
-function crearPersonajeNuevo() {
-  const nombre = ($('#nombre')?.value ?? '').trim();
-  const descripcion = ($('#retrato-descripcion')?.value ?? '').trim();
-  const lore = ($('#lore-personaje')?.value ?? '').trim();
-
-  const faltan = [];
-  if (!nombre) faltan.push(['#nombre', 'Ponle nombre al personaje.']);
-  if (descripcion.length < 8) faltan.push(['#retrato-descripcion', 'Describe su aspecto: es lo que pintará la IA.']);
-  if (lore.length < 8) faltan.push(['#lore-personaje', 'Cuenta un poco de su historia.']);
-  if (faltan.length) {
-    $(faltan[0][0])?.focus();
-    avisar(faltan[0][1], 'aviso');
-    return;
-  }
-
-  // Si la descripción dice quién es, manda sobre el dado: «enana guerrera» es
-  // una mujer aunque la ficha aleatoria saliera en masculino.
-  const genero = sexoDescrito(descripcion) ?? borrador.genero;
-
-  personajeCreado = guardarPersonaje({ ...borrador, nombre, genero, retrato: descripcion, lore });
-  pintarRevelacion(personajeCreado);
-}
-
-/**
- * Lo que el retrato necesita de una ficha o del jugador en partida.
- *
- * El `id` es la identidad de la imagen aprobada (`pj:<id>`): en partida el
- * jugador no lo lleva en su rama, lo lleva `meta.personajeId`.
- */
-function fichaRetrato(x = {}, id = x.id ?? null) {
-  return {
-    id, raza: x.raza, nombre: x.nombre, descripcion: x.retrato, genero: x.genero,
-  };
-}
-
-/** Ficha de retrato del jugador en partida. */
-function fichaRetratoJugador() {
-  return fichaRetrato(ver('player', {}) ?? {}, ver('meta.personajeId') ?? null);
-}
-
-function pintarRevelacion(p, eco = null) {
-  const caja = $('#creacion-cuerpo');
-  vaciar(caja);
-  $('#creacion-titulo').textContent = p.nombre;
-  $('#creacion-nota').textContent = `${RAZAS[p.raza]?.nombre ?? ''} · ${CLASES[p.clase]?.nombre ?? ''} · ${TRASFONDOS[p.trasfondo]?.nombre ?? ''} · nivel 1 · ${nombreIntensidad(p.intensidad)}`;
-
+function pasoRevisar(caja, eco = null) {
+  const p = personajeCreado;
   const cara = el('div', { class: 'eleccion__cara revelacion__cara', id: 'creacion-cara' });
   const estado = el('p', { class: 'revelacion__estado', id: 'retrato-estado', text: '' });
-
-  // Si la descripción nombra una especie, se dice en voz alta qué pasa con ella.
-  //
-  // «Enana guerrera» con una ficha de Griscúerno pintaba una enana con piel
-  // gris azulada y cuernos, y el jugador no tenía forma de saber de dónde
-  // salían. Ahora el retrato obedece a la descripción, pero el linaje sigue
-  // decidiendo las reglas, y eso tiene que verse. No se cambia el linaje solo:
-  // «enana» no es ningún linaje de este mundo por decreto, y el linaje
-  // cambia rasgos de juego. Se le enseña y decide él.
-  const especie = especieNombrada(p.retrato);
-  const linaje = RAZAS[p.raza]?.nombre ?? '';
-
-  const aviso = especie && linaje
-    ? el('div', { class: 'revelacion__aviso', id: 'revelacion-especie' },
-      el('p', { text: `Tu descripción dice «${especie}»; tu linaje en la ficha es ${linaje}. El retrato sigue tu descripción; las reglas, tu linaje.` }),
-      el('button', {
-        class: 'btn btn--fantasma', id: 'revelacion-cambiar-linaje',
-        onClick: protegido('cambiar linaje', () => {
-          // Se vuelve a la ficha con todo lo escrito y con el MISMO id, para
-          // que al enviarla se corrija este personaje y no nazca un gemelo.
-          Object.assign(borrador, { id: p.id, creado: p.creado, semillaRetrato: p.semillaRetrato });
-          personajeCreado = null;
-          mostrar('creacion');
-          pintarCreacion();
-        }),
-      }, 'Cambiar linaje'),
-    )
-    : null;
-
-  // El retrato solo se pinta si el jugador lo pide, y solo se queda si elige
-  // una versión (ver `abrirEstudio`). Antes se pedía solo, a un servicio de
-  // fuera, y se ponía sin preguntar.
-  const opcionesRetrato = el('div', { class: 'revelacion__opciones' },
-    el('button', {
-      class: 'btn btn--pequeno', id: 'retrato-pintar', type: 'button',
-      onClick: protegido('pintar retrato', () => abrirEstudio(encargoDePersonaje(p), {
-        alTerminar: () => { pintarRetrato(cara, fichaRetrato(p)); contarRetrato(); },
-      })),
-    }, 'Pintar retrato'),
-  );
+  const inicio = obtenerLugar(LUGAR_INICIAL[p.raza] ?? 'vado_yunque');
 
   caja.append(el('div', { class: 'revelacion' },
-    el('div', { class: 'revelacion__marco' }, cara, estado, opcionesRetrato),
+    el('div', { class: 'revelacion__marco' }, cara, estado,
+      el('button', { class: 'btn btn--pequeno btn--fantasma', id: 'retrato-pintar', type: 'button', onClick: protegido('cambiar imagen', () => irAPaso('aspecto')) }, 'Cambiar imagen'),
+    ),
     el('div', { class: 'revelacion__texto' },
+      el('p', { class: 'revelacion__ficha', id: 'revision-origen', text: `${RAZAS[p.raza]?.nombre ?? ''} · ${CLASES[p.clase]?.nombre ?? ''} · ${TRASFONDOS[p.trasfondo]?.nombre ?? ''} · nivel 1` }),
+      el('p', { class: 'revelacion__ficha revelacion__ficha--tenue', id: 'revision-partida', text: `Intensidad ${nombreIntensidad(p.intensidad)} · el narrador habla de ti como ${p.genero === 'f' ? 'ella' : 'él'}${inicio ? ` · empiezas en ${inicio.nombre}` : ''}` }),
+      fichaReglas(p, { id: 'ficha-revision', detalle: true }),
       el('p', { class: 'revelacion__eti', text: 'Descripción' }),
-      el('p', { class: 'revelacion__cita', text: p.retrato }),
-      aviso,
+      el('p', { class: 'revelacion__cita', id: 'revision-descripcion', text: p.retrato }),
+      avisoEspecie(p.retrato, p.raza),
       el('p', { class: 'revelacion__eti', text: 'Historia' }),
-      el('p', { class: 'revelacion__cita', text: p.lore }),
+      el('p', { class: 'revelacion__cita', id: 'revision-historia', text: p.lore }),
     ),
   ));
 
   // El narrador lo resume y pregunta, y el jugador contesta con sus palabras.
   //
-  // Antes, para cambiar una sola cosa había que rehacer el personaje entero.
-  // Ahora se escribe «mejor que sea hombre» o «ponle una cicatriz en el ojo»
-  // y se corrige esto y nada más. «Vale, empezamos» arranca la partida.
+  // Para cambiar una sola cosa no hace falta volver atrás: se escribe «mejor
+  // que sea hombre» o «ponle una cicatriz en el ojo» y se corrige esto y
+  // nada más. «Vale, empezamos» arranca la partida.
   const entrada = el('input', {
     id: 'revelacion-cambio', class: 'campo__entrada', type: 'text',
     maxlength: '160', autocomplete: 'off',
-    'aria-label': 'Cambiar algo del personaje, o confirmar para empezar',
-    placeholder: 'Un cambio, o «vale» para empezar',
+    'aria-label': 'Cambiar algo del personaje con tus palabras, o confirmar para empezar',
+    placeholder: 'Un cambio con tus palabras, o «vale» para empezar',
   });
 
   caja.append(
@@ -1115,23 +1365,33 @@ function pintarRevelacion(p, eco = null) {
     el('p', { class: 'campo__ayuda', text: 'Por ejemplo: «que sea hombre», «ponle una cicatriz en el ojo», «que se llame Brun», «más joven». O «vale, empezamos».' }),
   );
 
-  // Qué hay: su retrato elegido, o nada todavía (y cómo tenerlo).
-  const contarRetrato = () => {
-    const hay = Boolean(urlAprobada(claveRetrato(fichaRetrato(p))));
-    estado.textContent = hay
-      ? 'Este es el retrato que elegiste. Puedes pintar otro cuando quieras.'
-      : 'Sin retrato todavía. Si tienes el generador de imágenes en este equipo, píntalo; si no, se juega igual.';
-    estado.dataset.estado = hay ? 'listo' : 'sin';
-  };
+  // Qué imagen lleva, dicho como es.
+  const clave = claveRetrato(fichaRetrato(p));
+  const estilo = estiloAprobada(clave);
   pintarRetrato(cara, fichaRetrato(p));
-  contarRetrato();
+  estado.textContent = !urlAprobada(clave)
+    ? 'Sin imagen: se verá tu inicial. Puedes ponerle una cuando quieras, también en mitad de la partida.'
+    : estilo === ESTILO_DIBUJO
+      ? `Dibujo del juego (${describirDibujo(p.aspecto)}). No es IA: no sigue toda tu descripción.`
+      : 'El retrato pintado que elegiste.';
+  estado.dataset.estado = !urlAprobada(clave) ? 'sin' : estilo === ESTILO_DIBUJO ? 'dibujo' : 'listo';
+}
 
-  const pie = $('#creacion-pie');
-  vaciar(pie);
-  pie.append(
-    el('button', { class: 'btn btn--fantasma', id: 'creacion-otro', onClick: protegido('nuevo personaje', () => abrirCreacion()) }, 'Crear otro'),
-    el('button', { class: 'btn btn--grande', id: 'creacion-empezar', onClick: protegido('comenzar partida', () => comenzarPartida(p)) }, 'Comenzar partida'),
-  );
+/**
+ * Lo que el retrato necesita de una ficha o del jugador en partida.
+ *
+ * El `id` es la identidad de la imagen aprobada (`pj:<id>`): en partida el
+ * jugador no lo lleva en su rama, lo lleva `meta.personajeId`.
+ */
+function fichaRetrato(x = {}, id = x.id ?? null) {
+  return {
+    id, raza: x.raza, nombre: x.nombre, descripcion: x.retrato, genero: x.genero,
+  };
+}
+
+/** Ficha de retrato del jugador en partida. */
+function fichaRetratoJugador() {
+  return fichaRetrato(ver('player', {}) ?? {}, ver('meta.personajeId') ?? null);
 }
 
 /**
@@ -1156,16 +1416,19 @@ function corregirPersonaje(p, texto) {
   if (r.confirmar) { comenzarPartida(p); return; }
 
   if (!r.entendido) {
-    pintarRevelacion(p, 'No te he entendido del todo. Prueba con «que sea hombre», «que sea elfa», «ponle una cicatriz en el ojo», «que se llame Brun» o «más joven».');
-    $('#revelacion-cambio')?.focus();
+    pintarCreacion({ foco: '#revelacion-cambio', eco: 'No te he entendido del todo. Prueba con «que sea hombre», «que sea elfa», «ponle una cicatriz en el ojo», «que se llame Brun» o «más joven».' });
     return;
   }
 
-  // Mismo id: se corrige este personaje, no nace otro. El retrato elegido se
-  // queda con él; si ya no se parece, el jugador pinta otro.
-  personajeCreado = guardarPersonaje({ ...r.personaje });
-  pintarRevelacion(personajeCreado, r.cambios.join(' '));
-  $('#revelacion-cambio')?.focus();
+  // Mismo id: se corrige este personaje, no nace otro. La imagen elegida se
+  // queda con él; si ya no se parece, el jugador la cambia. El borrador se
+  // pone al día para que volver atrás enseñe lo corregido.
+  personajeCreado = guardarPersonaje({ ...r.personaje, aspecto: p.aspecto });
+  Object.assign(borrador, personajeCreado);
+  if (personajeCreado.nombre !== p.nombre) nombreEscrito = true;
+  if (personajeCreado.genero !== p.genero) fijado.genero = true;
+  if (personajeCreado.raza !== p.raza) fijado.raza = true;
+  pintarCreacion({ foco: '#revelacion-cambio', eco: r.cambios.join(' ') });
 }
 
 /**
@@ -1733,7 +1996,7 @@ function escenaPlegada() {
   return typeof guardada === 'boolean' ? guardada : window.innerHeight < 700;
 }
 
-/* ── estudio de retratos ──────────────────────────────────────────────── */
+/* ── tu imagen: dibujo del juego, retrato pintado o nada ──────────────── */
 
 /**
  * Lo que se le pide al generador para un personaje del jugador: el sujeto
@@ -1755,9 +2018,317 @@ function encargoDePnj(f) {
     clave: claveRetrato({ refId: f.refId }),
     nombre: f.nombre ?? '',
     rol: f.rol,
+    raza: f.linaje ?? null,
     descripcion: sujetoRetrato({ raza: f.linaje, descripcion: f.descripcion ?? `${f.rol ?? ''} ${f.nombre ?? ''}`, genero: f.genero }) ?? '',
+    descripcionOriginal: f.descripcion ?? '',
   };
 }
+
+/** Texto de cada estado del generador, para el jugador. Nada que no se sepa. */
+function fraseGenerador(g) {
+  switch (g?.estado) {
+    case 'buscando': return 'Comprobando si este equipo tiene un generador de imágenes…';
+    case 'disponible-local': return 'Hay un generador de imágenes en este equipo. Lo que se pinta no sale de tu PC.';
+    case 'disponible-nube': return `El puente de este equipo pinta con un servicio en la nube (${g.proveedor ?? 'sin nombre'}). Antes de enviar nada se te enseña qué sale y se te pide permiso.`;
+    case 'cancelada': return 'Comprobación cancelada.';
+    case 'desconocido': case undefined: case null: return 'Necesita un generador de imágenes instalado en este equipo; lo normal es no tenerlo. Sin comprobar todavía.';
+    default: return g.motivo ?? 'No se puede pintar con IA ahora.';
+  }
+}
+const generadorDisponible = (g) => g?.estado === 'disponible-local' || g?.estado === 'disponible-nube';
+
+/**
+ * El control «Tu imagen». Tres opciones de verdad, con vista previa real:
+ *
+ *   · Dibujo del juego: lo dibuja el navegador, sin IA y sin instalar nada.
+ *     Cambia SOLO lo de sus controles, y se dice.
+ *   · Retrato pintado con IA: solo si este equipo tiene generador (se
+ *     comprueba, con plazo, antes de ofrecerlo) o si ya hay uno elegido.
+ *   · Sin imagen: la inicial y el nombre.
+ *
+ * Nada se guarda hasta `aplicar()` (en la creación, al seguir; en partida,
+ * con «Usar esta imagen»). El generador NO se sondea solo: llegar a esta
+ * pantalla no pide nada a ningún puerto del equipo. Se mira cuando el
+ * jugador pulsa «Comprobar si lo hay» (con plazo); el sondeo se cancela al
+ * cerrar, y la respuesta de uno viejo no pinta nada.
+ *
+ * @returns {{aplicar: () => Promise<{ok: boolean, motivo?: string}>, aspecto: () => Object|null, modo: () => string, descripcion: (t: string) => void, cerrar: () => void}}
+ */
+function montarAspecto(caja, { personaje, descripcion = '', aspecto = null, idVista = 'aspecto-vista' }) {
+  const clave = claveRetrato({ id: personaje.id });
+  const linaje = RAZAS[personaje.raza]?.nombre ?? 'tu linaje';
+  let cerrado = false;
+  let sondeo = 0;
+  let control = null;
+  let generador = { estado: 'desconocido' };
+  let texto = String(descripcion ?? '');
+  let reloj = 0;
+
+  const hayImagen = () => Boolean(urlAprobada(clave));
+  const hayPintado = () => hayImagen() && estiloAprobada(clave) !== ESTILO_DIBUJO;
+  const hayDibujo = () => hayImagen() && estiloAprobada(clave) === ESTILO_DIBUJO;
+
+  let propuesta = aspectoDesdeDescripcion(texto);
+  let actual = normalizarAspecto(aspecto ?? propuesta.aspecto);
+  /** El jugador ya ha tocado los controles: la descripción deja de proponer. */
+  let tocado = Boolean(aspecto);
+  let modo = hayPintado() ? 'pintado' : 'dibujo';
+  /** El dibujo que ya está guardado tal cual (no se vuelve a guardar igual). */
+  let aplicado = hayDibujo() && aspecto ? JSON.stringify([personaje.raza, normalizarAspecto(aspecto)]) : null;
+
+  const vista = el('div', { class: 'eleccion__cara aspecto__vista', id: idVista });
+  const pie = el('p', { class: 'aspecto__pie', id: 'aspecto-pie', 'aria-live': 'polite' });
+  const radios = el('div', { class: 'aspecto__modos', role: 'radiogroup', 'aria-labelledby': 'aspecto-eti', id: 'aspecto-modos' });
+  const panel = el('div', { class: 'aspecto__panel', id: 'aspecto-panel' });
+  const cajaGenerador = el('div', { class: 'aspecto__generador', id: 'aspecto-generador' });
+  const raiz = el('div', { class: 'aspecto', id: 'aspecto', dataset: { modo } },
+    el('div', { class: 'aspecto__marco' }, vista, pie),
+    el('div', { class: 'aspecto__lado' }, radios, panel, cajaGenerador),
+  );
+  caja.append(raiz);
+
+  const elegirModo = (m) => {
+    if (m === 'pintado' && !hayPintado() && !generadorDisponible(generador)) return;
+    modo = m;
+    pintarTodo();
+    $(`#aspecto-modo-${m}`)?.focus();
+  };
+
+  function pintarVista() {
+    vista.dataset.firmaArte = '';
+    if (modo === 'dibujo') {
+      // Por la vía de siempre (`pintarArte`): el generador vectorial del
+      // juego, sin buscar ilustración de archivo.
+      pintarArte(vista, { familia: 'retratos', clave: 'dibujo', opciones: { ...opcionesDibujo(personaje, actual), sinRaster: true } });
+      vista.dataset.claveImagen = '';
+      pie.textContent = `Dibujo del juego: ${describirDibujo(actual)}.`;
+    } else if (modo === 'pintado' && hayPintado()) {
+      pintarRetrato(vista, { claveImagen: clave, nombre: personaje.nombre });
+      pie.textContent = 'El retrato pintado que elegiste.';
+    } else {
+      pintarMarcador(vista, { nombre: personaje.nombre, familia: 'retratos' });
+      pie.textContent = modo === 'pintado' ? 'Todavía no has pintado ninguno.' : 'Sin imagen: tu inicial y tu nombre.';
+    }
+  }
+
+  function pintarModos() {
+    vaciar(radios);
+    const puedePintado = hayPintado() || generadorDisponible(generador);
+    const opciones = [
+      { id: 'dibujo', nombre: 'Dibujo del juego', texto: 'Sin IA y sin instalar nada: lo dibuja el propio juego.' },
+      { id: 'pintado', nombre: 'Retrato pintado con IA', texto: hayPintado() && !generadorDisponible(generador) ? 'Conservar el que ya elegiste.' : fraseGenerador(generador), apagada: !puedePintado },
+      { id: 'ninguno', nombre: 'Sin imagen', texto: 'Tu inicial y tu nombre.' },
+    ];
+    for (const o of opciones) {
+      radios.append(el('button', {
+        type: 'button', role: 'radio', id: `aspecto-modo-${o.id}`,
+        class: `aspecto__modo${modo === o.id ? ' es-activa' : ''}${o.apagada ? ' es-apagada' : ''}`,
+        'aria-checked': String(modo === o.id),
+        'aria-disabled': o.apagada ? 'true' : undefined,
+        tabindex: modo === o.id ? '0' : '-1',
+        dataset: { modo: o.id },
+        onClick: protegido('elegir imagen', () => elegirModo(o.id)),
+      },
+      el('strong', { class: 'aspecto__modo-nombre', text: o.nombre }),
+      el('span', { class: 'aspecto__modo-texto', text: o.texto })));
+    }
+  }
+  radios.addEventListener('keydown', (e) => {
+    const paso = ({ ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 })[e.key];
+    if (!paso) return;
+    const orden = ['dibujo', 'pintado', 'ninguno'].filter((m) => m !== 'pintado' || hayPintado() || generadorDisponible(generador));
+    e.preventDefault();
+    elegirModo(orden[(orden.indexOf(modo) + paso + orden.length) % orden.length]);
+  });
+
+  function pintarPanel() {
+    vaciar(panel);
+    if (modo === 'dibujo') {
+      const cambiar = (cambio) => { tocado = true; actual = normalizarAspecto({ ...actual, ...cambio }); pintarVista(); };
+      const lista = (id, etiqueta, opciones, valor, campo) => {
+        const s = el('select', { id, class: 'campo__entrada campo__select', onChange: (e) => cambiar({ [campo]: e.target.value }) },
+          ...opciones.map((o) => el('option', { value: o.id, text: o.nombre })));
+        s.value = valor;
+        return el('div', { class: 'aspecto__control' }, el('label', { class: 'campo__eti', for: id, text: etiqueta }), s);
+      };
+      poner(panel,
+        el('div', { class: 'aspecto__controles' },
+          lista('aspecto-pelo', 'Pelo', PELOS, actual.pelo, 'pelo'),
+          lista('aspecto-ojos', 'Ojos', OJOS, actual.ojos, 'ojos'),
+          el('button', {
+            type: 'button', class: 'btn btn--pequeno btn--fantasma', id: 'aspecto-otra-cara',
+            onClick: protegido('otra cara', () => cambiar({ cara: actual.cara + 1 })),
+          }, 'Otra cara'),
+        ),
+        el('fieldset', { class: 'aspecto__rasgos' },
+          el('legend', { class: 'campo__eti', text: 'Rasgos' }),
+          ...RASGOS.map((r) => {
+            const marca = el('input', {
+              type: 'checkbox', id: `aspecto-rasgo-${r.id}`, dataset: { rasgo: r.id },
+              onChange: (e) => cambiar({ rasgos: e.target.checked ? [...actual.rasgos, r.id] : actual.rasgos.filter((x) => x !== r.id) }),
+            });
+            marca.checked = actual.rasgos.includes(r.id);
+            return el('label', { class: 'aspecto__rasgo', for: `aspecto-rasgo-${r.id}` }, marca, el('span', { text: r.nombre }));
+          }),
+        ),
+        el('p', { class: 'aspecto__nota', id: 'aspecto-dibujo-nota', text: `No es una IA: dibuja una cara de ${linaje} y solo cambia lo que elijas aquí. No sabe dibujar el resto de tu descripción.` }),
+        !tocado && propuesta.reconocido.length
+          ? el('p', { class: 'aspecto__nota aspecto__nota--entendido', id: 'aspecto-entendido', text: `De tu descripción ha entendido: ${propuesta.reconocido.join(', ')}.` })
+          : null,
+        hayPintado() ? el('p', { class: 'aspecto__nota aspecto__nota--aviso', text: 'Si sigues con el dibujo, sustituirá al retrato pintado que elegiste.' }) : null,
+      );
+      return;
+    }
+    if (modo === 'pintado') {
+      const puede = generadorDisponible(generador);
+      poner(panel,
+        el('p', { class: 'aspecto__nota', text: hayPintado() ? 'Este es el retrato que elegiste. Se conserva.' : 'Pinta una versión, mírala en privado y quédate con la que quieras. Hasta entonces no hay imagen.' }),
+        puede ? el('button', {
+          type: 'button', class: 'btn btn--pequeno', id: 'aspecto-pintar',
+          onClick: protegido('pintar retrato', () => {
+            if (String(texto).trim().length < 8) { avisar('Escribe antes una descripción de su aspecto: es lo que se pinta.', 'aviso'); $('#retrato-descripcion')?.focus(); return; }
+            abrirEstudio(encargoDePersonaje({ ...personaje, retrato: texto }, personaje.id), { alTerminar: () => { if (!cerrado) pintarTodo(); } });
+          }),
+        }, hayPintado() ? 'Pintar otro' : 'Pintar con el generador') : null,
+      );
+      return;
+    }
+    panel.append(el('p', { class: 'aspecto__nota', text: `Se verá tu inicial y tu nombre. Puedes ponerle imagen cuando quieras, también en mitad de la partida.${hayImagen() ? ' Si sigues así, se quitará la imagen que tiene ahora.' : ''}` }));
+  }
+
+  /** El estado del generador, siempre a la vista y siempre el de verdad. */
+  function pintarGenerador() {
+    vaciar(cajaGenerador);
+    cajaGenerador.dataset.estado = generador.estado ?? 'desconocido';
+    if (generadorDisponible(generador)) return;      // ya lo dice la opción
+    // La frase del estado ya está en la opción «Retrato pintado con IA»
+    // (y aquí, para quien no ve la pantalla). Debajo, solo qué se puede hacer.
+    const buscando = generador.estado === 'buscando';
+    const sinMirar = (generador.estado ?? 'desconocido') === 'desconocido';
+    poner(cajaGenerador,
+      el('p', { class: 'solo-lector', id: 'aspecto-generador-texto', role: 'status', text: buscando || sinMirar
+        ? fraseGenerador(generador)
+        : `${fraseGenerador(generador)} No hace falta para jugar: tienes el dibujo del juego.` }),
+      buscando ? null : el('div', { class: 'aspecto__generador-fila' },
+        el('span', { class: 'aspecto__nota', text: 'Pintar con IA no hace falta para jugar.' }),
+        el('button', {
+          type: 'button', class: 'origen__fijo origen__fijo--enlace', id: 'aspecto-comprobar',
+          onClick: protegido('comprobar generador', () => comprobar()),
+        }, sinMirar ? 'Comprobar si hay generador' : 'Volver a comprobar'),
+        generador.ayuda ? el('details', { class: 'aspecto__ayuda' },
+          el('summary', { text: '¿Qué haría falta? (avanzado)' }),
+          el('p', { text: generador.ayuda }),
+        ) : null,
+      ),
+    );
+  }
+
+  function pintarTodo() {
+    if (cerrado) return;
+    if (modo === 'pintado' && !hayPintado() && !generadorDisponible(generador)) modo = 'dibujo';
+    raiz.dataset.modo = modo;
+    pintarModos(); pintarVista(); pintarPanel(); pintarGenerador();
+  }
+
+  /** Mira si hay generador: SOLO cuando el jugador lo pide; con plazo y cancelable. */
+  function comprobar() {
+    control?.abort();
+    control = new AbortController();
+    const este = ++sondeo;
+    generador = { estado: 'buscando' };
+    const conFoco = document.activeElement?.id === 'aspecto-comprobar';
+    pintarModos(); pintarGenerador();
+    estadoGenerador({ signal: control.signal }).then((g) => {
+      // Un sondeo viejo (se cerró, o se pidió otro) no pinta nada.
+      if (cerrado || este !== sondeo) return;
+      generador = g;
+      pintarModos(); pintarGenerador();
+      if (conFoco) ($('#aspecto-comprobar') ?? $(`#aspecto-modo-${modo}`))?.focus();
+    });
+  }
+
+  pintarTodo();
+
+  return {
+    modo: () => modo,
+    aspecto: () => (modo === 'dibujo' ? { ...actual } : null),
+    estadoGenerador: () => generador.estado,
+    /** La descripción cambió: propone controles de nuevo si el jugador no los ha tocado. */
+    descripcion(t) {
+      texto = String(t ?? '');
+      clearTimeout(reloj);
+      reloj = setTimeout(() => {
+        if (cerrado || tocado) return;
+        propuesta = aspectoDesdeDescripcion(texto);
+        actual = normalizarAspecto({ ...propuesta.aspecto, cara: actual.cara });
+        if (modo === 'dibujo') { pintarVista(); pintarPanel(); }
+      }, 300);
+    },
+    /** Guarda lo elegido. Nunca inventa éxito: si no se pudo, lo dice y no cambia nada. */
+    async aplicar() {
+      if (modo === 'dibujo') {
+        const firma = JSON.stringify([personaje.raza, actual]);
+        if (hayDibujo() && aplicado === firma) return { ok: true };
+        let blob;
+        try { blob = await rasterizar(svgDibujo(personaje, actual)); } catch (e) {
+          return { ok: false, motivo: `No se ha podido guardar el dibujo en este navegador (${e?.message ?? 'error'}).` };
+        }
+        const r = await aprobar(clave, blob, { estilo: ESTILO_DIBUJO, tipo: 'personaje', nombre: personaje.nombre });
+        if (!r.ok) return { ok: false, motivo: `No se ha podido guardar el dibujo (${r.motivo}).` };
+        aplicado = firma;
+        return { ok: true, persistente: r.persistente };
+      }
+      if (modo === 'ninguno') { if (hayImagen()) await olvidarRetrato(clave); return { ok: true }; }
+      return { ok: true };
+    },
+    cerrar() { cerrado = true; clearTimeout(reloj); control?.abort(); },
+  };
+}
+
+/**
+ * «Tu imagen» en mitad de la partida: el mismo control que en la creación.
+ * Cerrar no cambia nada; «Usar esta imagen» guarda lo elegido.
+ */
+function abrirImagenJugador() {
+  if (ver('combat.activo', false)) { avisar('En combate no se cambia la imagen: termina la pelea primero.', 'aviso'); return; }
+  const j = ver('player', {}) ?? {};
+  const id = ver('meta.personajeId') ?? null;
+  if (!id) { avisar('Este personaje no tiene identidad guardada: no se le puede asignar una imagen.', 'aviso'); return; }
+  document.getElementById('imagen-dialogo')?.remove();
+  const guardado = obtenerPersonaje(id);
+  const abridor = document.activeElement;
+
+  const cuerpo = el('div', {}, el('p', { class: 'campo__eti', id: 'aspecto-eti', text: 'Qué imagen quieres' }));
+  const usar = el('button', { class: 'btn', id: 'imagen-usar', type: 'button' }, 'Usar esta imagen');
+  const cerrar = el('button', { class: 'btn btn--fantasma', id: 'imagen-cerrar', type: 'button' }, 'Cerrar sin cambiar');
+  const estado = el('p', { class: 'aspecto__nota aspecto__nota--aviso', id: 'imagen-estado', role: 'status' });
+  const dialogo = el('dialog', { class: 'estudio estudio--ancho', id: 'imagen-dialogo', 'aria-labelledby': 'imagen-titulo' },
+    el('h2', { class: 'estudio__titulo', id: 'imagen-titulo', text: `Imagen de ${j.nombre ?? 'tu personaje'}` }),
+    cuerpo, estado,
+    el('div', { class: 'estudio__acciones' }, usar, cerrar),
+  );
+  document.body.append(dialogo);
+  const control = montarAspecto(cuerpo, {
+    personaje: { id, nombre: j.nombre, raza: j.raza, genero: j.genero },
+    descripcion: j.retrato ?? '', aspecto: guardado?.aspecto ?? null, idVista: 'imagen-vista',
+  });
+
+  usar.addEventListener('click', protegido('usar imagen', async () => {
+    usar.disabled = true;
+    const r = await control.aplicar();
+    usar.disabled = false;
+    if (!r.ok) { estado.textContent = `${r.motivo} No se ha cambiado nada.`; return; }
+    if (guardado) guardarPersonaje({ ...guardado, aspecto: control.aspecto() });
+    if (r.persistente === false) avisar('Imagen elegida, pero este navegador no deja guardarla: se perderá al cerrar.', 'aviso');
+    dialogo.close();
+    refrescarTodo();
+  }));
+  cerrar.addEventListener('click', () => dialogo.close());
+  dialogo.addEventListener('close', () => { control.cerrar(); dialogo.remove(); abridor?.focus?.(); });
+  dialogo.showModal();
+}
+
+/* ── estudio de retratos (pintar con el generador) ────────────────────── */
 
 /** Por dónde va cada clave: «Otra versión» sigue contando al volver a abrir. */
 const variantes = new Map();
@@ -1766,15 +2337,18 @@ const variantes = new Map();
  * El estudio: pintar, ver la candidata en privado, pedir otra versión y,
  * solo si el jugador quiere, quedársela.
  *
- * Nada se pinta sin que el jugador lo pida. Qué pasa con lo pedido se dice
- * antes de pintar, según el proveedor del puente: con ComfyUI no sale del
- * PC; con uno en la nube se enseña lo que viaja y hay que permitirlo. Las
- * candidatas quedan en la caché temporal del puente mientras el estudio está
- * abierto (volver a una versión no la repinta) y se olvidan al cerrarlo;
- * solo «Usar esta versión» guarda una en la galería del navegador (ver
- * `src/art/galeria.js`). Nunca en combate.
+ * Nada se pinta sin que el jugador lo pida. Lo que se dice sale SIEMPRE del
+ * estado comprobado del generador (`estadoGenerador`, con plazo): mientras
+ * no se sabe, no se habla de nube, de envíos ni de cachés. Con ComfyUI el
+ * encargo no sale del PC; con un proveedor en la nube se enseña el proveedor
+ * REAL y lo que viaja, y hay que permitirlo. Sin generador se dice, se
+ * ofrece volver a comprobar y, para un compañero, el dibujo del juego. Las
+ * candidatas quedan en la caché temporal del puente mientras el estudio
+ * está abierto y se olvidan al cerrarlo; solo «Usar esta versión» guarda
+ * una en la galería del navegador (`src/art/galeria.js`). Cerrar no aprueba
+ * nada. Nunca en combate.
  *
- * @param {{tipo: string, clave: string, nombre: string, descripcion: string, rol?: string}} encargo
+ * @param {{tipo: string, clave: string, nombre: string, descripcion: string, rol?: string, raza?: string}} encargo
  * @param {{alTerminar?: Function}} [op]
  */
 function abrirEstudio(encargo, { alTerminar } = {}) {
@@ -1789,43 +2363,110 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
   document.getElementById('estudio')?.remove();
 
   const control = new AbortController();
+  const abridor = document.activeElement;
   let peticion = 0;
+  let sondeo = 0;
   let candidata = null;          // { blob, url, variante }
-  let estilo = null;
+  let generador = { estado: 'buscando' };
+  let necesitaPermiso = false;
 
   const lienzo = el('div', { class: 'estudio__lienzo eleccion__cara', 'aria-live': 'polite' });
-  const estado = el('p', { class: 'estudio__estado', role: 'status' });
-  const pintar = el('button', { class: 'btn', id: 'estudio-pintar', type: 'button' }, 'Pintar');
+  const estado = el('p', { class: 'estudio__estado', id: 'estudio-estado', role: 'status' });
+  const pintar = el('button', { class: 'btn', id: 'estudio-pintar', type: 'button', hidden: true }, 'Pintar');
   const otra = el('button', { class: 'btn btn--fantasma', id: 'estudio-otra', type: 'button', hidden: true }, 'Otra versión');
   const usar = el('button', { class: 'btn', id: 'estudio-usar', type: 'button', hidden: true }, 'Usar esta versión');
+  const reintentar = el('button', { class: 'btn btn--fantasma', id: 'estudio-comprobar', type: 'button', hidden: true }, 'Volver a comprobar');
+  const dibujo = el('button', { class: 'btn', id: 'estudio-dibujo', type: 'button', hidden: true }, 'Usar el dibujo del juego');
   const cerrar = el('button', { class: 'btn btn--fantasma', id: 'estudio-cerrar', type: 'button' }, 'Cerrar');
-  const nota = el('p', { class: 'estudio__nota', id: 'estudio-nota', text: 'Mirando qué generador hay…' });
+  const nota = el('p', { class: 'estudio__nota', id: 'estudio-nota' });
+  const ayuda = el('details', { class: 'aspecto__ayuda', id: 'estudio-ayuda', hidden: true }, el('summary', { text: '¿Qué hace falta para pintar con IA? (avanzado)' }), el('p', { id: 'estudio-ayuda-texto' }));
   // Solo con un proveedor en la nube: permiso expreso antes de enviar nada.
   const permiso = el('input', { type: 'checkbox', id: 'estudio-permiso' });
   const cajaPermiso = el('label', { class: 'estudio__permiso', for: 'estudio-permiso', hidden: true }, permiso, el('span', { id: 'estudio-permiso-texto' }));
 
-  const dialogo = el('dialog', { class: 'estudio', id: 'estudio', 'aria-labelledby': 'estudio-titulo', 'aria-describedby': 'estudio-nota' },
+  const dialogo = el('dialog', { class: 'estudio', id: 'estudio', 'aria-labelledby': 'estudio-titulo', 'aria-describedby': 'estudio-nota', dataset: { estado: 'buscando' } },
     el('h2', { class: 'estudio__titulo', id: 'estudio-titulo', text: `Retrato de ${encargo.nombre || 'tu personaje'}` }),
     nota, cajaPermiso,
-    lienzo, estado,
-    el('div', { class: 'estudio__acciones' }, pintar, otra, usar, cerrar),
+    lienzo, estado, ayuda,
+    el('div', { class: 'estudio__acciones' }, pintar, otra, usar, dibujo, reintentar, cerrar),
   );
 
   const soltar = () => { if (candidata?.url) URL.revokeObjectURL(candidata.url); candidata = null; };
-  let necesitaPermiso = false;
   const ocupado = (si) => {
     for (const b of [pintar, otra, usar]) b.disabled = si;
     if (!si && necesitaPermiso && !permiso.checked) { pintar.disabled = true; otra.disabled = true; }
   };
   const actual = () => {
-    // Lo que hay ahora: su retrato elegido, o el marcador.
+    // Lo que hay ahora: su imagen elegida, o el marcador.
     pintarRetrato(lienzo, { claveImagen: encargo.clave, nombre: encargo.nombre });
   };
+  const fase = (nombre) => { dialogo.dataset.estado = nombre; };
+
+  /** Todo lo que se ve depende del estado comprobado; nada se dice antes. */
+  function pintarEstado() {
+    const g = generador;
+    const puede = generadorDisponible(g);
+    cajaPermiso.hidden = true; necesitaPermiso = false;
+    ayuda.hidden = true; reintentar.hidden = true; dibujo.hidden = true;
+    if (g.estado === 'buscando') {
+      fase('buscando');
+      nota.textContent = '';
+      estado.textContent = fraseGenerador(g);
+      pintar.hidden = true; otra.hidden = true; usar.hidden = true;
+      return;
+    }
+    if (!puede) {
+      // Sin generador: ni nube, ni envíos, ni cachés. Solo lo que se sabe.
+      fase(g.estado ?? 'no-disponible');
+      nota.textContent = '';
+      estado.textContent = `${fraseGenerador(g)} No hace falta para jugar.`;
+      pintar.hidden = true; otra.hidden = true; usar.hidden = true;
+      reintentar.hidden = false;
+      dibujo.hidden = !(encargo.tipo === 'pnj');
+      if (g.ayuda) { $('#estudio-ayuda-texto').textContent = g.ayuda; ayuda.hidden = false; }
+      return;
+    }
+    const horas = g.cache?.horas ?? 24;
+    nota.textContent = g.estado === 'disponible-local'
+      ? `Se pinta en este PC${g.proveedor === 'comfyui' ? ' con ComfyUI' : ''}: la descripción no sale del equipo. Mientras eliges, las versiones quedan en una caché temporal del puente, en este PC; se borran al cerrar esta ventana (y como tarde a las ${horas} h). Solo la versión que elijas se guarda en el juego.`
+      : `El puente de este equipo pinta con un servicio en la nube (${g.proveedor ?? 'sin nombre'}): la descripción en inglés sale de tu equipo hacia ese servicio. Las versiones quedan en una caché temporal del puente, en este PC, hasta que cierres esta ventana; solo la que elijas se guarda en el juego.`;
+    if (!candidata) { pintar.hidden = false; otra.hidden = true; usar.hidden = true; }
+    if ((encargo.descripcion ?? '').length < 8) {
+      fase('sin-descripcion');
+      estado.textContent = 'Hace falta una descripción de su aspecto para pintarlo.';
+      pintar.disabled = true;
+      return;
+    }
+    if (g.estado === 'disponible-nube') {
+      // Qué viaja, tal cual, y pintar solo con permiso.
+      $('#estudio-permiso-texto').textContent = ` Permito enviar a ${g.proveedor ?? 'ese servicio'}: «${encargo.descripcion}».`;
+      cajaPermiso.hidden = false;
+      necesitaPermiso = true;
+    }
+    if (!candidata) {
+      fase(g.estado);
+      estado.textContent = urlAprobada(encargo.clave) ? 'Esta es la imagen que tiene ahora. Pinta otra si quieres cambiarla.' : 'Listo para pintar.';
+    }
+    ocupado(false);
+  }
+
+  /** Mira si hay generador (con plazo). La respuesta de un sondeo viejo se ignora. */
+  function sondear() {
+    const este = ++sondeo;
+    generador = { estado: 'buscando' };
+    pintarEstado();
+    estadoGenerador({ signal: control.signal }).then((g) => {
+      if (!dialogo.isConnected || este !== sondeo) return;
+      generador = g;
+      pintarEstado();
+    });
+  }
 
   async function pedir(variante) {
     const esta = ++peticion;
     ocupado(true);
-    estado.textContent = 'Pintando en tu equipo… puede tardar un minuto.';
+    fase('generando');
+    estado.textContent = generador.estado === 'disponible-local' ? 'Pintando en tu equipo… puede tardar un minuto.' : 'Pintando… puede tardar un minuto.';
     lienzo.dataset.estado = 'generando';
     try {
       const r = await pedirCandidata(encargo, { variante, signal: control.signal });
@@ -1837,11 +2478,14 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
       img.src = candidata.url;
       lienzo.dataset.firmaArte = '';
       lienzo.replaceChildren(img);
-      estado.textContent = `Versión ${variante + 1}. ¿Te la quedas o pides otra?`;
+      fase('candidata');
+      estado.textContent = `Versión ${variante + 1}. Todavía no está guardada: ¿te la quedas o pides otra?`;
       pintar.hidden = true; otra.hidden = false; usar.hidden = false;
     } catch (e) {
       if (esta !== peticion || !dialogo.isConnected) return;
-      estado.textContent = e.message;
+      fase(e?.causa === 'cancelada' ? 'cancelada' : 'proveedor-fallo');
+      // La imagen que ya tenía sigue siendo la suya: no se inventa otra.
+      estado.textContent = `${e.message}${urlAprobada(encargo.clave) ? ' La imagen que ya tenía sigue igual.' : ''}`;
     } finally {
       if (esta === peticion) { ocupado(false); delete lienzo.dataset.estado; }
     }
@@ -1852,19 +2496,40 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
   usar.addEventListener('click', protegido('usar versión', async () => {
     if (!candidata) return;
     ocupado(true);
-    const r = await aprobar(encargo.clave, candidata.blob, { estilo: estilo ?? 'desconocido', tipo: encargo.tipo, nombre: encargo.nombre });
-    if (!r.ok) { estado.textContent = r.motivo; ocupado(false); return; }
+    const r = await aprobar(encargo.clave, candidata.blob, { estilo: generador.estilo ?? 'desconocido', tipo: encargo.tipo, nombre: encargo.nombre });
+    if (!r.ok) { estado.textContent = `${r.motivo} No se ha guardado; la imagen anterior sigue igual.`; ocupado(false); return; }
     if (!r.persistente) avisar('Retrato elegido, pero este navegador no deja guardarlo: se perderá al cerrar.', 'aviso');
+    fase('elegida');
     dialogo.close();
     alTerminar?.();
     refrescarTodo();
   }));
+  reintentar.addEventListener('click', protegido('comprobar generador', () => sondear()));
+  dibujo.addEventListener('click', protegido('usar dibujo', async () => {
+    // Para un compañero: una cara de su linaje, con lo que se entienda de su descripción.
+    dibujo.disabled = true;
+    const aspecto = aspectoDesdeDescripcion(encargo.descripcionOriginal ?? '').aspecto;
+    try {
+      const blob = await rasterizar(svgDibujo({ raza: encargo.raza, nombre: encargo.nombre }, aspecto));
+      const r = await aprobar(encargo.clave, blob, { estilo: ESTILO_DIBUJO, tipo: encargo.tipo, nombre: encargo.nombre });
+      if (!r.ok) throw new Error(r.motivo);
+      dialogo.close();
+      alTerminar?.();
+      refrescarTodo();
+    } catch (e) {
+      estado.textContent = `No se ha podido guardar el dibujo (${e?.message ?? 'error'}). No se ha cambiado nada.`;
+      dibujo.disabled = false;
+    }
+  }));
+  permiso.addEventListener('change', () => ocupado(false));
   cerrar.addEventListener('click', () => dialogo.close());
   dialogo.addEventListener('close', () => {
     control.abort(); soltar(); dialogo.remove();
     // Terminado de valorar: las candidatas de este personaje se borran del
-    // puente. La elegida, si la hay, ya está en la galería.
-    olvidarCandidatas({ clave: encargo.clave });
+    // puente (si lo hay: sin generador no se llama a nadie). La elegida, si
+    // la hay, ya está en la galería.
+    if (generadorDisponible(generador)) olvidarCandidatas({ clave: encargo.clave });
+    abridor?.focus?.();
   });
 
   document.body.append(dialogo);
@@ -1872,28 +2537,7 @@ function abrirEstudio(encargo, { alTerminar } = {}) {
   dialogo.showModal();
 
   // Abrir el estudio es pedirlo: se mira si hay generador, sin pintar nada.
-  estado.textContent = 'Buscando el generador de imágenes de este equipo…';
-  ocupado(true);
-  estadoGenerador().then((g) => {
-    if (!dialogo.isConnected) return;
-    estilo = g.estilo ?? null;
-    const horas = g.cache?.horas ?? 24;
-    nota.textContent = g.envia === 'local'
-      ? `Se pinta en este PC con ${g.proveedor === 'comfyui' ? 'ComfyUI' : 'el generador local'}: la descripción no sale del equipo. Mientras eliges, las versiones quedan en una caché temporal del puente, en este PC; se borran al cerrar esta ventana (y como tarde a las ${horas} h). Solo la versión que elijas se guarda en el juego.`
-      : `Este puente pinta con un servicio en la nube (${g.proveedor ?? 'desconocido'}): la descripción en inglés sale de tu equipo hacia ese servicio. Las versiones quedan en una caché temporal del puente, en este PC, hasta que cierres esta ventana; solo la que elijas se guarda en el juego.`;
-    if (!g.ok) { estado.textContent = g.motivo; pintar.disabled = true; return; }
-    if ((encargo.descripcion ?? '').length < 8) { estado.textContent = 'Hace falta una descripción de su aspecto para pintarlo.'; pintar.disabled = true; return; }
-    estado.textContent = urlAprobada(encargo.clave) ? 'Este es el que elegiste. Pinta otro si quieres cambiarlo.' : 'Listo para pintar.';
-    ocupado(false);
-    if (g.envia !== 'local') {
-      // Qué viaja, tal cual, y pintar solo con permiso.
-      $('#estudio-permiso-texto').textContent = ` Permito enviar a ${g.proveedor ?? 'ese servicio'}: «${encargo.descripcion}».`;
-      cajaPermiso.hidden = false;
-      necesitaPermiso = true;
-      permiso.addEventListener('change', () => ocupado(false));
-      ocupado(false);
-    }
-  });
+  sondear();
 }
 
 /* ── sugerencias ──────────────────────────────────────────────────────── */
@@ -1925,7 +2569,9 @@ function mostrarSugerencias() {
   // Si el jugador escribe o pelea, no se le interrumpe. Si el máster aún
   // narra, se espera a que termine y se vuelve a mirar.
   if (campo?.value.trim() || ver('combat.activo', false)) return;
-  if (campo?.disabled || escribiendo) {
+  // Tampoco mientras lee el historial o consulta un panel: las sugerencias
+  // son para el presente, y no se ponen delante de lo que está leyendo.
+  if (campo?.disabled || escribiendo || vistaRelato !== 'ahora' || hojaAbierta || document.querySelector('dialog[open]')) {
     temporizadorSugerencias = setTimeout(mostrarSugerencias, 1000);
     return;
   }
@@ -1942,7 +2588,19 @@ function mostrarSugerencias() {
       onClick: protegido('sugerencia', () => enviar(o.label, o.intent)),
     }, o.label));
   }
+  // En estrecho salen plegadas en una línea («¿Sin ideas?»): abiertas se
+  // comían el sitio del relato. Se despliegan al pulsar el rótulo.
+  plegarSugerencias(esEstrecho());
   capa.hidden = false;
+}
+
+function plegarSugerencias(si) {
+  const capa = $('#sugerencias');
+  const titulo = $('#sugerencias-titulo');
+  if (!capa || !titulo) return;
+  capa.classList.toggle('sugerencias--plegada', si);
+  titulo.setAttribute('aria-expanded', String(!si));
+  titulo.textContent = si ? '¿Sin ideas? Ver 3 sugerencias' : '¿Sin ideas? Prueba con…';
 }
 
 /* Compatibilidad: el motor sigue llamando a pintarOpciones al refrescar. */
@@ -2005,6 +2663,10 @@ function detenerEscritura() {
 
 /** Al cargar una partida, lo ya jugado aparece entero, sin efecto. */
 function bitacoraSinAnimar() {
+  vistaRelato = 'ahora';
+  scrollHistorial = null;
+  historialPintado = false;
+  respuestaNueva = false;
   entradasVistas = (ver('narrative.entradas', []) ?? []).length;
   firmaBitacora = '';
   colaEscritura.length = 0;
@@ -2022,8 +2684,8 @@ function completarEscritura() {
     t.nodo.classList.remove('se-escribe');
   }
 
-  const caja = $('#bitacora');
-  if (caja) caja.scrollTop = caja.scrollHeight;
+  // Sin saltar al final: quien estaba leyendo sigue donde estaba.
+  delete $('#bitacora')?.dataset.escribiendo;
 }
 
 function escribirSiguiente() {
@@ -2031,7 +2693,7 @@ function escribirSiguiente() {
 
   const tarea = colaEscritura[0];
   const caja = $('#bitacora');
-  if (!tarea) { detenerEscritura(); programarSugerencias(); return; }
+  if (!tarea) { detenerEscritura(); delete caja?.dataset.escribiendo; programarSugerencias(); return; }
 
   // Ya hay un bucle sobre este párrafo. Entrar otra vez lo escribiría dos
   // veces y, peor, consumiría la cola por duplicado.
@@ -2062,7 +2724,12 @@ function escribirSiguiente() {
     if (colaEscritura[0] !== tarea) return;          // se completó de golpe
     const n = Math.min(tarea.texto.length, Math.floor(((ahora - inicio) / 1000) * cps) + 1);
     tarea.nodo.textContent = tarea.texto.slice(0, n);
-    if (caja) caja.scrollTop = caja.scrollHeight;
+    // Se acompaña la línea que se escribe SOLO si se sale por abajo y el
+    // jugador no ha subido a releer: el texto no arrastra la lectura.
+    if (caja && seguirEscritura) {
+      const fondo = tarea.nodo.offsetTop + tarea.nodo.offsetHeight + 14 - caja.clientHeight;
+      if (fondo > caja.scrollTop) caja.scrollTop = fondo;
+    }
     if (n < tarea.texto.length) { cuadroEscritura = requestAnimationFrame(paso); return; }
     tarea.nodo.classList.remove('se-escribe');
     colaEscritura.shift();
@@ -2449,6 +3116,168 @@ function capitalizarTexto(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
+/* ── el relato: «Ahora» e «Historial» ─────────────────────────────────── */
+
+/**
+ * Qué parte del relato se ve.
+ *
+ *   · «ahora»: SOLO el turno en curso (tu acción y lo que pasa), con su
+ *     principio y su final a la vista. Un turno nuevo se lee desde arriba.
+ *   · «historial»: todo lo anterior, entero, por turnos. Mientras se lee
+ *     aquí, una respuesta nueva no mueve ni el foco ni la lectura: se avisa
+ *     y se vuelve al presente cuando el jugador quiere.
+ *
+ * Antes era un registro único que crecía hacia abajo y se pegaba al final a
+ * cada letra: para saber qué acababa de pasar había que buscar dónde empezaba.
+ */
+let vistaRelato = 'ahora';
+/** Dónde se quedó leyendo en el historial (null: al final, lo más reciente). */
+let scrollHistorial = null;
+/** Llegó una respuesta mientras se leía el historial. */
+let respuestaNueva = false;
+/** En «Ahora», lo que se escribe se sigue con la vista salvo que el jugador suba a leer. */
+let seguirEscritura = true;
+/** Lo que hay pintado ahora mismo en la bitácora es el historial. */
+let historialPintado = false;
+
+const esDelJugador = (e) => e?.voz === 'player' || e?.voz === 'jugador';
+
+/**
+ * Parte el relato en turnos: cada acción del jugador abre uno. Lo anterior a
+ * la primera acción es el comienzo (turno 0).
+ * @returns {Array<{n: number, desde: number, entradas: Object[]}>}
+ */
+function turnosDelRelato(entradas) {
+  const turnos = [];
+  let n = 0;
+  let actual = null;
+  entradas.forEach((e, i) => {
+    if (esDelJugador(e) || !actual) {
+      if (esDelJugador(e)) n += 1;
+      actual = { n: esDelJugador(e) ? n : 0, desde: i, entradas: [] };
+      turnos.push(actual);
+    }
+    actual.entradas.push(e);
+  });
+  return turnos;
+}
+
+/** Cambia de vista conservando dónde se leía en el historial. */
+function verRelato(vista, { foco = false } = {}) {
+  const caja = $('#bitacora');
+  if (vista === vistaRelato) { if (foco) caja?.focus(); return; }
+  if (vistaRelato === 'historial' && caja && historialPintado) scrollHistorial = caja.scrollTop;
+  vistaRelato = vista;
+  if (vista === 'ahora') respuestaNueva = false;
+  else ocultarSugerencias();
+  firmaBitacora = '';
+  pintarBitacora();
+  if (foco) caja?.focus();
+}
+
+/** Las pestañas del relato, el rótulo de dónde estás y el aviso de respuesta nueva. */
+function pintarVistasRelato(turnos) {
+  const ahora = $('#relato-ahora');
+  const historial = $('#relato-historial');
+  const caja = $('#bitacora');
+  if (!ahora || !historial || !caja) return;
+  const enAhora = vistaRelato === 'ahora';
+  for (const [b, activa] of [[ahora, enAhora], [historial, !enAhora]]) {
+    b.classList.toggle('es-activa', activa);
+    b.setAttribute('aria-selected', String(activa));
+    b.setAttribute('tabindex', activa ? '0' : '-1');
+  }
+  const total = turnos.at(-1)?.n ?? 0;
+  caja.setAttribute('aria-labelledby', enAhora ? 'relato-ahora' : 'relato-historial');
+  caja.dataset.vista = vistaRelato;
+  const donde = $('#relato-donde');
+  if (donde) donde.textContent = enAhora
+    ? (total ? `Turno ${total}: lo último que ha pasado` : 'El comienzo de tu historia')
+    : `Todo lo ocurrido, del comienzo al turno ${total}`;
+  const aviso = $('#relato-nuevo');
+  const hayAviso = respuestaNueva && !enAhora;
+  if (aviso) aviso.hidden = !hayAviso;
+  if (donde) donde.hidden = hayAviso;
+}
+
+/** El rótulo que abre un turno. */
+function cabeceraTurno(t, { ahora = false } = {}) {
+  return el('p', { class: `turno__cab${ahora ? ' turno__cab--ahora' : ''}`, dataset: { turno: String(t.n) } },
+    el('span', { text: t.n ? `Turno ${t.n}` : 'Comienzo' }));
+}
+
+/**
+ * Pinta una entrada del relato en `caja`. Devuelve nada: los párrafos que
+ * hay que escribir letra a letra se apuntan en la cola.
+ */
+function pintarEntrada(caja, e, { nueva = false, escribir = false } = {}) {
+  // El motor etiqueta esta voz como `roll`, no como `tirada`. Al buscar solo
+  // `tirada` no coincidía nunca y las fichas de dados NO SE DIBUJABAN: el
+  // juego resolvía las tiradas y no enseñaba ni una, que es justo lo que el
+  // proyecto promete («el motor tira los dados y el director narra lo que ya
+  // está decidido»). Se aceptan los dos nombres para no depender de cuál
+  // emita cada sistema.
+  if (e.voz === 'roll' || e.voz === 'tirada') {
+    // El dado solo rueda para la tirada que acaba de ocurrir, y una sola
+    // vez: la bitácora se repinta entera en cada refresco.
+    const rueda = nueva && Boolean(e.id) && e.id !== ultimaTiradaAnimada;
+    const ficha = fichaTirada(e.meta?.tirada, { animar: rueda });
+    if (rueda) ultimaTiradaAnimada = e.id;
+    if (nueva) ficha.classList.add('es-reciente');
+    caja.append(ficha);
+    return;
+  }
+
+  // Partidas antiguas guardaban aquí la dirección de una ilustración de un
+  // servicio de fuera. Ya no se carga: pedirla filtraba que se estaba
+  // jugando, y en un guardado manipulado podía apuntar a cualquier sitio.
+  // Queda el pie, que es la parte de la historia.
+  if (e.voz === 'escena') {
+    if (e.texto) caja.append(el('p', { class: 'linea linea--escena', text: e.texto }));
+    return;
+  }
+
+  // Mismo desajuste con la voz del jugador: el motor dice `player` y aquí
+  // solo estaba `jugador`, así que sus líneas perdían su estilo y salían
+  // como texto corriente, indistinguibles de la narración.
+  const clase = {
+    dm: 'linea linea--dm',
+    player: 'linea linea--jugador',
+    jugador: 'linea linea--jugador',
+    system: 'linea linea--sistema',
+    sistema: 'linea linea--sistema',
+    combat: 'linea linea--combate',
+    combate: 'linea linea--combate',
+  }[e.voz] ?? 'linea';
+
+  // Solo la voz del máster se escribe; la acción del jugador aparece ya.
+  const seEscribe = escribir && (e.voz === 'dm' || e.voz === 'narrador');
+
+  // La letra capital solo abre el turno, no cada línea: la narración va por
+  // golpes —una frase por línea— y diez capitulares seguidas no son una
+  // página iluminada, son un sarpullido.
+  let primeraDelTurno = true;
+
+  for (const parrafo of String(e.texto ?? '').split('\n')) {
+    if (!parrafo.trim()) continue;
+
+    const clases = [clase];
+    if (nueva) clases.push('es-reciente');
+
+    if (e.voz === 'dm' || e.voz === 'narrador') {
+      // Los golpes —«CLANG.», «Y entonces...»— piden su propio peso: van
+      // centrados, espaciados y sin capitular.
+      if (esGolpe(parrafo)) clases.push('linea--golpe');
+      else if (!primeraDelTurno) clases.push('linea--seguida');
+      primeraDelTurno = false;
+    }
+
+    const nodo = el('p', { class: clases.join(' '), text: seEscribe ? '' : parrafo });
+    caja.append(nodo);
+    if (seEscribe) colaEscritura.push({ nodo, texto: parrafo });
+  }
+}
+
 function pintarBitacora() {
   const caja = $('#bitacora');
   if (!caja) return;
@@ -2456,121 +3285,90 @@ function pintarBitacora() {
   const entradas = ver('narrative.entradas', []) ?? [];
 
   // Refrescar sin cambios no repinta: así no se corta lo que se está escribiendo.
-  const firma = `${entradas.length}|${entradas.at(-1)?.texto ?? ''}`;
+  const firma = `${vistaRelato}|${entradas.length}|${entradas.at(-1)?.texto ?? ''}`;
   if (firma === firmaBitacora) return;
   firmaBitacora = firma;
 
-  // Lo que se estaba escribiendo se da por leído antes de repintar, y el
-  // escritor se para SIEMPRE, haya cola o no.
-  //
-  // El `if (colaEscritura.length)` que había aquí dejaba una ventana de 140ms
-  // —entre que el último párrafo termina y salta el temporizador del
-  // siguiente— en la que la cola está vacía pero `escribiendo` sigue en
-  // cierto. Un repintado en ese hueco se saltaba la limpieza, encolaba
-  // párrafos nuevos y luego no los arrancaba, porque la línea del final exige
-  // `!escribiendo`. Resultado: la cola se quedaba parada para siempre con sus
-  // `<p>` en blanco, y ni los turnos siguientes la desatascaban.
-  //
-  // Cada repintado es el único dueño del escritor. Nada sobrevive al anterior.
+  // Cada repintado es el único dueño del escritor: lo que se estaba
+  // escribiendo se da por leído y el escritor se para SIEMPRE, haya cola o
+  // no (una ventana de 140 ms entre párrafos dejaba la cola parada para
+  // siempre con sus `<p>` en blanco).
   completarEscritura();
-  vaciar(caja);
-  const primeraNueva = Math.max(0, entradas.length - 60);
 
-  const visibles = entradas.slice(-60);
-  const desdeReciente = Math.max(0, visibles.length - 3);
+  const turnos = turnosDelRelato(entradas);
+  const nuevas = entradas.slice(entradasVistas);
 
-  for (const [indice, e] of visibles.entries()) {
-    // El motor etiqueta esta voz como `roll`, no como `tirada`. Al buscar solo
-    // `tirada` no coincidía nunca y las fichas de dados NO SE DIBUJABAN: el
-    // juego resolvía las tiradas y no enseñaba ni una, que es justo lo que el
-    // proyecto promete («el motor tira los dados y el director narra lo que ya
-    // está decidido»). Se aceptan los dos nombres para no depender de cuál
-    // emita cada sistema.
-    if (e.voz === 'roll' || e.voz === 'tirada') {
-      // El dado solo rueda para la tirada que acaba de ocurrir, y una sola
-      // vez. La bitácora se repinta entera en cada refresco: sin este
-      // candado, cada turno harían rodar de nuevo todos los dados visibles.
-      const esNueva = Boolean(e.id) && e.id !== ultimaTiradaAnimada;
-
-      const ficha = fichaTirada(e.meta?.tirada, {
-        animar: esNueva && indice >= desdeReciente,
-      });
-
-      if (esNueva && indice >= desdeReciente) ultimaTiradaAnimada = e.id;
-
-      if (indice >= desdeReciente) ficha.classList.add('es-reciente');
-      caja.append(ficha);
-      continue;
+  if (vistaRelato === 'historial') {
+    // TODO el relato que guarda la partida, sin recortar y sin efecto. Lo
+    // nuevo no mueve la lectura: se queda donde estaba y se avisa. El punto
+    // de lectura se toma de la caja ANTES de repintar (no de un evento de
+    // desplazamiento, que puede llegar tarde con la pestaña en segundo plano).
+    const donde = historialPintado ? caja.scrollTop : scrollHistorial;
+    vaciar(caja);
+    for (const t of turnos) {
+      caja.append(cabeceraTurno(t));
+      for (const e of t.entradas) pintarEntrada(caja, e);
     }
-
-    // Partidas antiguas guardaban aquí la dirección de una ilustración de un
-    // servicio de fuera. Ya no se carga: pedirla filtraba que se estaba
-    // jugando, y en un guardado manipulado podía apuntar a cualquier sitio.
-    // Queda el pie, que es la parte de la historia.
-    if (e.voz === 'escena') {
-      if (e.texto) caja.append(el('p', { class: 'linea linea--escena', text: e.texto }));
-      continue;
-    }
-
-    // Mismo desajuste con la voz del jugador: el motor dice `player` y aquí
-    // solo estaba `jugador`, así que sus líneas perdían su estilo y salían
-    // como texto corriente, indistinguibles de la narración.
-    const clase = {
-      dm: 'linea linea--dm',
-      player: 'linea linea--jugador',
-      jugador: 'linea linea--jugador',
-      system: 'linea linea--sistema',
-      sistema: 'linea linea--sistema',
-      combat: 'linea linea--combate',
-      combate: 'linea linea--combate',
-    }[e.voz] ?? 'linea';
-
-    // Solo la voz del máster se escribe; la acción del jugador aparece ya.
-    const esNueva = primeraNueva + indice >= entradasVistas;
-    const seEscribe = esNueva && (e.voz === 'dm' || e.voz === 'narrador');
-
-    // La letra capital solo abre el turno, no cada línea.
-    //
-    // La narración va ahora por golpes —una frase por línea— y con la regla
-    // anterior cada una llevaba su capitular de dos cuerpos: diez capitulares
-    // seguidas no son una página iluminada, son un sarpullido. La capital
-    // marca dónde empieza a hablar el máster, y eso ocurre una vez.
-    let primeraDelTurno = true;
-
-    for (const parrafo of String(e.texto ?? '').split('\n')) {
-      if (!parrafo.trim()) continue;
-
-      const clases = [clase];
-      if (indice >= desdeReciente) clases.push('es-reciente');
-
-      if (e.voz === 'dm' || e.voz === 'narrador') {
-        // Los golpes —«CLANG.», «Y entonces...»— piden su propio peso: van
-        // centrados, espaciados y sin capitular. Es la línea que el ojo tiene
-        // que ver sola.
-        if (esGolpe(parrafo)) clases.push('linea--golpe');
-        else if (!primeraDelTurno) clases.push('linea--seguida');
-        primeraDelTurno = false;
-      }
-
-      const nodo = el('p', { class: clases.join(' '), text: seEscribe ? '' : parrafo });
-      caja.append(nodo);
-      if (seEscribe) colaEscritura.push({ nodo, texto: parrafo });
-    }
+    caja.append(el('p', { class: 'turno__fin turno__fin--historial' },
+      el('button', { type: 'button', class: 'btn btn--pequeno', id: 'historial-volver', onClick: protegido('volver al presente', () => verRelato('ahora', { foco: true })) }, 'Volver al presente')));
+    anunciarRelato(nuevas);
+    if (nuevas.length && entradasVistas > 0) respuestaNueva = true;
+    entradasVistas = entradas.length;
+    caja.scrollTop = donde === null ? caja.scrollHeight : donde;
+    scrollHistorial = caja.scrollTop;
+    historialPintado = true;
+    pintarVistasRelato(turnos);
+    return;
   }
+
+  // «Ahora»: el turno en curso, entero, de su principio a su final.
+  const ultimo = turnos.at(-1) ?? { n: 0, desde: 0, entradas: [] };
+  historialPintado = false;
+  vaciar(caja);
+  caja.append(cabeceraTurno(ultimo, { ahora: true }));
+  ultimo.entradas.forEach((e, k) => {
+    const nueva = ultimo.desde + k >= entradasVistas;
+    pintarEntrada(caja, e, { nueva, escribir: nueva });
+  });
+  caja.append(el('p', { class: 'turno__fin', 'aria-hidden': 'true', text: '◆' }));
 
   // Lo nuevo se dicta una sola vez y ya montado, para quien no ve la pantalla.
   // Va aquí y no en la bitácora porque la bitácora se reconstruye entera en
-  // cada refresco: marcarla como región viva haría releer las sesenta
-  // entradas cada turno.
-  anunciarRelato(entradas.slice(entradasVistas));
+  // cada refresco: marcarla como región viva haría releerlo todo cada turno.
+  anunciarRelato(nuevas);
 
+  if (nuevas.length) {
+    // Un turno nuevo se lee desde su principio, no desde su última línea.
+    caja.scrollTop = 0;
+    seguirEscritura = true;
+  }
   entradasVistas = entradas.length;
-  caja.scrollTop = caja.scrollHeight;
+  pintarVistasRelato(turnos);
 
-  // Sin comprobar `escribiendo`: `completarEscritura` acaba de dejarlo en
-  // falso unas líneas más arriba, y consultarlo aquí solo servía para no
-  // arrancar cuando alguna bandera se había quedado colgada.
-  if (colaEscritura.length) escribirSiguiente();
+  if (colaEscritura.length) { caja.dataset.escribiendo = '1'; escribirSiguiente(); } else delete caja.dataset.escribiendo;
+}
+
+/** Conecta las pestañas del relato, el aviso de respuesta nueva y la lectura. */
+function conectarRelato() {
+  const caja = $('#bitacora');
+  $('#relato-ahora')?.addEventListener('click', protegido('ver el presente', () => verRelato('ahora')));
+  $('#relato-historial')?.addEventListener('click', protegido('ver el historial', () => verRelato('historial')));
+  $('#relato-nuevo')?.addEventListener('click', protegido('volver al presente', () => verRelato('ahora', { foco: true })));
+  // Flechas entre las dos pestañas, como en cualquier grupo de pestañas.
+  $('#relato-vistas')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    verRelato(vistaRelato === 'ahora' ? 'historial' : 'ahora');
+    $(vistaRelato === 'ahora' ? '#relato-ahora' : '#relato-historial')?.focus();
+  });
+  if (!caja) return;
+  // El punto de lectura del historial se recuerda.
+  caja.addEventListener('scroll', () => { if (vistaRelato === 'historial' && historialPintado) scrollHistorial = caja.scrollTop; }, { passive: true });
+  // Si el jugador sube a releer mientras se escribe, el texto deja de arrastrarle.
+  const soltar = () => { if (vistaRelato === 'ahora' && escribiendo) seguirEscritura = false; };
+  caja.addEventListener('wheel', soltar, { passive: true });
+  caja.addEventListener('touchmove', soltar, { passive: true });
+  caja.addEventListener('keydown', (e) => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) soltar(); });
 }
 
 function fichaTirada(t, { animar = false } = {}) {
@@ -2628,6 +3426,10 @@ function pintarCabecera() {
 
 /* ── personaje ────────────────────────────────────────────────────────── */
 
+/**
+ * El resumen del personaje: siempre a la vista. Quién eres y cómo estás
+ * (vida, ánima, vigor, oro). Lo demás va en la pestaña «Ficha».
+ */
 function pintarPersonaje() {
   const caja = $('#panel-personaje');
   if (!caja) return;
@@ -2635,35 +3437,21 @@ function pintarPersonaje() {
   const j = ver('player', {}) ?? {};
   vaciar(caja);
 
-  // Su retrato elegido, o el marcador. Pintar es cosa del jugador, y nunca
+  // Su imagen elegida, o el marcador. Cambiarla es cosa del jugador, y nunca
   // en combate.
   const ficha = fichaRetratoJugador();
   pintarRetrato($('#retrato-pj'), ficha);
 
-  caja.append(
+  poner(caja,
     el('div', { class: 'ficha-pj' },
       el('span', { class: 'ficha-pj__nombre', text: j.nombre ?? '—' }),
       el('span', { class: 'ficha-pj__clase', text: `nivel ${j.nivel ?? 1}` }),
       ficha.id && !ver('combat.activo', false) ? el('button', {
         class: 'btn btn--pequeno btn--fantasma', id: 'pj-pintar', type: 'button',
-        onClick: protegido('pintar retrato', () => abrirEstudio(encargoDePersonaje(j, ficha.id))),
-      }, urlAprobada(claveRetrato(ficha)) ? 'Cambiar retrato' : 'Pintar retrato') : null,
+        onClick: protegido('imagen del personaje', () => abrirImagenJugador()),
+      }, urlAprobada(claveRetrato(ficha)) ? 'Cambiar imagen' : 'Ponerle imagen') : null,
     ),
   );
-
-  const atributos = j.atributos ?? {};
-  const nombresAtributo = { fuerza:'FUE', destreza:'DES', constitucion:'CON', inteligencia:'INT', sabiduria:'SAB', carisma:'CAR' };
-  caja.append(el('div', { class: 'medallones-atributos' },
-    ...Object.entries(nombresAtributo).map(([clave, eti]) => {
-      const valor = atributos[clave] ?? 10;
-      const mod = Math.floor((valor - 10) / 2);
-      return el('div', { class: 'medallon-atributo' },
-        el('span', { class: 'medallon-atributo__eti', text: eti }),
-        el('strong', { text: String(valor) }),
-        el('span', { class: 'medallon-atributo__mod', text: mod >= 0 ? `+${mod}` : String(mod) }),
-      );
-    }),
-  ));
 
   const barras = [
     ['Vida', j.vida?.actual ?? 0, j.vida?.max ?? 1, 'vida'],
@@ -2672,10 +3460,11 @@ function pintarPersonaje() {
     ['Vigor', j.fatiga ?? 100, 100, 'fatiga'],
   ].filter(Boolean);
 
+  const cajaBarras = el('div', { class: 'barras-pj' });
   for (const [eti, actual, max, clave] of barras) {
     const frac = Math.max(0, Math.min(1, actual / Math.max(1, max)));
 
-    caja.append(el('div', { class: 'barra-caja' },
+    cajaBarras.append(el('div', { class: 'barra-caja' },
       el('div', { class: 'barra-caja__fila' },
         el('span', { text: eti }),
         el('span', { class: 'barra-caja__cifra', text: `${Math.round(actual)}/${max}` }),
@@ -2688,10 +3477,34 @@ function pintarPersonaje() {
       ),
     ));
   }
+  caja.append(cajaBarras);
 
   caja.append(el('div', { class: 'oro' },
     el('span', { text: 'Oro' }),
     el('span', { class: 'oro__cifra', text: String(j.oro ?? 0) }),
+  ));
+}
+
+/** La pestaña «Ficha»: atributos, experiencia y estados, como los tiene el motor. */
+function pintarFicha(caja) {
+  const j = ver('player', {}) ?? {};
+
+  caja.append(el('p', { class: 'sub-eti', id: 'ficha-origen', text: [RAZAS[j.raza]?.nombre, CLASES[j.clase]?.nombre, TRASFONDOS[j.trasfondo]?.nombre].filter(Boolean).join(' · ') || '—' }));
+
+  // Los seis atributos DEL MOTOR (vigor, destreza, temple, intelecto,
+  // astucia, carisma), con su nombre. Antes se leían claves que el motor no
+  // tiene (fuerza, constitución, inteligencia, sabiduría) y cuatro medallones
+  // salían siempre en 10, dijera lo que dijera la ficha.
+  const atributos = j.atributos ?? {};
+  caja.append(el('dl', { class: 'atributos-claros', id: 'ficha-atributos' },
+    ...ATRIBUTOS.orden.map((clave) => {
+      const valor = atributos[clave] ?? 10;
+      const mod = Math.floor((valor - 10) / 2);
+      return el('div', { class: 'atributo-claro', dataset: { atributo: clave } },
+        el('dt', { text: NOMBRE_ATRIBUTO[clave] }),
+        el('dd', {}, el('strong', { text: String(valor) }), el('span', { class: 'atributo-claro__mod', text: mod >= 0 ? `+${mod}` : String(mod) })),
+      );
+    }),
   ));
 
   // La experiencia, con lo heredado aparte: no se presenta como jugado.
@@ -2727,52 +3540,71 @@ function pintarPersonaje() {
       }),
     ));
   }
-
-  // El grupo, bajo el personaje. En pantallas estrechas se esconde por CSS y
-  // se ve en su pestaña del lateral.
-  if ((ver('party.miembros', []) ?? []).length) {
-    const grupo = el('div', { class: 'grupo', id: 'grupo-pj' }, el('p', { class: 'sub-eti', text: 'Grupo' }));
-    caja.append(grupo);
-    pintarGrupo(grupo);
-  }
 }
 
-/* ── lateral: inventario, mapa, misiones ──────────────────────────────── */
+/* ── lateral: ficha, bolsa, mapa, encargos, gente, grupo ──────────────── */
 
-let pestanaActiva = 'inventario';
+let pestanaActiva = 'ficha';
 let mercaderActivo = null;
+
+/**
+ * En pantallas estrechas el panel elegido se abre como una HOJA sobre la
+ * historia, con su título y «Volver a la historia»: antes era una franja de
+ * pocos renglones con su propio desplazamiento metida bajo el relato.
+ */
+let hojaAbierta = false;
+const esEstrecho = () => matchMedia('(max-width:800px)').matches;
 
 function pintarLateral() {
   const caja = $('#panel-lateral');
   if (!caja) return;
 
+  // El punto de lectura del panel sobrevive al repintado de cada turno.
+  const previo = caja.dataset.pestana === pestanaActiva ? (caja.querySelector('.lateral__cuerpo')?.scrollTop ?? 0) : 0;
   vaciar(caja);
 
-  // El grupo tiene pestaña propia cuando hay alguien: en móvil es donde se
-  // ve, porque el bloque bajo el personaje no cabe.
   const hayGrupo = (ver('party.miembros', []) ?? []).length > 0;
   const pestanas = [
+    ['ficha', 'Ficha'],
     ['inventario', 'Bolsa'],
     ['mapa', 'Mapa'],
     ['misiones', 'Encargos'],
     ['gente', 'Gente'],
     hayGrupo ? ['grupo', 'Grupo'] : null,
   ].filter(Boolean);
-  if (pestanaActiva === 'grupo' && !hayGrupo) pestanaActiva = 'inventario';
+  if (pestanaActiva === 'grupo' && !hayGrupo) pestanaActiva = 'ficha';
 
-  caja.append(el('div', { class: 'pestanas' },
+  const estrecho = esEstrecho();
+  if (!estrecho) hojaAbierta = false;
+  $('#panel-lateral-envoltura')?.classList.toggle('lateral--hoja', hojaAbierta);
+  caja.dataset.pestana = pestanaActiva;
+  const titulo = pestanas.find(([c]) => c === pestanaActiva)?.[1] ?? '';
+  const visible = !estrecho || hojaAbierta;
+
+  caja.append(el('div', { class: 'pestanas', role: 'tablist', 'aria-label': 'Tu personaje y tus cosas' },
     ...pestanas.map(([clave, eti]) => el('button', {
-      class: 'pestana' + (pestanaActiva === clave ? ' es-activa' : ''),
-      onClick: protegido('pestaña', () => { pestanaActiva = clave; pintarLateral(); }),
+      type: 'button', role: 'tab', id: `pestana-${clave}`,
+      class: 'pestana' + (pestanaActiva === clave && visible ? ' es-activa' : ''),
+      'aria-selected': String(pestanaActiva === clave && visible),
+      'aria-controls': 'lateral-cuerpo',
+      dataset: { pestana: clave },
+      onClick: protegido('pestaña', () => abrirPestanaLateral(clave)),
       text: eti,
     })),
   ));
 
-  const cuerpo = el('div', { class: 'lateral__cuerpo' });
-  caja.append(cuerpo);
+  const cuerpo = el('div', { class: 'lateral__cuerpo', id: 'lateral-cuerpo', role: 'tabpanel', 'aria-labelledby': 'lateral-titulo', tabindex: '0' });
+  caja.append(
+    el('div', { class: 'lateral__cab' },
+      el('h3', { class: 'lateral__titulo', id: 'lateral-titulo', tabindex: '-1', text: titulo }),
+      el('button', { type: 'button', class: 'btn btn--pequeno lateral__volver', id: 'lateral-volver', onClick: protegido('volver a la historia', () => cerrarHoja()) }, 'Volver a la historia'),
+    ),
+    cuerpo,
+  );
 
   try {
-    if (pestanaActiva === 'inventario') pintarInventario(cuerpo);
+    if (pestanaActiva === 'ficha') pintarFicha(cuerpo);
+    else if (pestanaActiva === 'inventario') pintarInventario(cuerpo);
     else if (pestanaActiva === 'mapa') pintarMapa(cuerpo);
     else if (pestanaActiva === 'misiones') pintarMisiones(cuerpo);
     else if (pestanaActiva === 'grupo') pintarGrupo(cuerpo);
@@ -2780,6 +3612,26 @@ function pintarLateral() {
   } catch (e) {
     avisarFallo('panel ' + pestanaActiva, e);
   }
+  cuerpo.scrollTop = previo;
+}
+
+/** Abre una pestaña. En estrecho, como hoja; pulsar la que ya está abierta la cierra. */
+function abrirPestanaLateral(clave) {
+  const estrecho = esEstrecho();
+  if (estrecho && hojaAbierta && pestanaActiva === clave) { cerrarHoja(); return; }
+  pestanaActiva = clave;
+  if (estrecho) hojaAbierta = true;
+  pintarLateral();
+  (estrecho ? $('#lateral-titulo') : $(`#pestana-${clave}`))?.focus();
+}
+
+/** Cierra la hoja y devuelve el foco a la pestaña que la abrió. La historia sigue donde estaba. */
+function cerrarHoja() {
+  if (!hojaAbierta) return false;
+  hojaAbierta = false;
+  pintarLateral();
+  $(`#pestana-${pestanaActiva}`)?.focus();
+  return true;
 }
 
 /**
@@ -2809,8 +3661,8 @@ function pintarGrupo(caja) {
         el('span', { class: 'grupo__ataque', text: `${f.ataque.nombre} ${f.ataque.dano} · ${f.rasgo}` }),
         ver('combat.activo', false) ? null : el('button', {
           class: 'btn btn--pequeno btn--fantasma grupo__pintar', type: 'button', 'data-pintar': f.refId,
-          onClick: protegido('pintar compañero', () => abrirEstudio(encargoDePnj(f))),
-        }, urlAprobada(claveRetrato({ refId: f.refId })) ? 'Cambiar retrato' : 'Pintar retrato'),
+          onClick: protegido('imagen del compañero', () => abrirEstudio(encargoDePnj(f))),
+        }, urlAprobada(claveRetrato({ refId: f.refId })) ? 'Cambiar imagen' : 'Ponerle imagen'),
       ),
     ));
 
@@ -3067,6 +3919,8 @@ async function enviar(texto, intencion) {
   if (campo) { campo.value = ''; ajustarAltoEntrada(); }
   ocultarSugerencias();
   completarEscritura();
+  // Actuar es estar en el presente: la respuesta se verá en «Ahora».
+  if (vistaRelato !== 'ahora') verRelato('ahora');
 
   // En combate, la caja principal ES la caja de combate.
   //
@@ -3098,7 +3952,9 @@ async function enviar(texto, intencion) {
 
   refrescarTodo();
   guardarTrasTurno();
-  $('#entrada')?.focus();
+  // El foco vuelve a la caja de escribir, salvo que el jugador esté leyendo
+  // el historial o consultando un panel: una respuesta nueva no se lo quita.
+  if (vistaRelato === 'ahora' && !document.activeElement?.closest?.('#bitacora, .lateral, dialog, .modal:not([hidden])')) $('#entrada')?.focus();
   if (!escribiendo) programarSugerencias();
 }
 
@@ -3570,6 +4426,15 @@ function aplicarPuente() {
 }
 
 function conectarEventos() {
+  conectarRelato();
+  // Escape cierra la hoja del panel (en estrecho) y devuelve a la historia.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !hojaAbierta) return;
+    if (document.querySelector('dialog[open], .modal:not([hidden])') || !$('#combate')?.hidden) return;
+    if (cerrarHoja()) e.preventDefault();
+  });
+  // Al cambiar de ancho (girar el móvil, zoom), el panel se recoloca.
+  matchMedia('(max-width:800px)').addEventListener?.('change', () => { if (ver('player.raza')) pintarLateral(); });
   $('#comercio-cerrar')?.addEventListener('click', () => { $('#comercio-modal').hidden = true; mercaderActivo = null; });
   $('#director')?.addEventListener('click', () => abrirNarrador());
   $('#ia-probar')?.addEventListener('click', protegido('probar IA local', probarIALocal));
@@ -3606,6 +4471,7 @@ function conectarEventos() {
   $('#importar-leer')?.addEventListener('click', protegido('leer historia', leerHistoriaPegada));
 
   $('#sugerencias-cerrar')?.addEventListener('click', () => ocultarSugerencias());
+  $('#sugerencias-titulo')?.addEventListener('click', () => { if ($('#sugerencias')?.classList.contains('sugerencias--plegada')) plegarSugerencias(false); });
   bus.on('combat:start', () => ocultarSugerencias());
   bus.on('combat:end', () => { guardarTrasTurno(); programarSugerencias(); });
   $('#entrada')?.addEventListener('keydown', (e) => {
@@ -3828,6 +4694,7 @@ async function arrancar() {
   }
 
   clearTimeout(vigilante);
+  if (globalThis.__arcanveilArranque) globalThis.__arcanveilArranque.fase = 'motor';
 
   // Si hay imágenes declaradas en assets/, sustituirán al arte vectorial. No
   // se espera a que termine: sin manifiesto el juego funciona igual, y hacer
