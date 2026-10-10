@@ -61,7 +61,9 @@ const solo = process.argv.includes('--solo') ? process.argv[process.argv.indexOf
 async function caso(nombre, fn) {
   if (solo && !solo.some((s) => nombre.startsWith(s))) return;
   console.log(`\n── ${nombre} ──`);
+  const t0 = Date.now();
   try { await fn(); } catch (e) { comprobar(false, 'el caso revienta antes de terminar', String(e?.message ?? e)); }
+  console.log(`     (${Math.round((Date.now() - t0) / 1000)} s)`);
 }
 const tic = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Dos objetos con las mismas claves y valores, en el orden que sea. */
@@ -103,6 +105,9 @@ async function pestana(op = {}) {
   // Al frente: en un Chrome sin ventana, una pestaña de fondo no avanza sus animaciones.
   await p.enviar('Page.bringToFront').catch(() => {});
   await p.hasta(LISTA);
+  // Las capturas, con la pantalla quieta: a media animación de entrada salen veladas.
+  const foto = p.foto;
+  p.foto = async (...a) => { await quieta(p).catch(() => {}); return foto(...a); };
   return p;
 }
 /** De la portada a la creación (personaje nuevo). */
@@ -185,13 +190,19 @@ await caso('A · PC 1366×768 sin puente: elegir, escribir, imagen local, revisa
   await aCreacion(p);
   const origen = await p.ev(`({ listas: ['raza', 'clase', 'trasfondo'].map((k) => document.querySelector('#origen-' + k)?.options.length ?? 0), medidas: ${MEDIDAS} })`);
   comprobar(origen.listas.join() === '8,8,10', `hay selección explícita: ${origen.listas[0]} linajes, ${origen.listas[1]} oficios y ${origen.listas[2]} pasados`, JSON.stringify(origen.listas));
+  const promesas = [];     // todo lo que la creación le dice al jugador, paso a paso
   const elegido = { raza: 'albar', clase: 'glifista', trasfondo: 'erudito' };
   await p.ev(crearPersonajeUI({ ...elegido, nombre: 'x', descripcion: 'x', lore: 'x', hasta: 'origen' }));
   const motor = previsualizar(elegido);
   const ficha = await p.ev(`({ vida: document.querySelector('#ficha-previa-vida').textContent, anima: document.querySelector('#ficha-previa-anima').textContent, oro: document.querySelector('#ficha-previa-oro').textContent, atributos: Object.fromEntries([...document.querySelectorAll('#ficha-previa [data-atributo]')].map((n) => [n.dataset.atributo, Number(n.querySelector('strong').textContent)])), efecto: document.querySelector('#origen-raza-explica').textContent, fijos: document.querySelectorAll('.origen__fijo[data-soltar]').length, medidas: ${MEDIDAS} })`);
   comprobar(Number(ficha.vida) === motor.vida && Number(ficha.anima) === motor.mana && Number(ficha.oro) === motor.oro && igual(ficha.atributos, motor.atributos),
     `la ficha de pantalla es la del motor (vida ${motor.vida}, ánima ${motor.mana}, oro ${motor.oro}, atributos iguales)`, JSON.stringify({ ficha, motor: { vida: motor.vida, mana: motor.mana, oro: motor.oro, atributos: motor.atributos } }));
-  comprobar(/\+2 Intelecto/.test(ficha.efecto) && /Empiezas en/.test(ficha.efecto) && ficha.fijos === 3, 'cada elección explica su efecto en reglas y queda marcada como elegida por el jugador', ficha.efecto);
+  comprobar(/\+2 Intelecto/.test(ficha.efecto) && ficha.fijos === 3, 'cada elección explica su efecto en reglas y queda marcada como elegida por el jugador', ficha.efecto);
+  // El atributo principal que anuncia el oficio tiene que ser el que sale más alto en la ficha (Albar suma en el mismo).
+  const fuerte = await p.ev(`(() => { const dicho = (document.querySelector('#origen-clase-explica').textContent.match(/Atributo principal: (\\p{L}+)/u) ?? [])[1] ?? ''; const filas = [...document.querySelectorAll('#ficha-previa [data-atributo]')].map((n) => ({ nombre: n.querySelector('dt')?.textContent ?? n.textContent, valor: Number(n.querySelector('strong').textContent) })); const max = Math.max(...filas.map((f) => f.valor)); return { dicho, altos: filas.filter((f) => f.valor === max).map((f) => f.nombre) }; })()`);
+  comprobar(fuerte.dicho.length > 0 && fuerte.altos.some((n) => n.includes(fuerte.dicho)) && !/Atributos fuertes/.test(await p.ev(`document.querySelector('#origen-clase-explica').textContent`)),
+    `el atributo principal que anuncia el oficio (${fuerte.dicho}) es el más alto de la ficha, y ya no se anuncian «atributos fuertes» que la ficha desmiente`, JSON.stringify(fuerte));
+  promesas.push(await p.ev(`document.querySelector('[data-pantalla="creacion"]').innerText`));
   comprobar(!ficha.medidas.horizontal && !ficha.medidas.pagina && ficha.medidas.siguiente === true && !ficha.medidas.desplazables.length, 'el paso «origen» cabe entero: sin desplazar nada y con «Siguiente» a la vista', JSON.stringify(ficha.medidas));
   await p.foto('A1-origen-1366x768.png');
 
@@ -205,17 +216,17 @@ await caso('A · PC 1366×768 sin puente: elegir, escribir, imagen local, revisa
   const aspecto = await p.ev(`({ modo: document.querySelector('#aspecto').dataset.modo, dibujo: document.querySelector('#creacion-cara svg')?.outerHTML.length ?? 0, entendido: document.querySelector('#aspecto-entendido')?.textContent ?? '', pelo: document.querySelector('#aspecto-pelo').value, ojos: document.querySelector('#aspecto-ojos').value, capucha: document.querySelector('#aspecto-rasgo-capucha').checked, nota: document.querySelector('#aspecto-dibujo-nota').textContent, generador: document.querySelector('#aspecto-generador').dataset.estado, pintado: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled'), promesa: document.querySelector('[data-pantalla="creacion"]').innerText, medidas: ${MEDIDAS} })`);
   comprobar(aspecto.modo === 'dibujo' && aspecto.dibujo > 5000 && aspecto.pelo === 'rojo' && aspecto.ojos === 'verdes' && aspecto.capucha && /pelo rojo, ojos verdes, capucha/.test(aspecto.entendido),
     'sin generador hay una cara de verdad: el dibujo del juego, con lo que entendió de la descripción', JSON.stringify({ ...aspecto, promesa: undefined, medidas: undefined }));
-  comprobar(/No es una IA/.test(aspecto.nota) && !/la IA pintará/i.test(aspecto.promesa) && aspecto.generador === 'desconocido' && aspecto.pintado === 'true' && alGenerador(p) === 0,
-    'no promete IA: dice que el dibujo no lo es, «pintar con IA» está apagado y no se ha pedido NADA al generador', JSON.stringify({ nota: aspecto.nota, generador: aspecto.generador, peticiones: alGenerador(p) }));
+  comprobar(/No es una IA/.test(aspecto.nota) && !/la IA pintará/i.test(aspecto.promesa) && aspecto.generador === 'desconocido' && aspecto.pintado !== 'true' && /lo normal es no tenerlo\. Pulsa para comprobarlo/.test(aspecto.promesa) && alGenerador(p) === 0,
+    'no promete IA: dice que el dibujo no lo es, «pintar con IA» avisa de que hace falta un generador («pulsa para comprobarlo») y no se ha pedido NADA al generador', JSON.stringify({ nota: aspecto.nota, generador: aspecto.generador, peticiones: alGenerador(p) }));
   comprobar(!/node tools|IMAGEN_LOCAL|ComfyUI/.test(aspecto.promesa), 'sin comandos ni documentación técnica a la vista');
   comprobar(!aspecto.medidas.horizontal && !aspecto.medidas.pagina && aspecto.medidas.siguiente === true && !aspecto.medidas.desplazables.length, 'el paso «aspecto» cabe entero', JSON.stringify(aspecto.medidas));
   await p.foto('A3-aspecto-sin-generador-1366x768.png');
   // Los controles cambian LO QUE SE VE.
-  const antes = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[a-z]+\\d+/g, '$1X')`);
+  const antes = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[\\w-]+/g, '$1X')`);
   await p.ev(`(() => { const s = document.querySelector('#aspecto-pelo'); s.value = 'negro'; s.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('#aspecto-rasgo-cicatriz').click(); return true; })()`);
-  const despues = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[a-z]+\\d+/g, '$1X')`);
+  const despues = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[\\w-]+/g, '$1X')`);
   await p.ev(`document.querySelector('#aspecto-otra-cara').click(); true`);
-  const otraCara = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[a-z]+\\d+/g, '$1X')`);
+  const otraCara = await p.ev(`document.querySelector('#creacion-cara svg').outerHTML.replace(/(id="|url\\(#|href="#)[\\w-]+/g, '$1X')`);
   comprobar(antes !== despues && despues !== otraCara && /retrato-rasgo--cicatriz/.test(despues), 'cambiar pelo, rasgos u «Otra cara» cambia la vista previa');
   await p.foto('A4-aspecto-editado-1366x768.png');
 
@@ -227,15 +238,33 @@ await caso('A · PC 1366×768 sin puente: elegir, escribir, imagen local, revisa
   comprobar(revision.imagen === 400 && /Dibujo del juego/.test(revision.estado) && /No es IA/.test(revision.estado) && revision.galeria.length === 1 && revision.galeria[0].estilo === 'dibujo-del-juego' && revision.galeria[0].tipo === 'image/png',
     'la imagen elegida es el dibujo, guardado como imagen del personaje y dicho como lo que es', JSON.stringify({ estado: revision.estado, galeria: revision.galeria }));
   comprobar(!revision.medidas.horizontal && !revision.medidas.pagina && revision.medidas.empezar === true && !sinRotulo(revision.medidas).length, 'la revisión no desplaza la página: «Comenzar partida» a la vista, y lo que se desplaza tiene nombre y se alcanza con el teclado', JSON.stringify(revision.medidas));
+  const pregunta = await p.ev(`(() => { const dentro = (q) => { const n = document.querySelector(q); if (!n || n.offsetParent === null) return null; const r = n.getBoundingClientRect(); return r.top >= -1 && r.bottom <= innerHeight + 1 && r.left >= -1 && r.right <= innerWidth + 1; }; return { pregunta: dentro('.revelacion__pregunta'), caja: dentro('#revelacion-cambio') }; })()`);
+  comprobar(pregunta.pregunta === true && pregunta.caja === true, 'en la revisión, la pregunta («¿te gusta así…?») y la caja para contestar están A LA VISTA, sin desplazar nada', JSON.stringify(pregunta));
+  promesas.push(aspecto.promesa, await p.ev(`document.querySelector('[data-pantalla="creacion"]').innerText`));
   await p.foto('A5-revisar-1366x768.png');
 
   await empezar(p);
+  // Lo que la creación promete del comienzo tiene que ser lo que pasa. (El
+  // motor empieza todas las campañas en el mismo sitio: la creación no dice otro.)
+  const comienzo = await p.ev(`({ rotulo: document.querySelector('#escena-rotulo .escena__lugar')?.textContent ?? '', real: ARCANVEIL.sistema('world').lugarActual()?.plantilla?.nombre ?? '' })`);
+  const prometido = promesas.flatMap((t) => String(t).match(/empiezas en [^.\n·]+/gi) ?? []);
+  comprobar(comienzo.rotulo === comienzo.real && comienzo.real.length > 0 && prometido.every((x) => x.toLowerCase().includes(comienzo.real.toLowerCase())),
+    `la creación no promete un lugar de inicio distinto del real (empiezas en «${comienzo.real}»; prometido: ${prometido.length ? prometido.join(' | ') : 'nada'})`, JSON.stringify({ comienzo, prometido }));
   const jugado = await p.ev(`(() => { const j = ARCANVEIL.ver('player'); return { raza: j.raza, clase: j.clase, trasfondo: j.trasfondo, genero: j.genero, nombre: j.nombre, retrato: j.retrato, lore: j.lore, vida: j.vida.max, mana: j.mana?.max ?? 0, atributos: j.atributos, dificultad: ARCANVEIL.ver('settings.dificultad'), cara: Boolean(document.querySelector('#retrato-pj img.arte--aprobada')), ficha: Object.fromEntries([...document.querySelectorAll('#ficha-atributos [data-atributo]')].map((n) => [n.dataset.atributo, Number(n.querySelector('strong').textContent)])), origenFicha: document.querySelector('#ficha-origen')?.textContent, peticiones: 0 }; })()`);
   comprobar(jugado.raza === 'albar' && jugado.clase === 'glifista' && jugado.trasfondo === 'erudito' && jugado.genero === 'f' && jugado.nombre === 'Nerea' && jugado.dificultad === 'implacable' && jugado.vida === motor.vida && jugado.mana === motor.mana && igual(jugado.atributos, motor.atributos) && /pelo rojo/.test(jugado.retrato),
     'lo elegido llega al motor tal cual: linaje, oficio, pasado, trato, intensidad, vida, ánima y atributos', JSON.stringify(jugado));
   comprobar(jugado.cara && igual(jugado.ficha, motor.atributos) && /Albar · Glifista · Erudito/.test(jugado.origenFicha) && alGenerador(p) === 0,
     'en la partida se ve su cara y la ficha enseña los seis atributos del motor; el generador sigue sin tocarse', JSON.stringify({ ficha: jugado.ficha, motor: motor.atributos, peticiones: alGenerador(p) }));
   await p.foto('A6-partida-inicio-1366x768.png');
+  // A 1366×768 (la pantalla de la queja) la ficha y el mapa se ven enteros: sin barra en el panel.
+  const panelFicha = await p.ev(`(() => { const cu = document.querySelector('#lateral-cuerpo'); return { pestana: document.querySelector('#pestana-ficha').getAttribute('aria-selected'), desplaza: cu.scrollHeight > cu.clientHeight + 2, atributos: cu.querySelectorAll('[data-atributo]').length, filasPestanas: new Set([...document.querySelectorAll('.pestanas .pestana')].map((b) => Math.round(b.getBoundingClientRect().top))).size, cortadas: [...document.querySelectorAll('.pestanas .pestana')].filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent) }; })()`);
+  await p.ev(`document.querySelector('#pestana-mapa').click(); true`);
+  await tic(150);
+  const panelMapa = await p.ev(`(() => { const cu = document.querySelector('#lateral-cuerpo'); const cr = cu.getBoundingClientRect(); const ds = [...cu.querySelectorAll('.destino')]; return { desplaza: cu.scrollHeight > cu.clientHeight + 2, destinos: ds.length, enteros: ds.filter((d) => { const x = d.getBoundingClientRect(); return x.top >= cr.top - 1 && x.bottom <= cr.bottom + 1; }).length }; })()`);
+  await p.foto('A7-panel-mapa-1366x768.png');
+  await p.ev(`document.querySelector('#pestana-ficha').click(); true`);
+  comprobar(panelFicha.pestana === 'true' && !panelFicha.desplaza && panelFicha.atributos === 6 && panelFicha.filasPestanas === 1 && !panelFicha.cortadas.length && panelMapa.destinos >= 2 && panelMapa.enteros === panelMapa.destinos && !panelMapa.desplaza,
+    `a 1366×768 el panel derecho no desplaza: la ficha entera (6 atributos), las pestañas en una fila sin cortar y los ${panelMapa.destinos} destinos del mapa a la vista`, JSON.stringify({ panelFicha, panelMapa }));
 });
 
 await caso('B · Volver, avanzar, editar y «Crear otro»', async () => {
@@ -249,7 +278,12 @@ await caso('B · Volver, avanzar, editar y «Crear otro»', async () => {
   for (const destino of ['aspecto', 'quien', 'origen']) {
     await p.ev(`document.querySelector('#creacion-volver').click(); true`);
     await p.hasta(`${PASO} === '${destino}'`);
-    if (destino === 'aspecto') vistos.aspecto = await p.ev(`({ descripcion: document.querySelector('#retrato-descripcion').value, modo: document.querySelector('#aspecto').dataset.modo, barba: document.querySelector('#aspecto-rasgo-barba').checked, cicatriz: document.querySelector('#aspecto-rasgo-cicatriz').checked })`);
+    if (destino === 'aspecto') {
+      vistos.aspecto = await p.ev(`({ descripcion: document.querySelector('#retrato-descripcion').value, modo: document.querySelector('#aspecto').dataset.modo, barba: document.querySelector('#aspecto-rasgo-barba').checked, cicatriz: document.querySelector('#aspecto-rasgo-cicatriz').checked, barbaFija: document.querySelector('#aspecto-rasgo-barba').disabled, barbaRotulo: document.querySelector('label[for="aspecto-rasgo-barba"]').textContent, cicatrizFija: document.querySelector('#aspecto-rasgo-cicatriz').disabled })`);
+      // Ferrano se dibuja SIEMPRE con barba: la casilla no puede fingir que la quita o la pone.
+      comprobar(vistos.aspecto.barbaFija && vistos.aspecto.barba && /de su linaje/.test(vistos.aspecto.barbaRotulo) && !vistos.aspecto.cicatrizFija, 'en un linaje que ya se dibuja con barba (Ferrano), «Barba» sale marcada, fija y dicha («de su linaje»); los demás rasgos siguen libres', JSON.stringify(vistos.aspecto));
+      await p.foto('B0-aspecto-ferrano-1366x768.png');
+    }
     if (destino === 'quien') vistos.quien = await p.ev(`({ nombre: document.querySelector('#nombre').value, lore: document.querySelector('#lore-personaje').value, intensidad: document.querySelector('#intensidad [aria-checked="true"]').dataset.intensidad, genero: document.querySelector('#trato [aria-checked="true"]').dataset.genero })`);
     if (destino === 'origen') vistos.origen = await p.ev(`['raza', 'clase', 'trasfondo'].map((k) => document.querySelector('#origen-' + k).value).join()`);
   }
@@ -292,6 +326,51 @@ await caso('B · Volver, avanzar, editar y «Crear otro»', async () => {
   await p.cerrar();
 });
 
+await caso('B2 · Salir de «Aspecto» hacia atrás conserva el dibujo editado y la imagen elegida', async () => {
+  const p = await pestana();
+  try {
+    await aCreacion(p);
+    await p.ev(crearPersonajeUI({ raza: 'valdes', nombre: 'Tomás', genero: 'm', lore: 'Guarda un puente que nadie cruza.', descripcion: 'hombre de pelo rubio y ojos azules', hasta: 'aspecto' }));
+    await tic(500);
+    const leer = `({ modo: document.querySelector('#aspecto').dataset.modo, pelo: document.querySelector('#aspecto-pelo')?.value ?? null, ojos: document.querySelector('#aspecto-ojos')?.value ?? null, cicatriz: document.querySelector('#aspecto-rasgo-cicatriz')?.checked ?? null, cara: document.querySelector('#creacion-cara svg')?.outerHTML.replace(/(id="|url\\(#|href="#)[\\w-]+/g, '$1X') ?? null, entendido: Boolean(document.querySelector('#aspecto-entendido')) })`;
+    const propuesto = await p.ev(leer);
+    await p.ev(`(() => { const s = document.querySelector('#aspecto-pelo'); s.value = 'negro'; s.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('#aspecto-rasgo-cicatriz').click(); document.querySelector('#aspecto-otra-cara').click(); document.querySelector('#aspecto-otra-cara').click(); return true; })()`);
+    const editado = await p.ev(leer);
+    comprobar(propuesto.pelo === 'rubio' && propuesto.entendido && editado.pelo === 'negro' && editado.cicatriz && editado.cara !== propuesto.cara && !editado.entendido,
+      'al tocar los controles, el dibujo cambia y «ha entendido…» deja de decir lo que ya no se ve', JSON.stringify({ propuesto: { ...propuesto, cara: undefined }, editado: { ...editado, cara: undefined } }));
+    // 1 · «Volver» SIN haber pasado por «Siguiente», y regresar.
+    await p.ev(`document.querySelector('#creacion-volver').click(); true`);
+    await p.hasta(`${PASO} === 'quien'`);
+    await p.ev(`document.querySelector('#creacion-siguiente').click(); true`);
+    await p.hasta(`${PASO} === 'aspecto' && document.querySelector('#creacion-cara svg')`);
+    await tic(500);
+    const vuelto = await p.ev(leer);
+    comprobar(vuelto.modo === 'dibujo' && vuelto.pelo === 'negro' && vuelto.ojos === editado.ojos && vuelto.cicatriz === true && vuelto.cara === editado.cara,
+      'volver a «Quién eres» y regresar: el dibujo sigue como lo dejaste (pelo, rasgo y cara), no como lo propuso la descripción', JSON.stringify({ vuelto: { ...vuelto, cara: undefined }, mismaCara: vuelto.cara === editado.cara }));
+    // …y ese dibujo es el que se guarda al seguir (no el de antes).
+    await p.ev(`document.querySelector('#creacion-siguiente').click(); true`);
+    await p.hasta(`${PASO} === 'revisar' && document.querySelector('#creacion-cara img')?.complete`, 12000);
+    const guardado = await p.ev(`({ aspecto: JSON.parse(localStorage.getItem('arcanveil:personajes'))[0].aspecto, estado: document.querySelector('#retrato-estado').textContent })`);
+    comprobar(guardado.aspecto?.pelo === 'negro' && guardado.aspecto?.rasgos?.includes('cicatriz') && /Dibujo del juego/.test(guardado.estado), 'y al seguir se guarda ESE dibujo', JSON.stringify(guardado));
+    // 2 · Elegir «Sin imagen», seguir, y volver: sigue «Sin imagen».
+    await p.ev(`document.querySelector('#creacion-volver').click(); true`);
+    await p.hasta(`${PASO} === 'aspecto'`);
+    await p.ev(`document.querySelector('#aspecto-modo-ninguno').click(); document.querySelector('#creacion-siguiente').click(); true`);
+    await p.hasta(`${PASO} === 'revisar' && !document.querySelector('#creacion-cara img')`, 12000);
+    await p.ev(`document.querySelector('#creacion-volver').click(); true`);
+    await p.hasta(`${PASO} === 'aspecto'`);
+    await tic(300);
+    const sinImagen = await p.ev(`(async () => ({ modo: document.querySelector('#aspecto').dataset.modo, marcada: document.querySelector('#aspecto-modo-ninguno').getAttribute('aria-checked'), galeria: (await ${GALERIA}).length }))()`);
+    comprobar(sinImagen.modo === 'ninguno' && sinImagen.marcada === 'true' && sinImagen.galeria === 0, 'elegir «Sin imagen», seguir y volver: sigue marcado «Sin imagen» (no vuelve a proponer el dibujo)', JSON.stringify(sinImagen));
+    // …y si ahora vuelve al dibujo, es el suyo.
+    await p.ev(`document.querySelector('#aspecto-modo-dibujo').click(); true`);
+    await tic(300);
+    const otraVez = await p.ev(leer);
+    comprobar(otraVez.modo === 'dibujo' && otraVez.pelo === 'negro' && otraVez.cicatriz === true, 'y al volver a «Dibujo del juego» recupera el que había editado', JSON.stringify({ ...otraVez, cara: undefined }));
+    await p.foto('B2-aspecto-recordado-1366x768.png');
+  } finally { await p.cerrar(); }
+});
+
 await caso('C · Con generador (proveedor falso): disponibilidad antes de prometer, pintar, otra, usar, recarga y sin red', async () => {
   const generadas = [];
   const pu = await puente({ id: 'comfyui', salud: async () => ({ disponible: true }), generar: async ({ semilla }) => { generadas.push(semilla); return { bytes: PNG_1X1, tipo: 'image/png' }; } });
@@ -300,11 +379,14 @@ await caso('C · Con generador (proveedor falso): disponibilidad antes de promet
     await aCreacion(p);
     await p.ev(crearPersonajeUI({ raza: 'valdes', nombre: 'Cira', lore: 'Aprendió a leer en un taller de tintes.', descripcion: 'mujer joven de manos manchadas de tinta azul', hasta: 'aspecto' }));
     const antes = await p.ev(`({ estado: document.querySelector('#aspecto-generador').dataset.estado, pintado: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled'), boton: Boolean(document.querySelector('#aspecto-pintar')) })`);
-    comprobar(antes.estado === 'desconocido' && antes.pintado === 'true' && !antes.boton && alGenerador(p) === 0, 'aunque haya generador, no se ofrece pintar ni se le pide nada hasta que el jugador lo comprueba', JSON.stringify({ antes, peticiones: alGenerador(p) }));
-    await p.ev(`document.querySelector('#aspecto-comprobar').click(); true`);
+    comprobar(antes.estado === 'desconocido' && !antes.boton && alGenerador(p) === 0, 'aunque haya generador, no se ofrece pintar ni se le pide nada hasta que el jugador lo comprueba', JSON.stringify({ antes, peticiones: alGenerador(p) }));
+    // Lo que hizo el jugador de la queja: pulsar «Retrato pintado con IA». Ese
+    // clic ya no cae en vacío: comprueba el generador y, si lo hay, la elige.
+    await p.ev(`document.querySelector('#aspecto-modo-pintado').click(); true`);
     await p.hasta('document.querySelector("#aspecto-generador").dataset.estado === "disponible-local"', 8000);
-    const hay = await p.ev(`({ opcion: document.querySelector('#aspecto-modo-pintado').textContent, apagada: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled') })`);
-    comprobar(/Hay un generador de imágenes en este equipo/.test(hay.opcion) && /no sale de tu PC/.test(hay.opcion) && hay.apagada !== 'true', 'tras comprobar: «hay generador en este equipo, no sale de tu PC», y la opción se puede elegir', JSON.stringify(hay));
+    const hay = await p.ev(`({ opcion: document.querySelector('#aspecto-modo-pintado').textContent, apagada: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled'), modo: document.querySelector('#aspecto').dataset.modo, marcada: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-checked'), foco: document.activeElement.id })`);
+    comprobar(/Hay un generador de imágenes en este equipo/.test(hay.opcion) && /no sale de tu PC/.test(hay.opcion) && hay.apagada !== 'true' && hay.modo === 'pintado' && hay.marcada === 'true' && hay.foco === 'aspecto-modo-pintado',
+      'pulsar «Retrato pintado con IA» comprueba el generador y, como lo hay, la deja elegida: «hay generador en este equipo, no sale de tu PC»', JSON.stringify(hay));
     await p.ev(`document.querySelector('#aspecto-modo-pintado').click(); true`);
     await p.hasta('document.querySelector("#aspecto-pintar")');
     await p.foto('C1-aspecto-con-generador-1366x768.png');
@@ -359,12 +441,16 @@ await caso('D · Sin generador y sus variantes: lo que se dice es lo que hay', a
     // 1 · nadie escucha.
     const d1 = await abrirImagen(p);
     comprobar(d1.estado === 'desconocido' && alGenerador(p) === 0, 'abrir la imagen del personaje no sondea nada por su cuenta', JSON.stringify({ estado: d1.estado, peticiones: alGenerador(p) }));
-    await p.ev(`document.querySelector('#aspecto-comprobar').click(); true`);
+    // El clic del jugador de la queja, sin generador: la opción lo comprueba y lo DICE (antes no hacía nada).
+    await p.ev(`document.querySelector('#aspecto-modo-pintado').click(); true`);
+    const alPulsar = await p.ev(`document.querySelector('#aspecto-generador').dataset.estado`);
     await p.hasta('!["desconocido", "buscando"].includes(document.querySelector("#aspecto-generador").dataset.estado)', 9000);
+    const trasPulsar = await p.ev(`({ modo: document.querySelector('#aspecto').dataset.modo, foco: document.activeElement.id, peticiones: 0 })`);
+    comprobar(alPulsar !== 'desconocido' && trasPulsar.modo === 'dibujo' && trasPulsar.foco === 'aspecto-modo-pintado' && alGenerador(p) >= 1, 'pulsar «Retrato pintado con IA» sin generador no cae en vacío: lo comprueba, lo dice en la propia opción, deja el foco en ella y el dibujo sigue elegido', JSON.stringify({ alPulsar, trasPulsar, peticiones: alGenerador(p) }));
     const sin = await p.ev(`({ estado: document.querySelector('#aspecto-generador').dataset.estado, opcion: document.querySelector('#aspecto-modo-pintado').textContent, apagada: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled'), texto: document.querySelector('#imagen-dialogo').innerText, ayuda: document.querySelector('#aspecto-generador details')?.open, ayudaTexto: document.querySelector('#aspecto-generador details p')?.textContent ?? '', pintar: Boolean(document.querySelector('#aspecto-pintar')), dibujo: Boolean(document.querySelector('#imagen-vista svg')) })`);
     comprobar(sin.estado === 'no-disponible' && sin.apagada === 'true' && !sin.pintar && sin.dibujo && /no hay ningún generador/.test(sin.opcion) && sinInventos(sin.texto) && !/node tools|IMAGEN_LOCAL/.test(sin.texto),
       'sin puente: «no hay ningún generador», pintar no se ofrece, el dibujo sí; ni nube, ni envíos, ni cachés, ni comandos', JSON.stringify({ ...sin, texto: undefined }));
-    comprobar(sin.ayuda === false && /ComfyUI/.test(sin.ayudaTexto) && /no instala nada/.test(sin.ayudaTexto), 'lo técnico existe, plegado, y con los requisitos de verdad (ComfyUI, modelo, tarjeta gráfica; el juego no instala nada)', sin.ayudaTexto);
+    comprobar(sin.ayuda === false && /ComfyUI/.test(sin.ayudaTexto) && /no instala nada/.test(sin.ayudaTexto) && !/node |tools\/|\.mjs|11437|puerto/i.test(sin.ayudaTexto), 'lo técnico existe, plegado, con los requisitos de verdad (ComfyUI, modelo, tarjeta gráfica; el juego no instala nada) y SIN comandos ni puertos', sin.ayudaTexto);
     await p.foto('D1-imagen-sin-generador-1366x768.png');
 
     // 2 · en ese puerto contesta OTRO programa.
@@ -406,8 +492,8 @@ await caso('D · Sin generador y sus variantes: lo que se dice es lo que hay', a
     const ms = Date.now() - t0;
     await tic(300);
     const colgado = await p.ev(`({ opcion: document.querySelector('#aspecto-modo-pintado').textContent, boton: document.querySelector('#aspecto-comprobar')?.textContent, texto: document.querySelector('#imagen-dialogo').innerText, modo: document.querySelector('#aspecto').dataset.modo })`);
-    comprobar(buscando === 'buscando' && ms >= 3500 && ms < 7000 && /no ha contestado a tiempo/.test(colgado.opcion) && /Volver a comprobar/.test(colgado.boton) && sinInventos(colgado.texto) && colgado.modo === 'dibujo',
-      `sondeo colgado: sale de «Buscando» a los ${ms} ms con «no ha contestado a tiempo» y se puede volver a comprobar`, JSON.stringify({ buscando, ms, colgado: { ...colgado, texto: undefined } }));
+    comprobar(buscando === 'buscando' && ms >= 3500 && ms < 7000 && /Nada ha contestado a tiempo/.test(colgado.opcion) && /Volver a comprobar/.test(colgado.boton) && sinInventos(colgado.texto) && colgado.modo === 'dibujo',
+      `sondeo colgado: sale de «Buscando» a los ${ms} ms con «nada ha contestado a tiempo» (sin dar por hecho que haya generador) y se puede volver a comprobar`, JSON.stringify({ buscando, ms, colgado: { ...colgado, texto: undefined } }));
     comprobar(abiertas >= 1 && cerradas === abiertas, `y la petición se ABORTÓ de verdad (el servidor vio ${abiertas} conexión(es) y ${cerradas} cerrada(s) por el cliente)`);
     await p.foto('D2-imagen-timeout-1366x768.png');
 
@@ -520,7 +606,19 @@ await caso('F · 20 turnos: presente, lugar y entrada a la vista; los paneles vu
   const despues = await p.ev(`({ top: document.querySelector('#bitacora').scrollTop, relato: JSON.stringify(ARCANVEIL.ver('narrative.entradas')), lugar: ARCANVEIL.ver('world.ubicacion'), vista: document.querySelector('#bitacora').dataset.vista })`);
   comprobar(paneles.every((x) => x.activa === 'true' && !x.vacio && x.top === antes.top) && despues.top === antes.top && despues.relato === antes.relato && despues.lugar === antes.lugar && despues.vista === 'historial',
     'ficha, bolsa, mapa, encargos y gente: se abren con su título y no mueven la lectura, el relato ni el lugar', JSON.stringify({ paneles, antes: antes.top, despues: despues.top }));
+  await p.ev(`document.querySelector('#pestana-mapa').click(); true`);
+  await tic(150);
   await p.foto('F1-historial-y-panel-mapa-1366x768.png');
+  // Viajar desde el mapa abre SU turno: lo nuevo no se cuelga del anterior.
+  const antesViaje = await p.ev(`({ turnos: ARCANVEIL.ver('narrative.entradas').filter((e) => e.voz === 'player').length, lugar: ARCANVEIL.ver('world.ubicacion'), destino: document.querySelector('#lateral-cuerpo .destino span')?.textContent ?? '' })`);
+  await p.ev(`document.querySelector('#lateral-cuerpo .destino').click(); true`);
+  await p.hasta(`ARCANVEIL.ver('world.ubicacion') !== ${JSON.stringify(antesViaje.lugar)} && !ARCANVEIL.sistema('turns')._ocupado && !ARCANVEIL.sistema('travel').enCurso`, 20000).catch(() => {});
+  await p.ev(`ARCANVEIL.interfaz.completarEscritura(); true`);
+  await tic(400);
+  const viaje = await p.ev(`(() => { const b = document.querySelector('#bitacora'); const m = ${MEDIDAS}; return { vista: b.dataset.vista, top: b.scrollTop, accion: b.querySelector('.linea--jugador')?.textContent ?? '', cab: b.querySelector('.turno__cab')?.textContent ?? '', donde: document.querySelector('#relato-donde').textContent, turnos: ARCANVEIL.ver('narrative.entradas').filter((e) => e.voz === 'player').length, lugar: ARCANVEIL.sistema('world').lugarActual()?.plantilla?.nombre ?? '', rotulo: document.querySelector('#escena-rotulo .escena__lugar')?.textContent ?? '', entrada: m.entrada, pagina: m.pagina }; })()`);
+  comprobar(viaje.vista === 'ahora' && viaje.top === 0 && /^Viajo a/.test(viaje.accion) && viaje.turnos === antesViaje.turnos + 1 && viaje.cab === `Turno ${viaje.turnos}` && new RegExp(`Turno ${viaje.turnos}`).test(viaje.donde) && viaje.rotulo === viaje.lugar && viaje.entrada && !viaje.pagina,
+    `viajar desde el mapa («${antesViaje.destino}») abre su propio turno en «Ahora», desde su principio, con el lugar nuevo rotulado`, JSON.stringify({ antesViaje, viaje }));
+  await p.foto('F2-tras-viajar-desde-el-mapa-1366x768.png');
   await p.ev(`document.querySelector('#pestana-ficha').click(); document.querySelector('#relato-ahora').click(); true`);
 });
 
@@ -547,17 +645,39 @@ await caso('H · Narración larga, bolsa grande, doble clic y combate con tres r
   await p.ev(`document.querySelector('#pestana-ficha').click(); true`);
   // Combate con tres rivales.
   await p.ev(`ARCANVEIL.bus.emit('combat:request', { enemies: [{ refId: 'guardia_corrupto', count: 3 }] }); true`);
-  await p.hasta('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador && !document.querySelector("#combate").hidden', 12000);
+  await p.hasta('ARCANVEIL.ver("combat.activo", false) && ARCANVEIL.sistema("combat").esperandoJugador && !document.querySelector("#combate").hidden', 40000);
   await tic(500);
-  const combate = await p.ev(`(() => { const caja = (q) => { const n = document.querySelector(q); if (!n || n.offsetParent === null) return null; const r = n.getBoundingClientRect(); return { t: r.top, b: r.bottom, l: r.left, r: r.right }; }; const co = caja('#combate'); const en = caja('#entrada'); const botones = [...document.querySelectorAll('#combate button')].filter((b) => b.offsetParent !== null).map((b) => b.getBoundingClientRect()); const m = ${MEDIDAS}; return { rivales: document.querySelectorAll('#combate .luchador').length - 1, solapa: Boolean(co && en && co.b > en.t + 2 && co.t < en.b - 2 && co.r > en.l && co.l < en.r), fuera: botones.filter((r) => r.bottom > innerHeight + 1 || r.right > innerWidth + 1 || r.top < -1).length, nBotones: botones.length, entrada: m.entrada, pagina: m.pagina, horizontal: m.horizontal }; })()`);
-  comprobar(combate.rivales >= 3 && !combate.solapa && combate.fuera === 0 && combate.nBotones >= 3 && combate.entrada && !combate.pagina && !combate.horizontal, 'combate con tres rivales: se ven los tres, el panel de combate no tapa la caja de escribir y sus botones caben', JSON.stringify(combate));
+  const combate = await p.ev(`(() => { const caja = (q) => { const n = document.querySelector(q); if (!n || n.offsetParent === null) return null; const r = n.getBoundingClientRect(); return { t: r.top, b: r.bottom, l: r.left, r: r.right }; }; const co = caja('#combate'); const en = caja('#entrada'); const botones = [...document.querySelectorAll('#combate button')].filter((b) => b.offsetParent !== null).map((b) => b.getBoundingClientRect()); const m = ${MEDIDAS}; const lista = document.querySelector('#combate .combate__lista'); const marco = lista.getBoundingClientRect(); const luchadores = [...document.querySelectorAll('#combate .luchador')].map((n) => { const r = n.getBoundingClientRect(); return r.height > 20 && r.top >= marco.top - 1 && r.bottom <= Math.min(marco.bottom, innerHeight) + 1; }); return { rivales: luchadores.length - 1, enteros: luchadores.filter(Boolean).length, listaDesplaza: lista.scrollHeight > lista.clientHeight + 2, arriba: co ? Math.round(co.t) : null, solapa: Boolean(co && en && co.b > en.t + 2 && co.t < en.b - 2 && co.r > en.l && co.l < en.r), fuera: botones.filter((r) => r.bottom > innerHeight + 1 || r.right > innerWidth + 1 || r.top < -1).length, nBotones: botones.length, entrada: m.entrada, pagina: m.pagina, horizontal: m.horizontal }; })()`);
+  comprobar(combate.rivales >= 3 && combate.enteros === combate.rivales + 1 && !combate.listaDesplaza && combate.arriba >= 0 && !combate.solapa && combate.fuera === 0 && combate.nBotones >= 3 && combate.entrada && !combate.pagina && !combate.horizontal,
+    'combate con tres rivales: los cuatro combatientes se ven ENTEROS (medido en píxeles, no contando nodos), el panel no se sale por arriba ni tapa la caja de escribir, y sus botones caben', JSON.stringify(combate));
   await p.foto('H3-combate-tres-rivales-1366x768.png');
+  // La vida del panel lateral es la del motor DURANTE el combate, golpe a golpe.
+  const golpes = await p.ev(`(async () => {
+    const cifra = () => (document.querySelector('#panel-personaje .barra-caja__cifra')?.textContent ?? '');
+    const motor = () => { const v = ARCANVEIL.ver('player.vida'); return Math.round(v.actual) + '/' + v.max; };
+    const vistos = [];
+    const alGolpe = (g) => { if (g?.objetivo?.esJugador && g?.dano?.total) setTimeout(() => vistos.push({ panel: cifra(), motor: motor() }), 250); };
+    ARCANVEIL.bus.on('combat:attack', alGolpe);
+    const combate = ARCANVEIL.sistema('combat');
+    for (let ronda = 0; ronda < 6 && ARCANVEIL.ver('combat.activo', false) && !vistos.length; ronda++) {
+      await combate.accionJugador({ tipo: 'defender' });
+      for (let i = 0; i < 80 && ARCANVEIL.ver('combat.activo', false) && !combate.esperandoJugador; i++) await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    ARCANVEIL.bus.off?.('combat:attack', alGolpe);
+    return { vistos, final: { panel: cifra(), motor: motor() }, max: ARCANVEIL.ver('player.vida.max'), activo: ARCANVEIL.ver('combat.activo', false) };
+  })()`);
+  comprobar(golpes.vistos.length > 0 && golpes.vistos.every((x) => x.panel === x.motor) && golpes.final.panel === golpes.final.motor && golpes.final.motor !== `${golpes.max}/${golpes.max}`,
+    `en combate, la vida del panel es la del motor nada más recibir el golpe (${golpes.vistos.map((x) => x.panel).join(', ') || 'sin golpes'})`, JSON.stringify(golpes));
 });
 
 await caso('G · Tamaños, zoom, letra grande, teclado, Escape y toque', async () => {
   const tamanos = [
     { id: '1440x900', ancho: 1440, alto: 900 },
     { id: '1024x768', ancho: 1024, alto: 768 },
+    // PC con poca altura: un portátil de 1366×768 con las barras del navegador deja unos 650 px.
+    { id: '1366x650', ancho: 1366, alto: 650 },
+    { id: '1280x600', ancho: 1280, alto: 600 },
     { id: '390x844', ancho: 390, alto: 844, movil: true },
     { id: '320x568', ancho: 320, alto: 568, movil: true },
     { id: '1366x768-zoom200', ancho: 1366, alto: 768, zoom: 2 },
@@ -589,11 +709,12 @@ await caso('G · Tamaños, zoom, letra grande, teclado, Escape y toque', async (
         // En estrecho el panel es una hoja: se abre con un toque, tiene título y vuelta, y Escape la cierra.
         await p.tocar('#pestana-mapa');
         await p.hasta('document.querySelector("#panel-lateral-envoltura").classList.contains("lateral--hoja")', 4000);
-        const hoja = await p.ev(`(() => { const m = ${MEDIDAS}; const v = document.querySelector('#lateral-volver'); const r = v.getBoundingClientRect(); return { titulo: document.querySelector('#lateral-titulo').textContent, foco: document.activeElement.id, volver: v.offsetParent !== null && r.bottom <= innerHeight && r.right <= innerWidth, alto: Math.round(r.height), horizontal: m.horizontal, pagina: m.pagina, entrada: m.entrada, sin: m.desplazables.filter((d) => !d.rotulo || !d.foco).map((d) => d.id) }; })()`);
+        const hoja = await p.ev(`(() => { const m = ${MEDIDAS}; const v = document.querySelector('#lateral-volver'); const r = v.getBoundingClientRect(); const cu = document.querySelector('#lateral-cuerpo'); const cr = cu.getBoundingClientRect(); return { titulo: document.querySelector('#lateral-titulo').textContent, foco: document.activeElement.id, volver: v.offsetParent !== null && r.bottom <= innerHeight && r.right <= innerWidth, alto: Math.round(r.height), cuerpo: Math.round(cu.clientHeight), destinos: [...cu.querySelectorAll('.destino')].filter((d) => { const x = d.getBoundingClientRect(); return x.top >= cr.top - 1 && x.bottom <= Math.min(cr.bottom, innerHeight) + 1; }).length, horizontal: m.horizontal, pagina: m.pagina, entrada: m.entrada, sin: m.desplazables.filter((d) => !d.rotulo || !d.foco).map((d) => d.id) }; })()`);
         await p.foto(`G-${t.id}-hoja-mapa.png`);
         await p.tecla('Escape', 'Escape', 27);
         await tic(200);
         const cerrada = await p.ev(`({ hoja: document.querySelector('#panel-lateral-envoltura').classList.contains('lateral--hoja'), foco: document.activeElement.id, accion: document.querySelector('#bitacora .linea--jugador')?.textContent })`);
+        comprobar(hoja.cuerpo >= 150 && hoja.destinos >= 2, `${t.id} · la hoja del mapa tiene sitio de verdad: ${hoja.cuerpo} px de contenido y ${hoja.destinos} destinos enteros a la vista`, JSON.stringify({ cuerpo: hoja.cuerpo, destinos: hoja.destinos }));
         comprobar(hoja.titulo === 'Mapa' && hoja.foco === 'lateral-titulo' && hoja.volver && hoja.alto >= 32 && !hoja.horizontal && !hoja.pagina && !hoja.sin.length && !cerrada.hoja && cerrada.foco === 'pestana-mapa' && cerrada.accion === 'miro alrededor',
           `${t.id} · el panel se abre como hoja con un toque (título, «Volver a la historia»), Escape la cierra, devuelve el foco y la historia sigue donde estaba`, JSON.stringify({ hoja, cerrada }));
       } else {
@@ -604,6 +725,12 @@ await caso('G · Tamaños, zoom, letra grande, teclado, Escape y toque', async (
         const teclado = await p.ev(`({ vista: document.querySelector('#bitacora').dataset.vista, foco: document.activeElement.id })`);
         await p.tecla('ArrowLeft', 'ArrowLeft', 37);
         comprobar(teclado.vista === 'historial' && teclado.foco === 'relato-historial', `${t.id} · con el teclado: las flechas cambian entre «Ahora» e «Historial»`, JSON.stringify(teclado));
+        // El panel derecho en PC: pestañas en una fila y sin cortar; y si la ficha no cabe, se dice cuánto falta.
+        await p.ev(`document.querySelector('#relato-ahora').click(); document.querySelector('#pestana-ficha').click(); true`);
+        await tic(150);
+        const panel = await p.ev(`(() => { const cu = document.querySelector('#lateral-cuerpo'); const bs = [...document.querySelectorAll('.pestanas .pestana')]; return { filas: new Set(bs.map((b) => Math.round(b.getBoundingClientRect().top))).size, cortadas: bs.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent), letra: parseFloat(getComputedStyle(bs[0]).fontSize), sobra: cu.clientHeight - cu.scrollHeight, rotulo: document.getElementById(cu.getAttribute('aria-labelledby'))?.textContent ?? '' }; })()`);
+        comprobar(panel.filas === 1 && !panel.cortadas.length && panel.letra >= 10 && (panel.sobra >= -2 || panel.rotulo === 'Ficha'),
+          `${t.id} · panel derecho: pestañas en una fila, enteras y a ${panel.letra} px; la ficha ${panel.sobra >= -2 ? 'cabe sin desplazar' : `desplaza ${-panel.sobra} px dentro de su zona rotulada`}`, JSON.stringify(panel));
       }
     } finally { await p.cerrar(); }
   }
@@ -618,6 +745,47 @@ await caso('G · Tamaños, zoom, letra grande, teclado, Escape y toque', async (
     await p.foto('G-letra-grande-aspecto.png');
     comprobar(!m.horizontal && !m.pagina && m.siguiente === true && !sinRotulo(m).length, 'letra grande (22 px): el paso «aspecto» no desplaza la página, «Siguiente» sigue a la vista y lo que se desplaza tiene nombre', JSON.stringify({ ...m, desplazables: m.desplazables }));
   } finally { await p.cerrar(); }
+});
+
+await caso('G2 · Móvil: los desplegables del dibujo se leen enteros, la imagen se cambia desde la ficha y los controles se pueden tocar', async () => {
+  // Cada opción de cada desplegable, medida con SU letra, contra el hueco útil
+  // (ancho menos relleno menos la flecha). La captura sola no bastaba: con
+  // «pelo negro» salían valores cortos y el de por defecto es «De su linaje».
+  const DESPLEGABLES = `(() => { const lienzo = document.createElement('canvas').getContext('2d'); return [...document.querySelectorAll('.aspecto__controles select')].map((s) => { const e = getComputedStyle(s); lienzo.font = e.fontStyle + ' ' + e.fontWeight + ' ' + e.fontSize + ' ' + e.fontFamily; const sep = parseFloat(e.letterSpacing) || 0; const ancho = (t) => { const x = e.textTransform === 'uppercase' ? t.toUpperCase() : t; return lienzo.measureText(x).width + sep * x.length; }; const hueco = s.clientWidth - parseFloat(e.paddingLeft) - parseFloat(e.paddingRight) - 22; const largas = [...s.options].map((o) => ({ texto: o.textContent, ancho: Math.round(ancho(o.textContent)) })).sort((a, b) => b.ancho - a.ancho); return { id: s.id, valor: s.selectedOptions[0]?.textContent ?? '', hueco: Math.round(hueco), masLarga: largas[0], noCaben: largas.filter((o) => o.ancho > hueco).map((o) => o.texto), alto: Math.round(s.getBoundingClientRect().height) }; }); })()`;
+  for (const ancho of [390, 393, 412, 320]) {
+    const p = await pestana({ ancho, alto: ancho === 320 ? 568 : 844, movil: true });
+    try {
+      await aCreacion(p);
+      await p.ev(crearPersonajeUI({ raza: 'valdes', nombre: 'Lena', lore: 'Vino del norte con una carta.', descripcion: 'mujer alta de capa gris', hasta: 'aspecto' }));
+      await tic(400);
+      const d = await p.ev(DESPLEGABLES);
+      await p.ev(`document.querySelector('#aspecto-pelo').scrollIntoView({ block: 'center' }); true`);
+      if (ancho === 390 || ancho === 412) await p.foto(`G2-${ancho}-aspecto-de-su-linaje.png`);
+      comprobar(d.length === 2 && d.every((s) => s.valor === 'De su linaje' && !s.noCaben.length && s.alto >= 44),
+        `${ancho} px · creación: «De su linaje» y todas las opciones de pelo y ojos caben enteras (hueco ${d.map((s) => s.hueco).join(' y ')} px; la más larga, ${d[0]?.masLarga.ancho} px)`, JSON.stringify(d));
+      if (ancho !== 390) continue;
+      // En partida: desde la ficha (el resumen estrecho no tiene sitio para el botón).
+      await p.ev(`document.querySelector('#creacion-siguiente').click(); true`);
+      await p.hasta(`${PASO} === 'revisar' && document.querySelector('#creacion-cara img')?.complete`, 12000);
+      await empezar(p);
+      const tactil = await p.ev(`(() => { const alto = (q) => [...document.querySelectorAll(q)].filter((n) => n.offsetParent !== null).map((n) => Math.round(n.getBoundingClientRect().height)); return { pestanas: alto('.pestanas .pestana'), vistas: alto('.relato__vista'), barra: alto('.cab__acciones .btn'), plegar: alto('#escena-plegar') }; })()`);
+      comprobar([...tactil.pestanas, ...tactil.vistas, ...tactil.barra, ...tactil.plegar].every((h) => h >= 44) && tactil.pestanas.length >= 5 && tactil.vistas.length === 2 && tactil.barra.length >= 3,
+        '390 px · partida: pestañas, «Ahora»/«Historial», Menú/Narrador/Guardar y el botón de la ilustración miden al menos 44 px de alto', JSON.stringify(tactil));
+      await p.tocar('#pestana-ficha');
+      await p.hasta('document.querySelector("#panel-lateral-envoltura").classList.contains("lateral--hoja") && document.querySelector("#ficha-imagen")', 4000);
+      const boton = await p.ev(`(() => { const b = document.querySelector('#ficha-imagen'); const r = b.getBoundingClientRect(); const v = document.querySelector('#lateral-volver').getBoundingClientRect(); return { texto: b.textContent, visible: b.offsetParent !== null && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth, alto: Math.round(r.height), volver: Math.round(v.height), estado: document.querySelector('#ficha-estado')?.textContent ?? '' }; })()`);
+      await p.foto('G2-390-ficha-cambiar-imagen.png');
+      comprobar(boton.visible && /imagen/i.test(boton.texto) && boton.alto >= 44 && boton.volver >= 44 && /Vida \d+\/\d+/.test(boton.estado), `390 px · en la ficha hay un botón a la vista para la imagen («${boton.texto}», ${boton.alto} px) y la vida en cifras`, JSON.stringify(boton));
+      await p.tocar('#ficha-imagen');
+      await p.hasta('document.querySelector("#imagen-dialogo[open]") && document.querySelector("#aspecto-pelo")', 5000);
+      await tic(300);
+      const enDialogo = await p.ev(`(() => { const d = ${DESPLEGABLES}; const g = document.querySelector('#imagen-dialogo').getBoundingClientRect(); const dentro = (q) => { const n = document.querySelector(q); if (!n) return null; const r = n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight + 1 && r.left >= 0 && r.right <= innerWidth + 1; }; return { d, ancho: Math.round(g.width), horizontal: document.documentElement.scrollWidth > innerWidth + 1, usar: dentro('#imagen-usar'), cerrar: dentro('#imagen-cerrar') }; })()`);
+      await p.foto('G2-390-dialogo-imagen.png');
+      comprobar(enDialogo.d.length === 2 && enDialogo.d.every((s) => !s.noCaben.length && s.alto >= 44) && !enDialogo.horizontal && enDialogo.usar === true && enDialogo.cerrar === true,
+        `390 px · diálogo de imagen en partida: todas las opciones de los dos desplegables caben enteras (hueco ${enDialogo.d.map((s) => s.hueco).join(' y ')} px) y «Usar esta imagen» y «Cerrar sin cambiar» están a la vista`, JSON.stringify(enDialogo));
+      await cerrarImagen(p);
+    } finally { await p.cerrar(); }
+  }
 });
 
 await caso('I · Partida guardada sin imagen y ficha antigua sin «aspecto»', async () => {
