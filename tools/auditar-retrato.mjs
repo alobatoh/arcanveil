@@ -152,11 +152,16 @@ function navegador(pagina = ORIGEN, desvio = puerto) {
   const libre = await new Promise((ok) => hueco.listen(0, '127.0.0.1', () => ok(hueco.address().port)));
   await new Promise((ok) => hueco.close(ok));
   const nadie = await estadoGenerador({ fetch: navegador(ORIGEN, libre) });
-  comprobar(!nadie.ok && nadie.causa === 'sin_generador' && /ComfyUI/.test(nadie.motivo) && /imagen-local-proxy/.test(nadie.motivo), 'sin puente: se dice qué arrancar', nadie.motivo);
+  // #12: lo que se le dice al jugador ya no es un comando de consola. Qué
+  // arrancar sigue estando (misma garantía), pero en la ayuda avanzada; y sin
+  // puente no se afirma nada de a dónde iría un encargo.
+  comprobar(!nadie.ok && nadie.causa === 'sin_generador' && nadie.estado === 'no-disponible' && /ComfyUI/.test(nadie.ayuda) && /imagen-local-proxy/.test(nadie.ayuda)
+    && !/node |\.mjs|IMAGEN_LOCAL|ComfyUI/.test(nadie.motivo) && nadie.envia === undefined && nadie.proveedor === undefined,
+  'sin puente: se dice sin tecnicismos; qué arrancar va en la ayuda avanzada; no se afirma nube ni proveedor', `${nadie.motivo} | ${nadie.ayuda}`);
 
   proveedorCaido = true;
   const caido = await estadoGenerador({ fetch: navegador() });
-  comprobar(!caido.ok && caido.causa === 'proveedor' && /ComfyUI/.test(caido.motivo), 'puente sin ComfyUI: se dice que es ComfyUI', caido.motivo);
+  comprobar(!caido.ok && caido.causa === 'proveedor' && caido.estado === 'proveedor-fallo' && /ComfyUI/.test(`${caido.motivo} ${caido.ayuda}`), 'puente sin ComfyUI: se dice que es ComfyUI', `${caido.motivo} | ${caido.ayuda}`);
   e = await pedirCandidata(encargo, { variante: 7, fetch: navegador() }).catch((x) => x);
   comprobar(e?.causa === 'proveedor', 'y pedir entonces falla con ese mismo motivo, sin romper nada', e?.message);
   proveedorCaido = false;
@@ -245,7 +250,8 @@ console.log('\n── Nada pide imágenes por su cuenta ──');
 
   const app = leer(join(RAIZ, 'app', 'app.js'));
   const llamadasCandidata = app.match(/pedirCandidata\(/g)?.length ?? 0;
-  const estudio = app.slice(app.indexOf('function abrirEstudio'), app.indexOf('function abrirEstudio') + 6000);
+  // (El estudio creció en el #12: se toma la función entera, hasta la sección siguiente.)
+  const estudio = app.slice(app.indexOf('function abrirEstudio'), app.indexOf('/* ── sugerencias', app.indexOf('function abrirEstudio')));
   comprobar(llamadasCandidata === 1 && /pedirCandidata\(/.test(estudio), 'la app pide candidatas en un solo sitio: el estudio', `${llamadasCandidata} llamadas`);
   comprobar(/if \(ver\('combat\.activo', false\)\)/.test(estudio.slice(0, 400)), 'y el estudio no abre en combate');
   comprobar(!/scene:changed/.test(app), 'cambiar de escena no dispara nada de imágenes en la app');
