@@ -9,6 +9,7 @@ import { sujetoRetrato as encargoRetrato } from '../src/art/rasgos.js';
 import { crearProxyImagen } from './imagen-local-proxy.mjs';
 import { decirDuracion } from '../src/engine/Espera.js';
 import { nivelParaXP } from '../src/player/Progression.js';
+import { crearPersonajeUI } from './dobles/creacion-ui.mjs';
 
 const ROOT = process.cwd();
 const PORT = 8765;
@@ -164,6 +165,19 @@ const externos = [];
  */
 const EVENTOS_NAVEGACION = new Set(['Page.frameNavigated', 'Page.loadEventFired', 'Runtime.executionContextCreated', 'Inspector.detached', 'Target.detachedFromTarget']);
 const eventosPrincipal = [];
+/**
+ * Peticiones vistas (id → URL y quién la pidió), para que una petición
+ * abortada diga QUÉ archivo era y desde dónde se pidió, no solo su id (#12).
+ * Solo ruta y tipo: ni cuerpos ni cabeceras.
+ */
+const peticionesPrincipal = new Map();
+function apuntarPeticion(mapa, p) {
+  const ruta = (u) => { try { const x = new URL(u); return x.origin === `http://127.0.0.1:${PORT}` ? x.pathname : `${x.origin}${x.pathname}`; } catch { return String(u).slice(0, 80); } };
+  const ini = p.initiator ?? {};
+  mapa.set(p.requestId, { url: ruta(p.request.url), por: ini.type ?? null, desde: ini.url ? ruta(ini.url) : (ini.stack?.callFrames?.[0]?.url ? ruta(ini.stack.callFrames[0].url) : null) });
+  if (mapa.size > 1500) mapa.delete(mapa.keys().next().value);
+}
+const peticionDe = (mapa, id, tipo) => ({ ...(mapa.get(id) ?? { url: `(petición ${id} no vista)` }), recurso: tipo ?? null });
 /** Últimas incidencias de la pestaña principal (texto del error y URL; nada de la partida). */
 const incidenciasPrincipal = [];
 const apuntarPrincipal = (x) => { incidenciasPrincipal.push({ ...x, t: Date.now() }); if (incidenciasPrincipal.length > 30) incidenciasPrincipal.shift(); };
@@ -192,7 +206,11 @@ async function evaluate(expression, awaitPromise = true) {
   return r.result?.value;
 }
 /** El estado del motor cuando algo no llega: para saber POR QUÉ. */
-const DIAGNOSTICO = `(() => { try { const A = window.ARCANVEIL; if (!A?.motor?.listo) return { motor: 'sin arrancar', arcanveil: typeof A, url: location.href, readyState: document.readyState, pantalla: document.body?.dataset?.activeScreen ?? null, clases: document.body?.className ?? null, rotulo: document.getElementById('arranque-texto')?.textContent ?? null, fallos: document.querySelector('#fallos')?.textContent?.slice(0, 300) ?? null, controlada: Boolean(navigator.serviceWorker?.controller) };
+const DIAGNOSTICO = `(() => { try { const A = window.ARCANVEIL; if (!A?.motor?.listo) return { motor: 'sin arrancar', arcanveil: typeof A, url: location.href, readyState: document.readyState, pantalla: document.body?.dataset?.activeScreen ?? null, clases: document.body?.className ?? null, rotulo: document.getElementById('arranque-texto')?.textContent ?? null, fallos: document.querySelector('#fallos')?.textContent?.slice(0, 300) ?? null, controlada: Boolean(navigator.serviceWorker?.controller),
+    // #12: ¿llegó a ejecutarse app.js? ¿qué archivo no llegó? ¿qué trabajador de servicio manda?
+    arranque: window.__arcanveilArranque ? { fase: window.__arcanveilArranque.fase, fallidos: window.__arcanveilArranque.fallidos, ms: Date.now() - window.__arcanveilArranque.inicio } : null,
+    sw: navigator.serviceWorker?.controller ? { script: navigator.serviceWorker.controller.scriptURL.split('/').pop(), estado: navigator.serviceWorker.controller.state } : null,
+    modulos: performance.getEntriesByType('resource').filter((r) => r.initiatorType === 'script' || /\\.js$/.test(r.name)).length };
   const c = A.sistema('combat'); return { pantalla: document.body.dataset.activeScreen, fase: A.ver('meta.fase'), run: A.ver('meta.runId'), muerte: A.ver('meta.muerte')?.causa ?? null,
   vida: A.ver('player.vida.actual'), combate: A.ver('combat.activo', false), esperando: c?.esperandoJugador ?? null, encuentro: Boolean(A.sistema('exploration')?.encuentroActivo),
   viaje: A.sistema('travel')?.paraInterfaz?.() ?? null, ultimas: A.ver('narrative.entradas', []).slice(-4).map((e) => e.voz + ': ' + String(e.texto ?? '').slice(0, 90)) }; } catch (e) { return { error: String(e) }; } })()`;
@@ -274,6 +292,7 @@ async function abrirPestana(url, { contexto = null } = {}) {
   const eventos = [];
   const dialogos = [];
   let aceptarDialogo = false;
+  const peticiones = new Map();
   // Lo que pasa en esta pestaña, para diagnosticar un arranque que no llega:
   // excepciones, errores de consola y peticiones que fallan (sin contenido de
   // la partida: solo el texto del error y la URL).
@@ -285,8 +304,9 @@ async function abrirPestana(url, { contexto = null } = {}) {
     if (EVENTOS_NAVEGACION.has(m.method)) eventos.push({ method: m.method, params: m.params, t: Date.now() });
     else if (m.method === 'Runtime.exceptionThrown') apuntar({ tipo: 'excepción', texto: String(m.params.exceptionDetails?.exception?.description ?? m.params.exceptionDetails?.text ?? '').slice(0, 200) });
     else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) apuntar({ tipo: `consola ${m.params.type}`, texto: (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200) });
-    else if (m.method === 'Network.loadingFailed') apuntar({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}`, id: m.params.requestId });
-    else if (m.method === 'Network.requestWillBeSent') { const u = m.params.request.url; if (/^(?:https?|wss?):/.test(u) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(u)) externos.push(u.slice(0, 120)); }
+    else if (m.method === 'Network.loadingFailed') apuntar({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}${m.params.canceled ? ' (cancelada)' : ''}`, ...peticionDe(peticiones, m.params.requestId, m.params.type) });
+    else if (m.method === 'Network.responseReceived') { if (m.params.response.status >= 400) apuntar({ tipo: 'red', texto: `HTTP ${m.params.response.status}`, ...peticionDe(peticiones, m.params.requestId, m.params.type) }); }
+    else if (m.method === 'Network.requestWillBeSent') { const u = m.params.request.url; apuntarPeticion(peticiones, m.params); if (/^(?:https?|wss?):/.test(u) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(u)) externos.push(u.slice(0, 120)); }
     else if (m.method === 'Page.javascriptDialogOpening') {
       dialogos.push({ tipo: m.params.type, mensaje: m.params.message, aceptado: aceptarDialogo });
       socket.send(JSON.stringify({ id: ++n, method: 'Page.handleJavaScriptDialog', params: { accept: aceptarDialogo } }));
@@ -688,10 +708,8 @@ async function borradoDurableEnChrome() {
       await p.hasta('document.querySelector("#personajes-nuevo")', 5000);
       await p.ev(`document.querySelector('#personajes-nuevo').click(); true`);
     }
-    await p.hasta('document.body.dataset.activeScreen === "creacion" && document.querySelector("#nombre")', 8000);
-    await p.ev(`(() => { const fill = (q, v) => { const n = document.querySelector(q); n.value = v; n.dispatchEvent(new Event('input', { bubbles: true })); }; fill('#nombre', ${JSON.stringify(nombre)}); fill('#retrato-descripcion', 'viajera de capa gris'); fill('#lore-personaje', 'Busca un camino propio.'); return true; })()`);
-    await p.ev(`document.querySelector('[data-intensidad="relato"]')?.click(); true`);
-    await p.ev(`document.querySelector('#creacion-crear').click(); true`);
+    await p.hasta('document.body.dataset.activeScreen === "creacion" && document.querySelector("#origen-raza")', 8000);
+    await p.ev(crearPersonajeUI({ nombre, descripcion: 'viajera de capa gris', lore: 'Busca un camino propio.', intensidad: 'relato', imagen: 'ninguno' }));
     await p.hasta('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")', 15000);
     await p.ev(`document.querySelector('#creacion-empezar').click(); true`);
     await p.hasta('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") && !ARCANVEIL.sistema("turns")._ocupado', 25000);
@@ -1069,8 +1087,11 @@ try {
     } else if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) {
       apuntarPrincipal({ tipo: `consola ${m.params.type}`, texto: (m.params.args ?? []).map((a) => a.value ?? a.description ?? '').join(' ').slice(0, 200) });
     } else if (m.method === 'Network.loadingFailed') {
-      apuntarPrincipal({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}`, id: m.params.requestId });
+      apuntarPrincipal({ tipo: 'red', texto: `${m.params.errorText}${m.params.blockedReason ? ` (${m.params.blockedReason})` : ''}${m.params.canceled ? ' (cancelada)' : ''}`, ...peticionDe(peticionesPrincipal, m.params.requestId, m.params.type) });
+    } else if (m.method === 'Network.responseReceived') {
+      if (m.params.response.status >= 400) apuntarPrincipal({ tipo: 'red', texto: `HTTP ${m.params.response.status}`, ...peticionDe(peticionesPrincipal, m.params.requestId, m.params.type) });
     } else if (m.method === 'Network.requestWillBeSent') {
+      apuntarPeticion(peticionesPrincipal, m.params);
       const url = m.params.request.url;
       if (/^(?:https?|wss?):/.test(url) && !/^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(url)) externos.push(url.slice(0, 120));
     }
@@ -1151,10 +1172,8 @@ try {
   if (soloPestanas) {
     etapa('solo pestañas: una campaña real y las demás ranuras llenas (FIXTURE)');
     await evaluate(`document.querySelector('#menu-nueva').click()`);
-    await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#nombre")');
-    await evaluate(`(() => { const fill = (q, v) => { const n = document.querySelector(q); n.value = v; n.dispatchEvent(new Event('input', { bubbles: true })); }; fill('#nombre', 'Lyra'); fill('#retrato-descripcion', 'exploradora de pelo plateado y armadura de cuero negro'); fill('#lore-personaje', 'Busca a su hermana desde hace años.'); return true; })()`);
-    await evaluate(`document.querySelector('[data-intensidad="relato"]')?.click(); true`);
-    await evaluate(`document.querySelector('#creacion-crear').click()`);
+    await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#origen-raza")');
+    await evaluate(crearPersonajeUI({ nombre: 'Lyra', descripcion: 'exploradora de pelo plateado y armadura de cuero negro', lore: 'Busca a su hermana desde hace años.', intensidad: 'relato', imagen: 'ninguno' }));
     await until('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")', 15000);
     await evaluate(`document.querySelector('#creacion-empezar').click()`);
     await until('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("meta.ranura") && !ARCANVEIL.sistema("turns")._ocupado', 25000);
@@ -1172,48 +1191,69 @@ try {
 
   etapa('creación de personaje');
   await evaluate(`document.querySelector('#menu-nueva').click()`);
-  await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#aleatoria-raza")');
-  // El dado vuelve a tirar raza y nombre en cada pulsación.
+  await until('document.body.dataset.activeScreen === "creacion" && document.querySelector("#origen-raza")');
+  // #12: el origen se ELIGE en tres listas (antes solo se podía tirar). El
+  // dado sigue variando lo que el jugador no ha elegido.
+  const listas = await evaluate(`['raza', 'clase', 'trasfondo'].map((k) => document.querySelector('#origen-' + k)?.options.length ?? 0)`);
+  if (listas[0] !== 8 || listas[1] !== 8 || listas[2] !== 10) throw new Error(`las listas de origen no ofrecen todos los linajes, oficios y pasados: ${listas}`);
   const tiradas = new Set();
   for (let i = 0; i < 6; i++) {
-    tiradas.add(await evaluate(`document.querySelector('#aleatoria-raza').textContent + '|' + document.querySelector('#nombre').value`));
+    tiradas.add(await evaluate(`['raza', 'clase', 'trasfondo'].map((k) => document.querySelector('#origen-' + k).value).join('|')`));
     await evaluate(`document.querySelector('#creacion-aleatorio').click()`);
   }
   if (tiradas.size < 3) throw new Error(`el generador aleatorio no varía: ${[...tiradas]}`);
-  await evaluate(`(()=>{const fill=(q,v)=>{const n=document.querySelector(q);n.value=v;n.dispatchEvent(new Event('input',{bubbles:true}))};fill('#nombre','Lyra');fill('#retrato-descripcion','elfa exploradora de pelo plateado, ojos azul brillante, cicatriz en la ceja y armadura de cuero negro');fill('#lore-personaje','Mi hermana cruzó el Umbral con nuestro medallón. La busco desde entonces.');})()`);
   await shot(`02a-creacion-${viewport.label}.png`);
-  // Intensidad elegida en la creación: Pacífica. Se comprueba al empezar que
-  // llega a la partida y, tras 30 turnos, que casi no ha habido encuentros.
-  await evaluate(`document.querySelector('[data-intensidad="relato"]').click()`);
-  await evaluate(`document.querySelector('#creacion-crear').click()`);
+  // Pasos «origen» y «quién eres». Intensidad elegida en la creación:
+  // Pacífica. Se comprueba al empezar que llega a la partida y, tras 30
+  // turnos, que casi no ha habido encuentros.
+  const DESCRIPCION = 'elfa exploradora de pelo plateado, ojos azul brillante, cicatriz en la ceja y armadura de cuero negro';
+  await evaluate(crearPersonajeUI({ nombre: 'Lyra', descripcion: DESCRIPCION, lore: 'Mi hermana cruzó el Umbral con nuestro medallón. La busco desde entonces.', intensidad: 'relato', hasta: 'aspecto' }));
+  // Paso «aspecto»: lo que el juego propone es SU dibujo (sin IA), a la vista,
+  // y llegar aquí no pide nada a ningún generador: eso solo al pedirlo.
+  const aspecto = await evaluate(`(() => ({
+    modo: document.querySelector('#aspecto')?.dataset.modo,
+    dibujo: Boolean(document.querySelector('#creacion-cara svg')),
+    generador: document.querySelector('#aspecto-generador')?.dataset.estado,
+    pintadoApagado: document.querySelector('#aspecto-modo-pintado')?.getAttribute('aria-disabled'),
+  }))()`);
+  const alGenerador = [...peticionesPrincipal.values()].filter((p) => /:11437/.test(p.url)).length;
+  if (aspecto.modo !== 'dibujo' || !aspecto.dibujo || aspecto.generador !== 'desconocido' || aspecto.pintadoApagado !== 'true' || alGenerador || generadas.length) throw new Error(`el paso «aspecto» no propone el dibujo del juego o pide algo al generador sin que se lo pidan: ${JSON.stringify({ aspecto, alGenerador, generadas: generadas.length })}`);
+  await shot(`02b-creacion-aspecto-${viewport.label}.png`);
+  // Esta partida sigue SIN imagen (lo elige el jugador): más abajo se pinta
+  // con el generador. El dibujo del juego se prueba en `tools/auditar-ux.mjs`.
+  await evaluate(`document.querySelector('#aspecto-modo-ninguno').click(); true`);
+  await evaluate(`document.querySelector('#creacion-siguiente').click(); true`);
   await until('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")');
-  // Sin pedirlo, no se pinta nada: el marcador con el nombre y el botón
-  // para pintar. Ni cara vectorial ni petición a ningún generador.
+  // Sin imagen: el marcador con el nombre, y el botón para ponérsela.
   const retrato = await evaluate(`(() => ({
     marcador: document.querySelector('#creacion-cara .marcador-arte')?.textContent ?? '',
     vector: Boolean(document.querySelector('#creacion-cara svg')),
     pintar: Boolean(document.querySelector('#retrato-pintar')),
   }))()`);
-  if (!/Lyra/.test(retrato.marcador) || retrato.vector || !retrato.pintar) throw new Error(`la revelación no enseña el marcador con el nombre y el botón de pintar: ${JSON.stringify(retrato)}`);
+  if (!/Lyra/.test(retrato.marcador) || retrato.vector || !retrato.pintar) throw new Error(`la revisión no enseña el marcador con el nombre y el botón de la imagen: ${JSON.stringify(retrato)}`);
 
-  // «Elfa» en la descripción y un linaje cualquiera en la ficha: la revelación
-  // tiene que decirlo, y volver a la ficha no puede crear un gemelo.
+  // «Elfa» en la descripción y un linaje cualquiera en la ficha: la revisión
+  // tiene que decirlo, y volver al origen no puede crear un gemelo.
   const aviso = await evaluate(`document.querySelector('#revelacion-especie')?.textContent ?? ''`);
-  if (!/«elfa»/.test(aviso)) throw new Error(`la revelación no avisa de la especie escrita: «${aviso}»`);
+  if (!/«elfa»/.test(aviso)) throw new Error(`la revisión no avisa de la especie escrita: «${aviso}»`);
 
   const contarPjs = `JSON.parse(localStorage.getItem('arcanveil:personajes') ?? '[]').length`;
   const pjsAntes = await evaluate(contarPjs);
 
   await evaluate(`document.querySelector('#revelacion-cambiar-linaje').click()`);
-  await until('document.querySelector("#creacion-crear") && document.querySelector("#retrato-descripcion")');
-  const conservado = await evaluate(`document.querySelector('#retrato-descripcion').value`);
-  if (!conservado.startsWith('elfa exploradora')) throw new Error(`volver a la ficha perdió la descripción: «${conservado}»`);
-
+  await until('document.querySelector(\'[data-pantalla="creacion"]\').dataset.paso === "origen" && document.querySelector("#origen-raza")');
+  // Volver a tirar no borra el nombre escrito (ni lo que se escribió después).
   await evaluate(`document.querySelector('#creacion-aleatorio').click()`);
+  await evaluate(`document.querySelector('#creacion-siguiente').click(); true`);
+  await until('document.querySelector("#nombre")');
   const nombreTrasTirar = await evaluate(`document.querySelector('#nombre').value`);
   if (nombreTrasTirar !== 'Lyra') throw new Error(`volver a tirar borró el nombre escrito: «${nombreTrasTirar}»`);
-
-  await evaluate(`document.querySelector('#creacion-crear').click()`);
+  await evaluate(`document.querySelector('#creacion-siguiente').click(); true`);
+  await until('document.querySelector("#retrato-descripcion")');
+  const conservado = await evaluate(`document.querySelector('#retrato-descripcion').value`);
+  if (!conservado.startsWith('elfa exploradora')) throw new Error(`volver atrás perdió la descripción: «${conservado}»`);
+  if (await evaluate(`document.querySelector('#aspecto')?.dataset.modo`) !== 'dibujo') throw new Error('al volver al paso «aspecto» sin imagen, no se propone el dibujo');
+  await evaluate(`document.querySelector('#aspecto-modo-ninguno').click(); document.querySelector('#creacion-siguiente').click(); true`);
   await until('document.querySelector("#creacion-empezar") && document.querySelector("#creacion-cara .arte")');
 
   const pjsDespues = await evaluate(contarPjs);
@@ -1396,14 +1436,39 @@ try {
   // Pintar solo cuando se pide; la candidata, privada; «Otra versión» pide
   // otra; «Usar esta versión» la guarda y se ve en la ficha. Con el
   // generador de verdad (el puente) y un proveedor falso: ni ComfyUI ni red.
-  await evaluate(`document.querySelector('#pj-pintar').click()`);
-  await until('document.querySelector("#estudio[open]")');
+  // #12: desde la partida se abre «la imagen del personaje» (dibujo del
+  // juego, retrato pintado o nada). El generador se mira SOLO al pedirlo
+  // («Comprobar»), y al estudio se llega si lo hay.
+  /** Imagen → comprobar el generador → (si lo hay) abrir el estudio. Devuelve el estado comprobado. */
+  const alEstudio = async () => {
+    await evaluate(`document.querySelector('#pj-pintar').click()`);
+    await until('document.querySelector("#imagen-dialogo[open]") && document.querySelector("#aspecto-comprobar")');
+    if (await evaluate(`document.querySelector('#aspecto-generador').dataset.estado`) !== 'desconocido') throw new Error('abrir la imagen del personaje ya había mirado el generador sin que se le pidiera');
+    await evaluate(`document.querySelector('#aspecto-comprobar').click(); true`);
+    await until('!["desconocido", "buscando"].includes(document.querySelector("#aspecto-generador")?.dataset.estado)', 9000);
+    const estado = await evaluate(`document.querySelector('#aspecto-generador').dataset.estado`);
+    if (!/^disponible/.test(estado)) return estado;
+    await evaluate(`document.querySelector('#aspecto-modo-pintado').click(); true`);
+    await until('document.querySelector("#aspecto-pintar")');
+    await evaluate(`document.querySelector('#aspecto-pintar').click(); true`);
+    await until('document.querySelector("#estudio[open]")');
+    return estado;
+  };
+  const cerrarImagen = async () => {
+    await evaluate(`document.querySelector('#estudio-cerrar')?.click(); true`);
+    await until('!document.querySelector("#estudio")', 5000);
+    await evaluate(`document.querySelector('#imagen-cerrar')?.click(); true`);
+    await until('!document.querySelector("#imagen-dialogo")', 5000);
+  };
+  const estadoGenerador = await alEstudio();
   if (sinIA) {
-    await until('/No hay generador|no deja leer/.test(document.querySelector(".estudio__estado")?.textContent ?? "")', 8000);
-    const sinGenerador = await evaluate(`({ pintar: document.querySelector('#estudio-pintar').disabled, estado: document.querySelector('.estudio__estado').textContent })`);
-    if (!sinGenerador.pintar) throw new Error(`sin generador, el estudio deja pulsar Pintar: ${sinGenerador.estado}`);
-    await evaluate(`document.querySelector('#estudio-cerrar').click()`);
-    estudio = 'sin generador: lo dice y no pinta';
+    // Sin generador: se dice sin tecnicismos ni inventos (ni nube, ni envíos),
+    // pintar no se ofrece, y el dibujo del juego sí.
+    const sinGenerador = await evaluate(`({ estado: document.querySelector('#aspecto-generador').dataset.estado, pintado: document.querySelector('#aspecto-modo-pintado').getAttribute('aria-disabled'), texto: document.querySelector('#aspecto-modo-pintado').textContent, pintar: Boolean(document.querySelector('#aspecto-pintar')), dibujo: Boolean(document.querySelector('#aspecto-modo-dibujo')) && Boolean(document.querySelector('#imagen-vista svg')), todo: document.querySelector('#imagen-dialogo').textContent })`);
+    if (estadoGenerador !== 'no-disponible' || sinGenerador.pintado !== 'true' || sinGenerador.pintar || !sinGenerador.dibujo || !/no hay ningún generador|no deja leer/.test(sinGenerador.texto) || /nube|sale de tu equipo|caché/i.test(sinGenerador.todo)) throw new Error(`sin generador, la imagen no lo dice bien o deja pintar: ${JSON.stringify({ estadoGenerador, ...sinGenerador, todo: undefined })}`);
+    await shot(`05-imagen-sin-generador-${viewport.label}.png`);
+    await cerrarImagen();
+    estudio = 'sin generador: lo dice, no pinta y ofrece el dibujo del juego';
   } else if (puenteImagen) {
     await until('/Listo para pintar/.test(document.querySelector(".estudio__estado")?.textContent ?? "")', 8000);
     // Lo que dice antes de pintar es lo que pasa: con el generador local la
@@ -1422,6 +1487,7 @@ try {
     await shot(`05-estudio-${viewport.label}.png`);
     await evaluate(`document.querySelector('#estudio-usar').click()`);
     await until('!document.querySelector("#estudio") && document.querySelector("#retrato-pj img.arte--aprobada")?.complete', 8000);
+    await cerrarImagen();
     if (generadas.length !== 2 || generadas[0] === generadas[1]) throw new Error(`el estudio no pidió dos versiones distintas: ${JSON.stringify(generadas)}`);
     if (!(await esperarCache(() => enCache().length === 0))) throw new Error(`al cerrar el estudio, las candidatas siguen en la caché del puente: ${enCache().join(' ')}`);
     const elegida = await evaluate(GALERIA);
@@ -1429,12 +1495,11 @@ try {
     const srcElegida = await evaluate(`document.querySelector('#retrato-pj img.arte--aprobada').src`);
 
     // Otra vez al estudio: pintar y cerrar sin elegir no toca lo elegido.
-    await evaluate(`document.querySelector('#pj-pintar').click()`);
-    await until('/elegiste/.test(document.querySelector(".estudio__estado")?.textContent ?? "")', 8000);
+    await alEstudio();
+    await until('/imagen que tiene ahora/.test(document.querySelector(".estudio__estado")?.textContent ?? "")', 8000);
     await evaluate(`document.querySelector('#estudio-pintar').click()`);
     await until('document.querySelector("#estudio .estudio__candidata")?.complete', 10000);
-    await evaluate(`document.querySelector('#estudio-cerrar').click()`);
-    await until('!document.querySelector("#estudio")', 5000);
+    await cerrarImagen();
     if (!(await esperarCache(() => enCache().length === 0))) throw new Error('cerrar sin elegir dejó la candidata en la caché del puente');
     const despues = await evaluate(GALERIA);
     const srcDespues = await evaluate(`document.querySelector('#retrato-pj img.arte--aprobada')?.src`);
@@ -1447,18 +1512,18 @@ try {
     puenteImagen = await nube.escuchar().then(() => nube, () => null);
     if (!puenteImagen) throw new Error('no se pudo levantar el doble de nube en 11437');
     const antesNube = generadas.length;
-    await evaluate(`document.querySelector('#pj-pintar').click()`);
+    if (await alEstudio() !== 'disponible-nube') throw new Error('con un proveedor en la nube, el estado comprobado no es «disponible-nube»');
     await until('/sale de tu equipo/.test(document.querySelector("#estudio-nota")?.textContent ?? "") && !document.querySelector("#estudio-permiso").closest("label").hidden', 8000);
     const sinPermiso = await evaluate(`document.querySelector('#estudio-pintar').disabled`);
     await evaluate(`document.querySelector('#estudio-permiso').click()`);
     const conPermiso = await evaluate(`document.querySelector('#estudio-pintar').disabled`);
     const textoPermiso = await evaluate(`document.querySelector('#estudio-permiso-texto').textContent`);
     await shot(`05b-estudio-nube-${viewport.label}.png`);
-    await evaluate(`document.querySelector('#estudio-cerrar').click()`);
+    await cerrarImagen();
     if (!sinPermiso || conPermiso || !/cloudflare/.test(textoPermiso) || generadas.length !== antesNube) throw new Error(`con la nube, pintar sin permiso: ${JSON.stringify({ sinPermiso, conPermiso, textoPermiso })}`);
     estudio = 'pintar, otra versión y usar: en la ficha; cerrar olvida; nube con permiso';
   } else {
-    await evaluate(`document.querySelector('#estudio-cerrar').click()`);
+    await cerrarImagen();
     estudio = 'omitido: el puerto 11437 lo usa otro programa';
   }
 
@@ -1489,7 +1554,10 @@ try {
     }
   })()`);
   if (!reclutado.miembros.length) throw new Error(`nadie se unió al grupo: ${JSON.stringify(reclutado)}`);
-  const panelGrupo = await evaluate(`document.querySelector('#grupo-pj, .grupo__miembro')?.textContent ?? ''`);
+  // #12: el grupo tiene su pestaña (antes, además, un bloque bajo la ficha).
+  await evaluate(`document.querySelector('#pestana-grupo')?.click(); true`);
+  const panelGrupo = await evaluate(`document.querySelector('.grupo__miembro')?.textContent ?? ''`);
+  await evaluate(`document.querySelector('#lateral-volver')?.click(); true`);
   if (!panelGrupo.includes(reclutado.nombre)) throw new Error('el compañero no sale en el lateral');
 
   const viaje = await evaluate(`(async () => {

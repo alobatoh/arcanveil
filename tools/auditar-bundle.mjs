@@ -22,6 +22,7 @@ import { mkdtemp, rm, writeFile, mkdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { crearPersonajeUI } from './dobles/creacion-ui.mjs';
 
 const RAIZ = fileURLToPath(new URL('..', import.meta.url));
 const capturas = process.argv.includes('--capturas');
@@ -111,8 +112,9 @@ try {
 
   // Crear y jugar.
   await evaluar(`document.querySelector('#inicio-jugar').click(); document.querySelector('#menu-nueva').click(); true`);
-  await hasta('document.querySelector("#creacion-crear")');
-  await evaluar(`(() => { const f = (q, v) => { const n = document.querySelector(q); n.value = v; n.dispatchEvent(new Event('input', { bubbles: true })); }; f('#nombre', 'Brisa'); f('#retrato-descripcion', 'mujer de pelo corto y capa gris de viaje'); f('#lore-personaje', 'Cruzó el vado buscando a su hermano.'); document.querySelector('#creacion-crear').click(); return true; })()`);
+  // #12: la creación va por pasos; se recorre por la interfaz (misma garantía: el personaje nace con estos datos).
+  await hasta('document.querySelector("#creacion-siguiente")');
+  await evaluar(crearPersonajeUI({ nombre: 'Brisa', descripcion: 'mujer de pelo corto y capa gris de viaje', lore: 'Cruzó el vado buscando a su hermano.' }));
   await hasta('document.querySelector("#creacion-empezar")');
   await evaluar(`document.querySelector('#creacion-empezar').click(); true`);
   await hasta('document.body.dataset.activeScreen === "juego" && ARCANVEIL.ver("player.nombre") === "Brisa"', 15000);
