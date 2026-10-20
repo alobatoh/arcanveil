@@ -7,7 +7,7 @@ git init
 git add .
 git commit -m "ARCANVEIL: motor de rol narrativo web"
 git branch -M main
-git remote add origin https://github.com/petetes93/arcanveil.git
+git remote add origin https://github.com/alobatoh/arcanveil.git
 git push -u origin main
 ```
 
@@ -25,4 +25,4 @@ compilación: son archivos estáticos.
 
 En el repositorio → **Settings → Pages → Source: main / (root)**.
 
-En unos minutos estará en `https://petetes93.github.io/arcanveil/`.
+En unos minutos estará en `https://alobatoh.github.io/arcanveil/`.

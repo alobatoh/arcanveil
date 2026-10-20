@@ -181,7 +181,7 @@ El paquete opcional del SRD se rige por su propia licencia: ver
 
 ## Autoría
 
-ARCANVEIL es un proyecto de **[petetes93](https://github.com/petetes93)**:
+ARCANVEIL es un proyecto de **[alobatoh](https://github.com/alobatoh)**:
 el diseño del juego, su ambientación y el código, los textos y el arte
 originales que no proceden de terceros. Ver [AUTHORS](AUTHORS).
 
