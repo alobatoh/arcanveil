@@ -132,8 +132,11 @@ export function autorizar(propuestas, c) {
         // Lo que el motor dijo que NO hay no lo crea el narrador.
         if ((c.inexistentes ?? []).some((w) => llano(texto).includes(llano(w).replace(/s$/, '')))) { no(p, 'el motor dijo que eso no está'); break; }
         // Solo lo que de verdad se ha narrado: no se registra lo que no se ve.
+        // Por PALABRAS: buscando trozos, «cien» aparecía dentro de «cenicientos»
+        // y entraba en escena un cofre con cien monedas que nadie había narrado.
         const claves = llano(texto).split(/[^\p{L}]+/u).filter((w) => w.length >= 4);
-        if (claves.length && !claves.some((w) => story.includes(w))) { no(p, 'no aparece en la narración'); break; }
+        const palabras = new Set(story.split(/[^\p{L}]+/u));
+        if (claves.length && !claves.some((w) => palabras.has(w))) { no(p, 'no aparece en la narración'); break; }
         elementos += 1;
         aceptados.push({ tipo, texto });
         break;
