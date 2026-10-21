@@ -60,7 +60,39 @@ export function contextoDeVerificacion(leer, peticion, respuesta) {
     enCombate: combate.length > 0,
     yaContado: peticion.instantanea?.yaContado ?? [],
     conocidos: todos.map((n) => n.nombre),
+    cuentas: cuentasDelMotor(leer),
     ...evidenciaDelMotor(peticion),
+  };
+}
+
+/**
+ * Las cuentas del motor, para que el Verificador sepa qué cifra mecánica es
+ * la buena: el estado y lo que el motor ha escrito ESTE turno (golpes,
+ * compras, objetos dados), desde la última entrada del jugador.
+ *
+ * @param {(ruta: string, d?: any) => any} leer
+ * @returns {Object}
+ */
+export function cuentasDelMotor(leer) {
+  // Lo que el motor ha escrito este turno: golpes, compras, objetos dados.
+  // Las tiradas no: «sacas un 17» no hace verdad «ganas 17 XP».
+  const entradas = leer('narrative.entradas', []) ?? [];
+  let i = entradas.length - 1;
+  while (i >= 0 && entradas[i]?.voz !== 'player' && entradas[i]?.voz !== 'jugador') i -= 1;
+  const textoTurno = entradas.slice(i + 1).filter((e) => e?.voz !== 'roll' && e?.voz !== 'tirada').map((e) => String(e?.texto ?? '')).join('\n');
+  const turno = [...textoTurno.matchAll(/\d+/g)].map((m) => Number(m[0]));
+  const enCombate = leer('combat.activo', false);
+  return {
+    vida: leer('player.vida', null),
+    mana: leer('player.mana', null),
+    xp: leer('player.xp', null),
+    nivel: leer('player.nivel', null),
+    oro: leer('player.oro', null),
+    cantidades: Object.values(leer('inventory.objetos.porId', {}) ?? {}).map((o) => o?.cantidad ?? 1),
+    objetos: Object.values(leer('inventory.objetos.porId', {}) ?? {}).map((o) => o?.nombre ?? '').filter(Boolean),
+    combatientes: enCombate ? Object.values(leer('combat.combatientes', {}) ?? {}).map((c) => ({ nombre: c?.nombre, actual: c?.vida?.actual, max: c?.vida?.max })) : [],
+    turno,
+    textoTurno,
   };
 }
 
