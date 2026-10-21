@@ -1,0 +1,2 @@
+# Las reseñas se guardan tal cual: sin convertir saltos de línea al sacar el repo en Windows.
+*.csv text eol=lf
