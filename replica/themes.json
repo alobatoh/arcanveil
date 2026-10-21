@@ -1,0 +1,321 @@
+{
+  "_about": "Copia de trabajo de .claude/skills/replica-entrepreneur/themes.json adaptada (2026-10-21) a un RPG narrativo con máster IA. Patrones en español e inglés, porque la muestra mezcla los dos idiomas. Expresiones regulares de Python, sin distinguir mayúsculas. kind: complaint (algo que odian) o request (algo que piden).",
+  "request_patterns": [
+    "\\bi wish\\b",
+    "\\bwishing\\b",
+    "\\bplease (add|fix|make)\\b",
+    "\\bwould be (nice|great|good|helpful|much better|perfect)\\b",
+    "\\bwould love\\b",
+    "\\bneeds? (a|an|the|to|more)\\b",
+    "\\bneed more\\b",
+    "\\bno way to\\b",
+    "\\bcan we\\b",
+    "\\bmaybe (put|add)\\b",
+    "\\bif you could\\b",
+    "\\bojal[aá]\\b",
+    "\\bestar[ií]a bien\\b",
+    "\\bse agradecer[ií]a\\b",
+    "\\bme gustar[ií]a\\b",
+    "\\bpodr[ií]an\\b",
+    "\\bse podr[ií]an\\b",
+    "\\bser[ií]a (perfecto|ideal|mejor|genial|un 10)\\b",
+    "\\bfalta(n)?\\b"
+  ],
+  "themes": [
+    {
+      "id": "narrador",
+      "label": "Narrador IA: repite, se contradice, olvida o no dirige",
+      "kind": "complaint",
+      "patterns": [
+        "\\brepet",
+        "\\bcontradic",
+        "\\balucin",
+        "\\bhallucinat",
+        "\\bkeep the story straight\\b",
+        "\\bwon'?t take the initiative\\b",
+        "\\bno sigue como dm\\b",
+        "\\bno te lleva\\b",
+        "\\bapoya cada cosa\\b",
+        "\\bmis ideas como\\b",
+        "\\bpegada\\b",
+        "\\bdando vueltas\\b",
+        "\\bthe writing\\b",
+        "\\bcompelling story\\b",
+        "\\bhold the story\\b",
+        "\\bai (is|to be) (horrible|bad|terrible)\\b",
+        "\\bla ia (suele ser|es de los peores)\\b",
+        "\\bno es (lo )?suficiente(mente)? inteligente\\b",
+        "\\blies and cheats\\b",
+        "\\bmemor",
+        "\\bforg[eo]t",
+        "\\bolvid",
+        "\\bcontinuity",
+        "\\bcontext\\b",
+        "\\brewords?\\b",
+        "\\btakes your input",
+        "\\bgoes (way )?off",
+        "\\boff script",
+        "\\brewrit",
+        "\\b(not|doesn.t) listen",
+        "\\brefuses to listen",
+        "\\bseemed confused",
+        "\\bcoherent story"
+      ]
+    },
+    {
+      "id": "estado",
+      "label": "El juego pierde el estado: inventario, misiones, enemigos, vida",
+      "kind": "complaint",
+      "patterns": [
+        "\\binventor",
+        "\\bkeep(ing)? track",
+        "\\bquests?\\b",
+        "\\bno se resta la vida\\b",
+        "\\bno lo cuenta\\b",
+        "\\bdidn'?t have a sword\\b",
+        "\\bcorrection\\b",
+        "\\bcorrect(ing)? (it|the ai)\\b",
+        "\\bresucita\\b",
+        "\\bmete y saca personajes\\b",
+        "\\bheal",
+        "\\bhps?\\b",
+        "\\bhealth\\b",
+        "\\bmath\\b",
+        "\\bweapons disappear",
+        "\\bxp\\b"
+      ]
+    },
+    {
+      "id": "fichas",
+      "label": "Fichas / tokens: pocas, espera larga, caducan",
+      "kind": "complaint",
+      "patterns": [
+        "\\btokens?\\b",
+        "\\bfichas?\\b",
+        "\\bfichar\\b",
+        "\\bcoins\\b",
+        "\\binteractions\\b",
+        "\\b(4|cuatro|10|2) (horas|hours)\\b",
+        "\\bcada 4h\\b",
+        "\\breplenish",
+        "\\brecarga",
+        "\\besperar\\b",
+        "\\bwait time\\b",
+        "\\bmensajes cada\\b",
+        "\\bstack up",
+        "\\bbuild up"
+      ]
+    },
+    {
+      "id": "precio",
+      "label": "Precio, suscripción y muro de pago",
+      "kind": "complaint",
+      "patterns": [
+        "\\bsuscripci",
+        "\\bsubscripci",
+        "\\bsubscription\\b",
+        "\\bprecios?\\b",
+        "\\bpric(e|es|ey|ing)\\b",
+        "\\bexpensive\\b",
+        "\\bcaras?\\b",
+        "\\bpaywall\\b",
+        "\\bpay to play\\b",
+        "\\bpaga(r|s)?\\b",
+        "\\bpay(ing)? (for|them)\\b",
+        "\\bmicro ?pagos\\b",
+        "\\bmonetiza",
+        "\\bcompras?\\b",
+        "\\bdinero\\b",
+        "\\bmoney\\b",
+        "\\bbought\\b",
+        "\\bpurchas"
+      ]
+    },
+    {
+      "id": "variedad",
+      "label": "Historias repetidas: mismo esquema, mismos enemigos",
+      "kind": "complaint",
+      "patterns": [
+        "\\bsame (story|thread|beats|basic goal|enemies|mechanics)\\b",
+        "\\bvariety\\b",
+        "\\bstale\\b",
+        "\\bboring\\b",
+        "\\bloops of narration\\b",
+        "\\bsiempre (lo mismo|igual)\\b"
+      ]
+    },
+    {
+      "id": "combate",
+      "label": "Combate y muertes forzadas",
+      "kind": "complaint",
+      "patterns": [
+        "\\bcombat",
+        "\\bcombate\\b",
+        "\\battack(s|ed)?\\b",
+        "\\batacar\\b",
+        "\\bdeaths?\\b",
+        "\\brevive\\b",
+        "\\benem(y|ies|igos?)\\b",
+        "\\bmonsters?\\b",
+        "\\bcreature\\b",
+        "\\bcity guard\\b",
+        "\\bfight(s|ing)?\\b",
+        "\\bencounters?\\b",
+        "\\bnerf",
+        "\\bbattle"
+      ]
+    },
+    {
+      "id": "reglas",
+      "label": "Reglas, dados y peso de las decisiones",
+      "kind": "request",
+      "patterns": [
+        "\\bdice\\b",
+        "\\bdados\\b",
+        "\\btiradas\\b",
+        "\\bability checks\\b",
+        "\\breglas\\b",
+        "\\brules\\b",
+        "\\bstats\\b",
+        "\\bstat related\\b",
+        "\\binfluencia directa\\b"
+      ]
+    },
+    {
+      "id": "personaje",
+      "label": "Creación de personaje",
+      "kind": "complaint",
+      "patterns": [
+        "\\bacertar con el personaje\\b",
+        "\\bcharacter creation\\b",
+        "\\bcharacter sheet\\b",
+        "\\bai creation\\b",
+        "\\bcreating (a )?(game|character)\\b",
+        "\\bdescripciones\\b",
+        "\\bcrear (tu|un|el) personaje\\b",
+        "\\bavatars?\\b",
+        "\\bportrait",
+        "\\bmake a character",
+        "\\bforgot my character"
+      ]
+    },
+    {
+      "id": "imagenes",
+      "label": "Imágenes y retratos generados",
+      "kind": "complaint",
+      "patterns": [
+        "\\bim[aá]gen(es)?\\b",
+        "\\bimages?\\b",
+        "\\bimage generation\\b",
+        "\\bvisuals?\\b",
+        "\\bpictures?\\b",
+        "\\banimation\\b"
+      ]
+    },
+    {
+      "id": "bugs",
+      "label": "Fallos, cuelgues y rendimiento",
+      "kind": "complaint",
+      "patterns": [
+        "\\bbugs?\\b",
+        "\\bcrash",
+        "\\bglitch",
+        "\\bfreez",
+        "\\bpaused\\b",
+        "\\bse (me )?queda cargando\\b",
+        "\\bno funciona\\b",
+        "\\bnot working\\b",
+        "\\bbroken\\b",
+        "\\berror\\b",
+        "\\barregl[ae]nlo\\b",
+        "\\bslow\\b",
+        "\\blento\\b"
+      ]
+    },
+    {
+      "id": "guardado",
+      "label": "Guardado, sincronización y pérdidas",
+      "kind": "complaint",
+      "patterns": [
+        "\\bsync\\b",
+        "\\bcloud\\b",
+        "\\bsaved data\\b",
+        "\\bguardad",
+        "\\bprogreso\\b",
+        "\\bprogress\\b",
+        "\\blost (my|all)\\b",
+        "\\bse pierden\\b",
+        "\\bare gone\\b",
+        "\\bgot took\\b",
+        "\\bexpire"
+      ]
+    },
+    {
+      "id": "direccion",
+      "label": "Libertad mal dosificada: objetivos sin elegir o capítulos demasiado fáciles",
+      "kind": "complaint",
+      "patterns": [
+        "\\btoo much freedom\\b",
+        "\\btoo restrictive\\b",
+        "\\bno choice\\b",
+        "\\bobjective\\b",
+        "\\bnot let up\\b",
+        "\\bcan'?t stop and breath\\b",
+        "\\bevitar los enemigos\\b",
+        "\\bfollowed all the rules\\b"
+      ]
+    },
+    {
+      "id": "anuncios",
+      "label": "Anuncios a cambio de fichas",
+      "kind": "request",
+      "patterns": [
+        "\\bads\\b",
+        "\\banuncios\\b",
+        "\\bpublicidad\\b",
+        "\\bvideo watching\\b",
+        "\\bwatching ads\\b"
+      ]
+    },
+    {
+      "id": "soporte",
+      "label": "Soporte que no contesta",
+      "kind": "complaint",
+      "patterns": [
+        "\\bsupport\\b",
+        "\\bsoporte\\b",
+        "\\breached out\\b",
+        "\\bnot received a reply\\b",
+        "\\bno (response|reply)\\b"
+      ]
+    },
+    {
+      "id": "idioma",
+      "label": "Idioma y lenguaje",
+      "kind": "complaint",
+      "patterns": [
+        "\\bidioma\\b",
+        "\\blenguaje\\b",
+        "\\bespañol\\b",
+        "\\bspanish\\b",
+        "\\blanguage\\b",
+        "\\btranslat"
+      ]
+    },
+    {
+      "id": "multijugador",
+      "label": "Multijugador y amigos",
+      "kind": "request",
+      "patterns": [
+        "\\bmultiplayer\\b",
+        "\\bmultijugador\\b",
+        "\\binviting a friend\\b",
+        "\\bfriends?\\b",
+        "\\bamigos\\b",
+        "\\bparty members\\b",
+        "\\bonline play",
+        "\\bplay with my friends"
+      ]
+    }
+  ]
+}
