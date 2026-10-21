@@ -49,6 +49,19 @@ node tools/medir-narrador.mjs --transcripciones /tmp/partidas
   tema.
 - `tools/auditar-narrador-ia.mjs` levanta el puente contra un Groq falso en
   127.0.0.1 y mete el proveedor en el motor con respuestas simuladas.
+- `tools/auditar-cuentas-motor.mjs`: las cuentas las lleva el motor también
+  cuando narra un modelo. Un modelo malicioso intenta en cada turno curar,
+  dañar, matar, subir de nivel, dar XP, objetos u oro, cerrar una misión,
+  moverte de lugar o adelantar el reloj. Lo intenta por todas las vías a la
+  vez: prosa en español, prosa en inglés, en forma de pregunta, cada tipo
+  mecánico de `proposedEffects`, el contrato antiguo, tipos desconocidos y
+  JSON roto, dentro y fuera de combate.
+  - Cada turno se juega en dos partidas idénticas, una con un modelo limpio y
+    otra con el malicioso, y el estado mecánico tiene que salir igual. Si el
+    turno cae al procedural, se compara con una partida narrada por el
+    procedural.
+  - Además: nada de lo inventado llega a la bitácora, las cifras mecánicas
+    salen del motor y la interfaz pinta el daño real.
 - `medir-narrador.mjs --ia-simulada` juega las seis partidas con un modelo
   falso que sabotea cinco de cada seis turnos: las fugas a la bitácora deben
   ser cero.
@@ -577,6 +590,17 @@ los efectos mecánicos **no se recortan, se rechazan**. La automática es
 ```
 
 La narración entra; la vida, el oro y el objeto no cambian.
+
+**Cuentas inventadas en la prosa** (con el personaje herido y sin pelear):
+
+```json
+{ "story": "Vervek sigue a lo suyo junto a la fragua.\nEl río baja tranquilo.\nUn perro ladra a lo lejos.\nTe curas del todo.\nGanas 100 XP.", "proposedEffects": [{ "tipo": "vida", "datos": { "delta": 50 }, "razon": "x", "evidencia": "y" }] }
+```
+
+Las dos últimas frases no llegan a la bitácora y la vida no cambia. Una
+cifra que sí es del motor («te quedan 23 puntos de vida», si tienes 23) se
+queda. Una cantidad de escena («los dos lobos») también. La automática es
+`tools/auditar-cuentas-motor.mjs`.
 
 **Alguien que no está habla:**
 
